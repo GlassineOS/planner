@@ -92,7 +92,7 @@ ink with its date, and opening one shows its period with that entry visible.
 ### Scenario 9 – Be reminded (Priority: P2)
 
 **Given** an event with a reminder, **When** the reminder's time comes, **Then** the person
-is reminded with the event's ink and its time, whether or not the planner is open.
+is reminded of the event and its time, whether or not the planner is open.
 
 ### Scenario 10 – Neater ink, by choice (Priority: P3)
 
@@ -247,10 +247,10 @@ in the person's own font. Both can be turned on for one field or for all fields.
   crash, a power loss or a full battery cut loses at most the stroke being drawn.
 - **FR-052**: Readings are made on the device. Nothing the person writes leaves the device.
 - **FR-053**: An event can have a reminder at a chosen time before it. At that time the
-  person is reminded with the event's ink and time, also when the planner is closed.
+  person is reminded of the event and its time, also when the planner is closed.
   [NEEDS CLARIFICATION: Must a reminder wake the device from sleep, and how is it shown on a
   sleeping e-ink screen (on the sleep screen, a light, a sound), or does it only show at the
-  next wake?]
+  next wake? And does a reminder outside the planner show the event's ink or its text?]
 - **FR-054**: Events may repeat: [NEEDS CLARIFICATION: which repeat rules belong in 001?
   Proposed basics: daily, weekly on chosen weekdays, monthly on the same date, yearly, with an
   end date or none; changing or removing one occurrence or all of them. Everything else
@@ -269,7 +269,7 @@ in the person's own font. Both can be turned on for one field or for all fields.
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
 | Pen interface (raw and neatened strokes, readings) | consumed | 1 | `GlassineOS/handwriting` spec 004 |
-| Writing regions (one region per handwriting field) | consumed | 1 | `GlassineOS/handwriting` spec 005 |
+| Writing regions (one region per handwriting field) | consumed | not yet specified | `GlassineOS/handwriting` spec 005 (not published yet) |
 | Service interface (reading saved ink, letter model and font status) | consumed | 1 | `GlassineOS/handwriting` spec 004 |
 | Neatening and the person's font | consumed | 1 | `GlassineOS/handwriting` spec 003 |
 | Interleaf and the voices, the drawing library | consumed | current | `GlassineOS/ui` |
@@ -313,6 +313,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - The storage format.
 - Importing from or exporting to other calendars.
 - Time zones: times are the device's local wall-clock time.
+- Undated entries (an inbox or "someday" list).
 
 ## Key entities
 
@@ -347,7 +348,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
   back on leaving.
 - **A person without a letter model**: readings, search and reminders work as for anyone.
   Words edited in text mode are set in the voice's text face until the person's font exists,
-  then in the font. "Set in my font" can't be turned on and says why; neatening offers what
+  then in the font (open question below). "Set in my font" can't be turned on and says why; neatening offers what
   the handwriting service can do without a letter model.
 - **A period with no template chosen**: it uses the default of its kind (FR-034); the person
   can choose another from the view.
@@ -363,8 +364,19 @@ Hardware: ink latency and refresh counts on a device, supervised.
 
 ## Assumptions
 
-- The handwriting service, its writing regions and the person's font are available as
-  handwriting specs 003–005 describe; the planner adds no recognizer of its own.
+- The handwriting service and the person's font are available as handwriting specs 003 and
+  004 describe; the planner adds no recognizer of its own.
+- Writing regions (handwriting spec 005) are not published yet. The planner assumes of them:
+  one region per handwriting field, read on its own; a reading that says which strokes form
+  which word, so text-mode edits can replace single words (FR-013); and readings that follow
+  changes to a region's ink (FR-007).
+- A new period with no template chosen gets its kind's default without asking; the person
+  picks another from the view when they want one.
+- Without a letter model or font, words edited in text mode are set in the voice's text face
+  (see the open question below).
+- An event is created by drawing a block over its time in an agenda, or with a date and time
+  picker; there is no other way in 001.
+- Every entry has a date; there is no undated inbox or "someday" list in 001.
 - The planner runs in the person's own session; guests see none of its data.
 - One person, one planner: there are no separate calendars to pick from in 001.
 - The 30-minute step is the same for every agenda.
@@ -378,8 +390,10 @@ Hardware: ink latency and refresh counts on a device, supervised.
   one-tap "move to next")?]
 - [NEEDS CLARIFICATION: Editing a template that past periods use: does the edit change how
   those past periods look, or do periods that already used it keep the old arrangement?]
-- [NEEDS CLARIFICATION: Entries without a date (an inbox or "someday" list): are they part
-  of 001, given that every entry otherwise belongs to a date?]
+- [NEEDS CLARIFICATION: A person without a letter model or font who edits a word in text
+  mode: is that word set in the voice's text face (typed-looking text inside the ink, until
+  the font exists), or does editing in text mode wait until the font exists, or is the edit
+  kept in the text only while the ink stays as written?]
 
 FR-053 (reminders on a sleeping device) and FR-054 (which repeat rules) are open as well.
 
