@@ -124,7 +124,7 @@ static void new_field(struct ctx *c, enum ekind k, struct period per, const char
 	f->per = per;
 	f->rank = rank;
 	snprintf(f->slot, sizeof f->slot, "%s", slot ? slot : "");
-	snprintf(f->name, sizeof f->name, "new:%s:%d:%d:%d:%s", where, per.kind, per.start, k, slot ? slot : "");
+	snprintf(f->name, sizeof f->name, "new:%s:%d:%d:%d:%s:%d", where, per.kind, per.start, k, slot ? slot : "", rank);
 	f->guide = guide;
 	f->first = first;
 }
@@ -1290,7 +1290,6 @@ static void sheet_hidden(struct ctx *c)
 		} else
 			lk_rule(c->cr, 0, y, W, 1.5, L->ink, 0);
 	}
-	hit(c, 0, y, W, sh, A_NONE, 0, 0); /* the sheet takes its taps */
 	UiFont h2 = fpx(L->h1, 21);
 	tc(c, &h2, "Not shown in this layout", 16, y + 14 + 20, 0, W - 140, L->ink);
 	UiFont bf = L->voice == V_WHITE ? fam(L->mono, 600, 0, 11.5f) : L->label;
@@ -1316,8 +1315,10 @@ static void sheet_hidden(struct ctx *c)
 	double yy = y + 64 + lh + 16;
 	struct hidden_group g[16];
 	int n = view_hidden(c->s, v->t, v->per, g, 16);
-	if (v->hidden_kind < 0 || v->hidden_kind >= n)
+	if (v->hidden_kind < 0 || v->hidden_kind >= n) {
+		hit(c, 0, y, W, sh, A_NONE, 0, 0);
 		return;
+	}
 	struct hidden_group *hg = &g[v->hidden_kind];
 	char head_[64], cnt[8];
 	if (hg->kind == E_NOTE)
@@ -1387,6 +1388,7 @@ static void sheet_hidden(struct ctx *c)
 		rule(c, 16, yy + rh, W - 32);
 		yy += rh;
 	}
+	hit(c, 0, y, W, sh, A_NONE, 0, 0); /* the sheet takes its taps: after its own targets */
 }
 
 /* ---- the template picker (board templates.picker) ---- */
@@ -1415,7 +1417,6 @@ static void picker(struct ctx *c)
 		cairo_rectangle(c->cr, 0, 0, W, v->H);
 		lk_fill(c->cr, L->paper);
 	}
-	hit(c, 0, 0, W, v->H, A_NONE, 0, 0);
 	char main[64], sub[96], t[128];
 	title_of(v, main, sizeof main, sub, sizeof sub);
 	if (v->per.kind == P_DAY)
@@ -1485,6 +1486,7 @@ static void picker(struct ctx *c)
 			lk_rule(c->cr, 16, y - 6, W - 32, 1.5, L->ink, 2);
 		y += 2;
 	}
+	hit(c, 0, 0, W, v->H, A_NONE, 0, 0); /* it covers the page: after its own targets */
 }
 
 /* ---- the whole screen ---- */

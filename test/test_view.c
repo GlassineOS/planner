@@ -67,6 +67,29 @@ int main(void)
 	CHECK(h && h->x >= v.pop_x && h->y >= v.pop_y);
 	CHECK(find(&v, A_PICKER, -1) != NULL);
 	CHECK(view_hit(&v, h->x + 5, h->y + 5) == h);
+	/* the picker's and the sheet's own targets win over their catch-all */
+	v.ov = OV_PICKER;
+	view_layout(&v, &s, &L, cr);
+	h = find(&v, A_CLOSE, -1);
+	CHECK(h && view_hit(&v, h->x + h->w / 2, h->y + h->h / 2) == h);
+	h = find(&v, A_PICK, -1);
+	CHECK(h && view_hit(&v, h->x + h->w / 2, h->y + h->h / 2)->a == A_PICK);
+	h = find(&v, A_SCOPE, 3);
+	CHECK(h && view_hit(&v, h->x + 4, h->y + 4)->a == A_SCOPE);
+	v.ov = OV_HIDDEN;
+	v.hidden_kind = 0;
+	view_layout(&v, &s, &L, cr);
+	h = find(&v, A_CLOSE, 0);
+	CHECK(h && view_hit(&v, h->x + h->w / 2, h->y + h->h / 2) == h);
+	h = find(&v, A_CLOSE, 1);
+	CHECK(h && h->id && view_hit(&v, h->x + h->w / 2, h->y + h->h / 2) == h);
+	v.ov = OV_NONE;
+	v.hidden_kind = -1;
+	/* every empty row has a name of its own (one region each) */
+	view_layout(&v, &s, &L, cr);
+	for (int i = 0; i < v.nf; i++)
+		for (int j = 0; j < i; j++)
+			CHECK(strcmp(v.f[i].name, v.f[j].name));
 	/* every template lays out with fields in each orientation */
 	for (int i = 0; i < pl_ntemplates; i++) {
 		struct period p = period_of(pl_templates[i]->kind, today);
