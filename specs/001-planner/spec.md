@@ -53,15 +53,17 @@ with the pen in the agenda's free time and writes "dentist" in it, **Then** an e
 14:00 to 15:00 exists, its title shows as the person's ink exactly as written, and a moment
 later searching for "dentist" finds it. No converted text appears anywhere on the page.
 **When** the title is longer than the hour holds, **Then** its title field grows into the
-free time below the block and the event still ends at 15:00.
+free time below the block and the event still ends at 15:00. **When** another event follows
+right away, **Then** the title is cut with "…" and a tap on it shows the whole title.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
 **Given** that event, **When** the person drags the block down, **Then** it moves in steps of
-30 minutes, the page refreshing once per step and only where the block moves, and lands at
-14:30–15:30, its ink unchanged. **When** the person drags its lower edge, **Then** its length
-changes in 30-minute steps. **When** the person opens its date and picks another day,
-**Then** the event moves there with its ink and its reading.
+30 minutes with a dashed outline at its old place, the page refreshing once per step and
+only where the block moves, and lands at 14:30–15:30, its ink unchanged. **When** the person
+drags its lower edge, **Then** its length changes in 30-minute steps. **When** the person
+opens its date and picks another day, **Then** the event moves there with its ink and its
+reading.
 
 ### Scenario 3 – Write to-dos into the week (Priority: P1)
 
@@ -192,9 +194,9 @@ it says that it needs the handwriting service and why, and doesn't start.
   again.
 - **FR-013**: Text mode for the whole view is turned on and off from the maintenance menu
   (FR-053). Every handwriting field of the view then shows its current text as a text field;
-  the keyboard covers the lower part of the screen and the view is not laid out again.
-  Leaving text mode returns the field or view to ink mode. Text mode never changes the
-  ink.
+  the keyboard covers the lower part of the screen and the view is not laid out again;
+  fields under the keyboard are reached by scrolling the view. Leaving text mode returns
+  the field or view to ink mode. Text mode never changes the ink.
 - **FR-014**: A field's current text is its reading, with the person's text-mode edits
   applied. When a field's text was changed in text mode, ink mode shows the field word by
   word: words the person did not change keep their ink, and words the person changed or
@@ -214,12 +216,14 @@ it says that it needs the handwriting service and why, and doesn't start.
     there is taken as the block, never read as text;
   - dragging an event's block moves it and dragging its edge changes its length, both in
     steps of 30 minutes. During a drag the view refreshes once per step, only where the
-    block leaves and enters; a dragged block has no look of its own and looks as it will
-    when released;
+    block leaves and enters. A dragged block looks as it will when released; the only
+    other mark during a drag is a dashed outline at the block's old place;
   - date pickers set or change the day, week or month an entry belongs to.
 
   When an event's title needs more room than its block, the title field grows past the
-  block into the free time below it; the event's start and end stay as set.
+  block into the free time below it; the event's start and end stay as set. When there is
+  no free time below the block (the next event follows right away), the title is cut with
+  "…" and a tap on it shows the whole title.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
   not set the entry's time or date. An event is timed (a start and an end, which may cross
   midnight; it shows on each day it covers) or all-day (one or more whole days).
@@ -397,7 +401,8 @@ Host level:
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
   block leaves and enters, and the release refreshes nothing more;
 - a long title in a short event grows its title field into the free time below the block
-  without changing the event's times;
+  without changing the event's times, and is cut with "…" when the next event follows right
+  away;
 - a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
@@ -459,7 +464,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - **Text mode on a whole view**: every handwriting field in the view becomes a text field;
   time and date widgets stay as they are. Ink with no reading (FR-009) stays visible and is
   not editable as text. The keyboard covers the lower part of the screen; the view is not
-  laid out again.
+  laid out again, and fields under the keyboard are reached by scrolling the view.
 - **A person without a letter model**: readings and search work as for anyone. Autograph
   exists from the start, plain until it has learned the person's letters, so edited words
   and Set in Autograph use it as it is and follow it as it grows. Neatening offers what the
