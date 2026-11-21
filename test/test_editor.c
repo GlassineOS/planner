@@ -295,6 +295,31 @@ int main(void)
 	int nl = tmpl_list(P_DAY, ls, 64);
 	CHECK_INT(nl, 4);
 	CHECK(ls[nl - 1] == cp);
+	/* Save returns to the picker with the copy ringed: it is listed and can be chosen, upright and turned */
+	for (int land = 0; land < 2; land++) {
+		struct view pv = { .per = v.per, .today = today, .W = land ? 936 : 702, .H = land ? 662 : 896, .ov = OV_PICKER, .hidden_kind = -1 };
+		snprintf(pv.ring, sizeof pv.ring, "%s", cid);
+		view_layout(&pv, &s, &L, cr);
+		CHECK(find(&pv, A_PICK, nl - 1) != NULL);
+		CHECK(find(&pv, A_EDIT, 2) != NULL);
+		/* with many more, the ringed last one still shows */
+		for (int k = 0; k < 6; k++) {
+			struct editor x = { 0 };
+			editor_open_copy(&x, orig);
+			editor_act(&x, ED_SAVE, 0, NULL);
+			editor_close(&x);
+		}
+		int nm = tmpl_list(P_DAY, ls, 64);
+		snprintf(pv.ring, sizeof pv.ring, "%s", ls[nm - 1]->id);
+		view_layout(&pv, &s, &L, cr);
+		const struct vhit *ph = find(&pv, A_PICK, nm - 1);
+		CHECK(ph && ph->y + ph->h <= pv.H);
+		snprintf(pv.ring, sizeof pv.ring, "%s", "");
+		tmpl_user_load(dir); /* the in-memory copies go again */
+	}
+	nl = tmpl_list(P_DAY, ls, 64);
+	CHECK_INT(nl, 4);
+	cp = tmpl_find(cid);
 
 	/* ---- New: empty, a name from the start; one widget; saved ---- */
 	editor_open_new(&e, P_DAY);
