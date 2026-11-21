@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # glassine-planner: the pen-first planner (spec 001).
 # Needs a C11 compiler, pkg-config, cairo, pango and GlassineOS/ui (glassine-ui) for the drawing;
-# wayland-client, wayland-protocols and libglassine-handwriting (the pen interface, its writing
+# wayland-client, wayland-protocols, xkbcommon (the keyboard in text mode) and libglassine-handwriting (the pen interface, its writing
 # regions) for the program.
 #
 # GlassineOS/ui: test/ui.sh finds a checkout ($GLASSINE_UI, ../ui, else a clone); it is built and
@@ -51,8 +51,8 @@ HW_DEP :=
 endif
 
 WL_PROTO := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols 2>/dev/null)
-WL_PKGS := wayland-client
-PROTOS := stable/xdg-shell/xdg-shell.xml stable/tablet/tablet-v2.xml
+WL_PKGS := wayland-client xkbcommon
+PROTOS := stable/xdg-shell/xdg-shell.xml stable/tablet/tablet-v2.xml unstable/text-input/text-input-unstable-v3.xml
 PROTO_NAMES := $(basename $(notdir $(PROTOS)))
 PROTO_C := $(PROTO_NAMES:%=$(O)/proto/%-protocol.c)
 PROTO_H := $(PROTO_NAMES:%=$(O)/proto/%-client-protocol.h)
