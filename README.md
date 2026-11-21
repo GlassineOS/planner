@@ -6,11 +6,32 @@ text for search and reminders. Times and dates are set with widgets instead of h
 and each period's page is laid out from a template the person can edit, copy and swap at
 any time without losing what was written.
 
-**Not started.** Nothing is built yet; the first spec is
-[`specs/001-planner`](specs/001-planner/spec.md).
+**Early.** The first spec is [`specs/001-planner`](specs/001-planner/spec.md). Built so far:
+the day, week and month views with the boards' templates and widgets (GlassineOS/ui
+`designs/planner`), handwriting fields as writing regions of the pen interface (each
+reading stored with its ink), events drawn into the agenda's free time and dragged in
+30-minute steps by finger, the (i) popover, the cog's menu and the template picker. Not yet:
+text mode, search, editing templates, planning ahead, reminders.
+
+## Building
+
+    make check        # the store and view tests, and offscreen renders in out/renders
+    make install      # PREFIX=/usr; the program and its desktop entry
+
+It needs cairo, pango, wayland-client, wayland-protocols, GlassineOS/ui (`test/ui.sh` clones
+it; `UI_SYSTEM=1` uses an installed glassine-ui) and libglassine-handwriting (installed, or
+`HW_DIR=$(sh test/hw.sh)` for a clone). Without the handwriting service's writing regions
+the planner shows why and doesn't start (FR-001).
+
+Its entries are kept in `$XDG_DATA_HOME/glassine-planner/planner.ics` (iCalendar), the
+template choices in `templates.conf` beside it; `GLASSINE_PLANNER_DATA` sets another directory.
+
+`test/device/` holds two tools for a device check: `region-smoke.c`, a window with one
+writing region that prints what reaches it, and `pen-inject.c`, a virtual screen tablet
+(uinput) that draws straight lines.
 
 GlassineOS is a hobby project, written largely with AI coding agents and not reviewed by
-experts. Nothing in this repository has been checked on hardware.
+experts. Only what a change says was checked on hardware has been.
 
 ## License
 
