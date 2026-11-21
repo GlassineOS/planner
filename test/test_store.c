@@ -304,6 +304,33 @@ int main(void)
 		store_free(&b);
 	}
 
+	/* a choice removed: its period falls back to the range, then the default; an entry moved
+	 * to another day keeps its ink */
+	{
+		struct store a;
+		store_init(&a, NULL);
+		struct period w = period_of(P_WEEK, d);
+		store_choose(&a, period_of(P_WEEK, d - 14), period_end(period_of(P_WEEK, d + 14)), "week-spread");
+		store_choose(&a, w, w.start, "week-lists");
+		int how;
+		CHECK_STR(store_template(&a, w, &how), "week-lists");
+		store_unchoose(&a, 1);
+		CHECK_STR(store_template(&a, w, &how), "week-spread");
+		CHECK_INT(how, 1);
+		store_unchoose(&a, 0);
+		store_template(&a, w, &how);
+		CHECK_INT(how, 3);
+		struct entry *t = store_add(&a, E_EVENT, period_of(P_DAY, d));
+		t->start = 600, t->end = 660;
+		sample_ink(&t->f, "dentist", 2, 19, 1);
+		CHECK(store_move(&a, t->id, d + 3));
+		CHECK(t->per.start == d + 3 && t->start == 600 && t->f.ns == 1);
+		CHECK(!store_move(&a, t->id, d + 3)); /* the same day: nothing to move */
+		struct entry *mt = store_add(&a, E_TODO, period_of(P_MONTH, d));
+		CHECK(store_move(&a, mt->id, d + 40) && mt->per.kind == P_MONTH && mt->per.start == period_of(P_MONTH, d + 40).start);
+		store_free(&a);
+	}
+
 	/* the solver gives every widget at least its minimum, upright and turned */
 	for (int i = 0; i < pl_ntemplates; i++)
 		for (int land = 0; land < 2; land++) {

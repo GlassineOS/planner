@@ -548,6 +548,26 @@ void store_choose(struct store *s, struct period from, int to, const char *tmpl)
 	s->nc++;
 }
 
+void store_unchoose(struct store *s, int i)
+{
+	if (i < 0 || i >= s->nc)
+		return;
+	memmove(&s->c[i], &s->c[i + 1], (s->nc - i - 1) * sizeof *s->c);
+	s->nc--;
+}
+
+bool store_move(struct store *s, uint32_t id, int day)
+{
+	struct entry *e = store_get(s, id);
+	if (!e || e->kind == E_MARK)
+		return false;
+	struct period p = period_of(e->per.kind, day);
+	if (period_eq(p, e->per))
+		return false;
+	e->per = p; /* its ink, reading and edits move with it (FR-021) */
+	return true;
+}
+
 /* ---- iCalendar ---- */
 
 struct buf {

@@ -169,6 +169,10 @@ bool field_autograph(const struct store *s, const struct field *f);
 /* the template a period uses, and how it got it: 0 its own, 1 a range, 2 onwards, 3 default */
 const char *store_template(const struct store *s, struct period p, int *how);
 void store_choose(struct store *s, struct period from, int to, const char *tmpl);
+/* the choice i gone (its periods use the next choice that covers them, else the default) */
+void store_unchoose(struct store *s, int i);
+/* entry id moved to the period of its kind that holds day (an event keeps its times) */
+bool store_move(struct store *s, uint32_t id, int day);
 
 /* the files (FR-024: written at once, atomically) */
 bool store_load(struct store *s);
