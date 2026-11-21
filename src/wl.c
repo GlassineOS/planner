@@ -922,7 +922,8 @@ int main(int argc, char **argv)
 			reload_voice();
 		}
 	}
-	store_save(&P.s);
+	/* every change was saved when it was made (FR-024); no save on the way out, which would
+	 * write this instance's view of the entries over another's */
 	for (struct region *x = P.regions; x;) {
 		struct region *n = x->next;
 		ghw_region_destroy(x->r);
