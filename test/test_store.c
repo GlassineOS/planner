@@ -99,6 +99,93 @@ int main(void)
 	store_delete(&r, id);
 	CHECK(store_get(&r, id) == NULL);
 
+	/* two instances on one data directory: neither save loses the other's entries; an entry
+	 * deleted in one stays deleted (the device run's empty store after a stroke) */
+	{
+		char d2[] = "out/test-two-XXXXXX";
+		CHECK(mkdtemp(d2) != NULL);
+		struct store a, b, c;
+		store_init(&a, d2);
+		store_init(&b, d2);
+		CHECK(store_load(&a) && store_load(&b)); /* both start on an empty directory */
+		struct entry *t = store_add(&a, E_TODO, period_of(P_DAY, d));
+		sample_ink(&t->f, "buy milk", 2, 27, 5);
+		char uid[48];
+		snprintf(uid, sizeof uid, "%s", t->uid);
+		CHECK(store_save(&a));       /* a's first stroke, kept at once */
+		CHECK(store_save(&b));       /* b, with nothing of its own, saves later */
+		store_init(&c, d2);
+		store_load(&c);
+		CHECK_INT(c.n, 1);
+		CHECK(c.n == 1 && !strcmp(c.e[0]->uid, uid) && c.e[0]->f.ns == t->f.ns);
+		store_free(&c);
+		/* b took a's entry in; b's own entry and a's later one both survive */
+		CHECK_INT(b.n, 1);
+		struct entry *u = store_add(&b, E_NOTE, period_of(P_DAY, d));
+		snprintf(u->slot, sizeof u->slot, "notes");
+		sample_ink(&u->f, "rain", 2, 27, 6);
+		CHECK(store_save(&b));
+		struct entry *h = store_add(&a, E_HABIT, period_of(P_DAY, d));
+		struct entry *mk = store_add(&a, E_MARK, period_of(P_DAY, d));
+		mk->habit = h->id;
+		CHECK(store_save(&a));
+		CHECK_INT(a.n, 4);
+		CHECK(store_save(&b));
+		CHECK_INT(b.n, 4);
+		struct entry *bm = NULL, *bh = NULL;
+		for (int i = 0; i < b.n; i++)
+			bm = b.e[i]->kind == E_MARK ? b.e[i] : bm, bh = b.e[i]->kind == E_HABIT ? b.e[i] : bh;
+		CHECK(bm && bh && bm->habit == bh->id); /* the mark still names its habit */
+		/* a deletes the to-do; a's later saves leave it out even when b's copy is in the file
+		 * (b, unaware, may write it again: an entry is never lost by a merge) */
+		store_delete(&a, t->id);
+		CHECK(store_save(&a));
+		CHECK(store_save(&b));
+		CHECK(store_save(&a));
+		store_init(&c, d2);
+		store_load(&c);
+		bool back = false;
+		for (int i = 0; i < c.n; i++)
+			back |= !strcmp(c.e[i]->uid, uid);
+		CHECK(!back);
+		CHECK_INT(c.n, 3);
+		store_free(&c);
+		store_free(&a), store_free(&b);
+	}
+
+	/* a field's region (the device run's lost stroke): the first stroke makes the row's
+	 * entry; a value that takes its only stroke away (read as a strike) empties and deletes
+	 * it; the next strokes, before the page settles again, make the entry anew and are kept */
+	{
+		struct store a;
+		store_init(&a, NULL);
+		struct fmake mk = { E_TODO, period_of(P_WEEK, d), "", 3 };
+		struct pl_point pt[2] = { { 2, 20, 0.5f, 0 }, { 40, 21, 0.5f, 8 } };
+		uint32_t ent = 0;
+		struct entry *x = field_stroke(&a, &ent, &mk, 1, pt, 2);
+		CHECK(x && ent == x->id && x->kind == E_TODO && x->rank == 3 && x->f.ns == 1);
+		CHECK(!field_value(&a, &ent, "", NULL, 0, NULL, 0)); /* a reading not ready yet */
+		CHECK_INT(a.n, 1);
+		uint32_t g1 = 1;
+		CHECK(field_value(&a, &ent, "", &g1, 1, NULL, 0));
+		CHECK_INT(ent, 0);
+		CHECK_INT(a.n, 0);
+		x = field_stroke(&a, &ent, &mk, 2, pt, 2);
+		CHECK(x && ent && a.n == 1 && x->f.ns == 1 && x->per.kind == P_WEEK);
+		CHECK(!field_value(&a, &ent, "milk", NULL, 0, "st", 2));
+		CHECK(x->f.value && !strcmp(x->f.value, "milk") && x->f.state_len == 2);
+		/* an event keeps its time when its title is struck out */
+		struct entry *ev = store_add(&a, E_EVENT, period_of(P_DAY, d));
+		uint32_t eid = ev->id;
+		field_stroke(&a, &eid, NULL, 1, pt, 2);
+		CHECK(!field_value(&a, &eid, "", &g1, 1, NULL, 0) && store_get(&a, eid));
+		/* a title region makes nothing when its event is gone */
+		store_delete(&a, eid);
+		struct fmake none = { E_NKINDS };
+		CHECK(field_stroke(&a, &eid, &none, 3, pt, 2) == NULL);
+		store_free(&a);
+	}
+
 	/* the solver gives every widget at least its minimum, upright and turned */
 	for (int i = 0; i < pl_ntemplates; i++)
 		for (int land = 0; land < 2; land++) {

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -212,6 +213,7 @@ void store_free(struct store *s)
 	free(s->e);
 	free(s->c);
 	free(s->dir);
+	free(s->deleted);
 	memset(s, 0, sizeof *s);
 }
 
@@ -259,6 +261,11 @@ void store_delete(struct store *s, uint32_t id)
 {
 	for (int i = 0; i < s->n; i++)
 		if (s->e[i]->id == id) {
+			char (*d)[48] = realloc(s->deleted, (s->ndel + 1) * sizeof *d);
+			if (d) {
+				s->deleted = d;
+				snprintf(d[s->ndel++], 48, "%s", s->e[i]->uid);
+			}
 			field_free(&s->e[i]->f);
 			free(s->e[i]);
 			memmove(&s->e[i], &s->e[i + 1], (s->n - i - 1) * sizeof *s->e);
@@ -327,6 +334,44 @@ int store_events(struct store *s, int day, struct entry **out, int max)
 	}
 	qsort(out, n, sizeof *out, by_start);
 	return n;
+}
+
+/* ---- a field's region ---- */
+
+struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake *mk, uint32_t k,
+			   const struct pl_point *p, int n)
+{
+	struct entry *e = *entry ? store_get(s, *entry) : NULL;
+	if (!e) {
+		if (!mk || mk->kind >= E_NKINDS)
+			return NULL;
+		e = store_add(s, mk->kind, mk->per);
+		if (!e)
+			return NULL;
+		e->rank = mk->rank;
+		snprintf(e->slot, sizeof e->slot, "%s", mk->slot);
+		*entry = e->id;
+	}
+	field_add_stroke(&e->f, k, p, n);
+	return e;
+}
+
+bool field_value(struct store *s, uint32_t *entry, const char *text, const uint32_t *gone, size_t ngone,
+		 const void *state, size_t len)
+{
+	struct entry *e = *entry ? store_get(s, *entry) : NULL;
+	if (!e)
+		return false;
+	for (size_t i = 0; i < ngone; i++)
+		field_remove_stroke(&e->f, gone[i]);
+	field_set_value(&e->f, text, state, len);
+	if (e->kind != E_EVENT && field_empty(&e->f)) {
+		/* all its ink went (struck out): the row is empty again, not an entry */
+		store_delete(s, e->id);
+		*entry = 0;
+		return true;
+	}
+	return false;
 }
 
 /* ---- template choices ---- */
@@ -872,14 +917,95 @@ static void mkdirs(const char *dir)
 	mkdir(p, 0700);
 }
 
+static struct entry *by_uid(struct store *s, const char *uid)
+{
+	for (int i = 0; i < s->n; i++)
+		if (!strcmp(s->e[i]->uid, uid))
+			return s->e[i];
+	return NULL;
+}
+
+static bool has_uid(char (*l)[48], int n, const char *uid)
+{
+	for (int i = 0; i < n; i++)
+		if (!strcmp(l[i], uid))
+			return true;
+	return false;
+}
+
+/* the entries of o that s doesn't know and didn't delete: moved into s (marks after the
+ * habits they name, by uid) */
+static void take_foreign(struct store *s, struct store *o)
+{
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = 0; i < o->n; i++) {
+			struct entry *x = o->e[i];
+			if ((x->kind == E_MARK) != (pass == 1) || by_uid(s, x->uid) || has_uid(s->deleted, s->ndel, x->uid))
+				continue;
+			uint32_t habit = 0;
+			if (x->kind == E_MARK) {
+				struct entry *h = store_get(o, x->habit), *mine = h ? by_uid(s, h->uid) : NULL;
+				if (!mine)
+					continue; /* its habit was deleted here */
+				habit = mine->id;
+			}
+			struct entry *y = store_put(s);
+			if (!y)
+				return;
+			uint32_t id = y->id;
+			*y = *x;
+			y->id = id;
+			y->habit = habit;
+			memset(&x->f, 0, sizeof x->f); /* the field now belongs to y */
+		}
+}
+
+static void seen_set(struct store *s, const struct stat *st)
+{
+	s->seen = true;
+	s->seen_ino = (long long)st->st_ino;
+	s->seen_size = (long long)st->st_size;
+	s->seen_mtime = (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+}
+
+static bool seen_same(const struct store *s, const struct stat *st)
+{
+	return s->seen && s->seen_ino == (long long)st->st_ino && s->seen_size == (long long)st->st_size &&
+	       s->seen_mtime == (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+}
+
 bool store_save(struct store *s)
 {
 	if (!s->dir)
 		return true;
 	mkdirs(s->dir);
+	/* one writer at a time: read, merge and write under the lock */
+	char p[4096];
+	snprintf(p, sizeof p, "%s/.lock", s->dir);
+	int lk = open(p, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (lk >= 0)
+		while (flock(lk, LOCK_EX) < 0 && errno == EINTR)
+			;
+	snprintf(p, sizeof p, "%s/planner.ics", s->dir);
+	struct stat st;
+	if (stat(p, &st) == 0 && !seen_same(s, &st)) {
+		char *t = read_all(s->dir, "planner.ics");
+		if (t) {
+			struct store o;
+			store_init(&o, NULL);
+			store_parse_ics(&o, t);
+			take_foreign(s, &o);
+			store_free(&o);
+			free(t);
+		}
+	}
 	char *t = store_ics(s);
 	bool ok = t && write_atomic(s->dir, "planner.ics", t);
 	free(t);
+	if (ok && stat(p, &st) == 0)
+		seen_set(s, &st);
+	if (lk >= 0)
+		close(lk);
 	return ok;
 }
 
@@ -916,10 +1042,16 @@ bool store_load(struct store *s)
 {
 	if (!s->dir)
 		return true;
+	char p[4096];
+	struct stat st;
+	snprintf(p, sizeof p, "%s/planner.ics", s->dir);
+	bool have = stat(p, &st) == 0;
 	char *t = read_all(s->dir, "planner.ics");
 	if (t) {
 		store_parse_ics(s, t);
 		free(t);
+		if (have)
+			seen_set(s, &st);
 	}
 	t = read_all(s->dir, "templates.conf");
 	if (t) {
