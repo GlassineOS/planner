@@ -39,45 +39,58 @@ Terms used below:
 - **Reading**: the text the handwriting service reads from the ink of one field.
 - **Slot**: the name of a free-text place in a period ("morning notes", "evening notes"),
   shared by every template that uses the name.
+- **Header bar**: the one bar at the top of every view; it holds only navigation and the
+  details button (i).
+- **Details popup**: the popup the (i) opens, with the period's details and search; its
+  cogwheel turns it into the maintenance menu.
 
 ## User scenarios
 
 ### Scenario 1 – Write an event into the day (Priority: P1)
 
 **Given** today's view with a day agenda, **When** the person draws a block over 14:00–15:00
-in the agenda and writes "dentist" in it, **Then** an event from 14:00 to 15:00 exists, its
-title shows as the person's ink exactly as written, and a moment later searching for
-"dentist" finds it. No converted text appears anywhere on the page.
+with the pen in the agenda's free time and writes "dentist" in it, **Then** an event from
+14:00 to 15:00 exists, its title shows as the person's ink exactly as written, and a moment
+later searching for "dentist" finds it. No converted text appears anywhere on the page.
+**When** the title is longer than the hour holds, **Then** the event's block grows into the
+free time below it and the event still ends at 15:00.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
 **Given** that event, **When** the person drags the block down, **Then** it moves in steps of
-30 minutes and lands at 14:30–15:30, its ink unchanged. **When** the person drags its lower
-edge, **Then** its length changes in 30-minute steps. **When** the person opens its date and
-picks another day, **Then** the event moves there with its ink and its reading.
+30 minutes, the page refreshing once per step and only where the block moves, and lands at
+14:30–15:30, its ink unchanged. **When** the person drags its lower edge, **Then** its length
+changes in 30-minute steps. **When** the person opens its date and picks another day,
+**Then** the event moves there with its ink and its reading.
 
 ### Scenario 3 – Write to-dos into the week (Priority: P1)
 
 **Given** this week's view with a to-do list, **When** the person writes three to-dos and
 ticks one, **Then** the week holds three to-dos, one done, each shown in the person's ink.
 **Given** the day view of a day in that week, **When** its template shows the week's to-dos,
-**Then** the same three appear there; ticking one there ticks it in the week.
+**Then** the same three appear there; ticking one there ticks it in the week. **When** the
+list is full, **Then** the done to-do gives way first, a "+1 more" says so, and one empty row
+to write in stays.
 
 ### Scenario 4 – Switch a template without losing anything (Priority: P1)
 
 **Given** a day with events, to-dos and a "morning notes" entry, shown with a template that
 has an agenda, a to-do list and morning notes, **When** the person switches that day to a
-template with only an agenda, **Then** the events show in the new layout, and a small count
-says that one note and the to-dos are hidden. **When** the person taps the count, **Then**
-the hidden entries are listed, still in ink. **When** the person switches back, **Then** the
-to-dos and the note show in their places as they were.
+template with only an agenda, **Then** the events show in the new layout, and a small number
+beside the (i) in the header bar gives the count of hidden entries. **When** the person taps
+the (i), **Then** the details popup names the template and how the day got it, and lists the
+to-dos and the "morning notes" as not shown. **When** the person taps the to-dos there,
+**Then** the hidden to-dos are listed, still in ink. **When** the person switches back,
+**Then** the to-dos and the note show in their places as they were, and the number beside the
+(i) is gone.
 
 ### Scenario 5 – Correct a reading in text mode (Priority: P1)
 
 **Given** a to-do written as "call the bank about the card" that was read as "call the bonk
-about the card", **When** the person turns that field to text mode, **Then** the reading shows
-as an ordinary text field and the system on-screen keyboard opens. **When** the person
-changes "bonk" to "bank" and returns to ink mode, **Then** the field shows the person's ink
+about the card", **When** the person taps that field with a finger, **Then** the reading shows
+as an ordinary text field and the system on-screen keyboard opens, with the field's Neaten
+and Set-in-Autograph switches on the bar above it. **When** the person changes "bonk" to
+"bank" and taps outside the field, **Then** it returns to ink mode and shows the person's ink
 for every word except "bank", which is set in Autograph, the person's font, in its place, and
 search finds the to-do under "bank".
 
@@ -103,16 +116,18 @@ some days, **Then** they copy the template before editing and give those days th
 
 ### Scenario 9 – Search what was written by hand (Priority: P2)
 
-**Given** months of handwritten entries, **When** the person searches for a word, **Then**
-the planner lists the entries whose text contains it, each shown in its ink with its date,
-and opening one shows its period with that entry visible.
+**Given** months of handwritten entries, **When** the person opens the details popup and
+types a word into the search field at its top, **Then** the planner lists the entries whose
+text contains it, each shown in its ink with its date, and opening one shows its period with
+that entry visible.
 
 ### Scenario 10 – Neater ink, by choice (Priority: P3)
 
-**Given** a notes field, **When** the person turns on neatening for that field, **Then** its
-ink is shown neatened at the chosen strength and the original can be brought back. **When**
-the person instead turns on "set in my font", **Then** each word that was read is shown set
-in Autograph. Both can be turned on for one field or for all fields.
+**Given** a notes field in text mode, **When** the person turns on Neaten on the bar above the
+keyboard and leaves the field, **Then** its ink is shown neatened at the chosen strength and
+the original can be brought back. **When** the person instead turns on Set in Autograph,
+**Then** each word that was read is shown set in Autograph. Both can be turned on for one
+field there, or for all fields in the settings.
 
 ### Scenario 11 – No handwriting service (Priority: P3)
 
@@ -131,7 +146,10 @@ it says that it needs the handwriting service and why, and doesn't start.
 
 - **FR-002**: The planner has a month view, a week view and a day view. Each shows one
   period, drawn from the template chosen for that period (FR-030).
-- **FR-003**: The person moves to the previous or next period of the same kind, to today,
+- **FR-003**: The view's chrome is one header bar that holds only navigation (Month, Week
+  and Day; previous, next and today) and, at its end, the (i) (FR-051); the rest of the
+  screen is the period's content. There is no permanent foot line or status line. With the
+  navigation the person moves to the previous or next period of the same kind, to today,
   and from a period to the periods it contains or lies in (a day of a month view opens that
   day; a day view reaches its week and month).
 - **FR-004**: The first day of the week and the date and time formats follow the system's
@@ -156,19 +174,27 @@ it says that it needs the handwriting service and why, and doesn't start.
 - **FR-011**: Two opt-ins change how ink is shown, never what is stored as written:
   - **Neaten**: the ink is shown neatened (handwriting spec 003), at a strength the person
     chooses; turning it off shows the ink as written.
-  - **Set in my font**: each word that was read is shown set in Autograph instead of the
-    ink; turning it off shows the ink.
+  - **Set in Autograph**: each word that was read is shown set in Autograph, the person's
+    font, instead of the ink; turning it off shows the ink.
 
   Each can be set for one field or for every field; a field's own choice wins over the
-  global one. Both are off unless the person turns them on.
+  global one. A field's two switches sit on the bar above the keyboard in that field's text
+  mode (FR-012); the global ones are in the settings (FR-053). Both are off unless the
+  person turns them on.
 
 ### Text mode
 
-- **FR-012**: A control turns one field, or the whole view, into text mode. In text mode
-  each handwriting field shows its current text (FR-014) as an ordinary text field, edited
-  with the system on-screen keyboard.
-- **FR-013**: Leaving text mode returns the field or view to ink mode. Text mode never
-  changes the ink.
+- **FR-012**: A tap with a finger on a handwriting field opens that field's text mode; a tap
+  outside the field leaves it. The pen writes and never opens text mode. In text mode a
+  field shows its current text (FR-014) as an ordinary text field, edited with the system
+  on-screen keyboard; the bar above the keyboard holds the field's Neaten and Set in
+  Autograph switches (FR-011). Opening or leaving a field's text mode lays nothing out
+  again.
+- **FR-013**: Text mode for the whole view is turned on and off from the maintenance menu
+  (FR-053). Every handwriting field of the view then shows its current text as a text field;
+  the keyboard covers the lower part of the screen and the view is not laid out again.
+  Leaving text mode returns the field or view to ink mode. Text mode never changes the
+  ink.
 - **FR-014**: A field's current text is its reading, with the person's text-mode edits
   applied. When a field's text was changed in text mode, ink mode shows the field word by
   word: words the person did not change keep their ink, and words the person changed or
@@ -182,9 +208,18 @@ it says that it needs the handwriting service and why, and doesn't start.
 ### Times and dates
 
 - **FR-018**: Times and dates are never written by hand. They are set with widgets made for
-  them: drawing a block in an agenda creates an event over that time; dragging an event's
-  block moves it and dragging its edge changes its length, both in steps of 30 minutes;
-  date pickers set or change the day, week or month an entry belongs to.
+  them:
+  - drawing a block with the pen into an agenda's free time creates an event over that time.
+    The free time is a writing region with reading off (handwriting spec 005): what is drawn
+    there is taken as the block, never read as text;
+  - dragging an event's block moves it and dragging its edge changes its length, both in
+    steps of 30 minutes. During a drag the view refreshes once per step, only where the
+    block leaves and enters; a dragged block has no look of its own and looks as it will
+    when released;
+  - date pickers set or change the day, week or month an entry belongs to.
+
+  When an event's title needs more room than its block, the block grows into the free time
+  below it to hold the title; the event's start and end stay as set.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
   not set the entry's time or date. An event is timed (a start and an end, which may cross
   midnight; it shows on each day it covers) or all-day (one or more whole days).
@@ -222,9 +257,11 @@ it says that it needs the handwriting service and why, and doesn't start.
   deleting a template never creates, changes or deletes an entry.
 - **FR-027**: An entry that no widget of the current view shows stays stored, unchanged, and
   appears again in any view whose template shows it.
-- **FR-028**: A view whose period holds entries none of its widgets shows has a small count of
-  hidden entries per kind (and per slot for notes). Tapping it lists them, in ink, where the
-  person can open, move or delete each one.
+- **FR-028**: A view whose period holds entries none of its widgets shows names them in its
+  details popup (FR-051) per kind, and per slot for notes, each one tap from its
+  hidden-entries list. That list shows them in ink, where the person can open, move or
+  delete each one. A small number beside the (i) gives how many entries are hidden
+  (FR-052).
 - **FR-029**: A template has no coverage rules: it may show any part of its period's data,
   or none of a kind (a week template need not show all seven days).
 
@@ -256,37 +293,63 @@ it says that it needs the handwriting service and why, and doesn't start.
   - **week overview**: the days of a week with their events and to-dos in short;
   - **priorities**: a short ranked list for a period.
 - **FR-041**: Each widget declares which data it shows (which kinds of entry, of which
-  period relative to the view's period, and for free text which slot) and its minimum size
-  and preferred size.
+  period relative to the view's period, and for free text which slot) and its size:
+  - its width as a minimum, a preferred width, a weight and whether it takes leftover space;
+  - its height as a minimum, beyond which its content says how much it needs.
+
+  Each widget is either compressing or truncating. A compressing widget (the agenda) scales
+  its layout down towards its minimum, the agenda by narrowing its hour spacing; a
+  truncating widget (lists, notes) shows what fits and "+n more" (FR-048). A widget's
+  minimum includes room for that mark and for one empty row to write in.
 - **FR-042**: A widget may have settings that change what it shows (an agenda's first and
   last hour, a to-do list's period, a notes widget's slot), set per use in a template.
 
 ### Layout
 
-- **FR-043**: A template places widgets on a grid as an arrangement with relative weights,
-  not fixed sizes. Widgets give and take space according to their content: an empty to-do
-  list shrinks towards its minimum, a full agenda grows towards its preferred size, within
-  the weights the template sets.
+- **FR-043**: A template places widgets on a grid as an arrangement of rows and columns, not
+  fixed sizes. Space is shared along each axis in three steps: every widget gets its
+  minimum; then widgets grow towards what they need, by weight; then the rest goes to the
+  widgets that take leftover space. An empty to-do list stays near its minimum, a full
+  agenda grows towards its preferred size. A part of a template may be a row in one
+  orientation and a column in the other; the view follows the orientation of the screen.
 - **FR-044**: Every widget gets at least its minimum size. When the view can't give every
-  widget its minimum, the template editor says so before the template is saved.
+  widget its minimum, in either orientation, the template editor says so and by how much,
+  and doesn't save the template until it fits.
 - **FR-045**: In the template editor the person adds, removes, moves and resizes widgets
   and changes their weights, and sees the result with the data of a real period.
-- **FR-046**: Layout changes caused by content never move ink under the pen: while the pen
-  is writing in a widget, and until the person pauses, the layout stays as it is; it settles
-  afterwards, in one refresh.
+- **FR-046**: There is no relayout while the person writes: while the pen is down, and
+  until the person pauses after lifting it, the layout stays as it is. It settles once after
+  the pause, in one refresh of only the widgets whose size changed.
 - **FR-047**: Ink is anchored to its field. When a field changes size or place, its ink
   moves with it unscaled; a field never becomes smaller than the ink it holds, unless the
   widget is at its minimum (FR-048).
-- **FR-048**: When a widget's content doesn't fit its space, the widget shows what fits and
-  a mark that more exists, with the count where it is countable; a tap opens the widget's
-  whole content. Nothing is dropped and ink is never shrunk to fit.
+- **FR-048**: When a truncating widget's content doesn't fit its space, it shows what fits
+  and "+n more" with the count of what doesn't; a tap opens the widget's whole content. In
+  a full list, done entries give way first, then the oldest open ones; one empty row to
+  write in always stays. Nothing is dropped and ink is never shrunk to fit.
 
-### Search
+### Details, maintenance and search
 
-- **FR-050**: Search finds entries whose current text (FR-014) contains the words searched
-  for, across all periods. Results show the entries' ink with their dates; opening one shows
-  its period with that entry visible, or the period's hidden-entries list when its template
-  doesn't show it.
+- **FR-050**: Search is a field at the top of the details popup (FR-051). It finds entries
+  whose current text (FR-014) contains the words searched for, across all periods. Results
+  show the entries' ink with their dates; opening one shows its period with that entry
+  visible, or the period's hidden-entries list when its template doesn't show it.
+- **FR-051**: A quiet (i) at the end of the header bar opens the details popup of the
+  period shown. Under the search field it holds:
+  - the template in use and how this period got it (chosen for this period, from a range,
+    for the kind from a date onwards, or the kind's default);
+  - what the layout doesn't show, per kind, and per slot for notes, each one tap from its
+    hidden-entries list (FR-028).
+- **FR-052**: When entries of the period are hidden, a small number beside the (i) gives
+  their count; when none are, there is no number. The number is redrawn only when the count
+  changes.
+- **FR-053**: A cogwheel in the popup's head turns the popup, in its place, into the
+  maintenance menu:
+  - text mode for the whole view (FR-013);
+  - choose template and plan ahead (FR-030, FR-033);
+  - edit this template (FR-045);
+  - settings, including the global Neaten and Set in Autograph (FR-011);
+  - debug, in developer builds only.
 
 ### Look
 
@@ -294,13 +357,15 @@ it says that it needs the handwriting service and why, and doesn't start.
   and changes voice with it.
 - **FR-061**: Nothing animates. Input is answered in place, a period change or template
   switch is one refresh, and a change inside a widget refreshes only that widget's area.
-  Ink is drawn with the pen's normal latency.
+  Opening or closing the details popup, its cogwheel menu, a hidden-entries list or a
+  widget's whole content refreshes only that rectangle. Ink is drawn with the pen's normal
+  latency.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Writing regions (one region per handwriting field, its value, text mode) | consumed | 1, draft | `GlassineOS/handwriting` spec 005 (GlassineOS/handwriting#122) |
+| Writing regions (one region per handwriting field, its value, text mode; regions with reading off for drawn event blocks) | consumed | 1, draft | `GlassineOS/handwriting` spec 005 (GlassineOS/handwriting#122) |
 | Pen and service interfaces | consumed | 1 | `GlassineOS/handwriting` spec 004 |
 | Neatening and Autograph, the person's font | consumed | 1 | `GlassineOS/handwriting` spec 003 |
 | Interleaf and the voices, the drawing library | consumed | current | `GlassineOS/ui` |
@@ -321,13 +386,19 @@ Host level:
 - switching through every shipped template of a kind and back, and editing and deleting
   templates, leaves the stored entries byte-for-byte as before, for a period holding every
   kind of entry and several slots;
-- an entry shown by no widget is counted by the view's hidden count (FR-028), listed in ink
-  from it, and reappears with a template that shows it;
+- an entry shown by no widget is counted by the number beside the (i) (FR-052), named in
+  the details popup and listed in ink from it (FR-028, FR-051), and reappears with a
+  template that shows it;
 - recorded pen input for a field gives a stored reading, and search finds it;
 - a text-mode edit of one word shows that word in Autograph and every other word as ink;
-- the layout gives every widget at least its minimum; content past it raises the more mark;
+- the layout gives every widget at least its minimum, in both orientations; content past it
+  raises "+n more", done rows give way first, then the oldest open, and one empty row stays;
 - a layout change requested while a stroke is in progress is held until the pause;
-- dragging an event moves it in 30-minute steps;
+- dragging an event moves it in 30-minute steps, each step refreshing only the area the
+  block leaves and enters, and the release refreshes nothing more;
+- a long title in a short event grows the block into the free time below without changing
+  its times;
+- a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
 
@@ -359,39 +430,42 @@ Hardware: ink latency and refresh counts on a device, supervised.
   and its display opt-ins (FR-011); attached to its entry.
 - **Slot**: a name for a free-text place in a period, shared across templates.
 - **Habit**: a named habit the habit tracker lists; its marks belong to days.
-- **Template**: a named arrangement of widgets for one period kind, with weights and widget
-  settings.
+- **Template**: a named arrangement of widgets for one period kind in rows and columns, with
+  weights, widget settings and, per part, a kind for each orientation.
 - **Template choice**: which template a period, a range of periods or a kind from a date on
   uses; plus each kind's default.
-- **Widget**: a reusable part of a view with the data it shows and its minimum and preferred
-  size.
+- **Widget**: a reusable part of a view with the data it shows, its width (minimum,
+  preferred, weight, whether it takes leftover space), its minimum height, and whether it
+  compresses or truncates.
 
 ## Edge cases
 
-- **Switching to a template that shows some data nowhere**: the entries stay stored (FR-027)
-  and the hidden count names them per kind; tapping it lists them in ink (FR-028). Nothing
-  asks the person to confirm, since nothing is lost.
+- **Switching to a template that shows some data nowhere**: the entries stay stored (FR-027),
+  the number beside the (i) counts them and the details popup names them per kind; a tap
+  there lists them in ink (FR-028). Nothing asks the person to confirm, since nothing is
+  lost.
 - **A template edit removes the only widget showing a slot that has entries**: the edit is
   saved; every period using the template, past ones included, keeps its entries in that slot
-  and shows them in its hidden count. Adding a widget for that slot name again, to this or
+  and names them in its details popup. Adding a widget for that slot name again, to this or
   any template, shows them in place. The editor may say how many periods hold entries in the
   slot; it doesn't block the edit.
-- **A widget too small for its content**: it shows what fits and the more mark; a tap opens
-  all of it (FR-048). A template whose widgets can't all get their minimum can't be saved
-  without the person seeing that (FR-044).
+- **A widget too small for its content**: a truncating widget shows what fits and "+n more",
+  a compressing one scales down to its minimum; a tap on "+n more" opens all of it
+  (FR-048). A template whose widgets can't all get their minimum, in either orientation,
+  can't be saved (FR-044).
 - **Writing into a field that's being resized**: the layout holds while the pen writes and
   settles after the pause (FR-046); ink moves with its field and is never scaled (FR-047).
   Resizing in the template editor applies to the template, not to entries.
 - **Text mode on a whole view**: every handwriting field in the view becomes a text field;
   time and date widgets stay as they are. Ink with no reading (FR-009) stays visible and is
-  not editable as text. The keyboard takes space from the view in one refresh and gives it
-  back on leaving.
+  not editable as text. The keyboard covers the lower part of the screen; the view is not
+  laid out again.
 - **A person without a letter model**: readings and search work as for anyone. Autograph
   exists from the start, plain until it has learned the person's letters, so edited words
-  and "set in my font" use it as it is and follow it as it grows. Neatening offers what the
+  and Set in Autograph use it as it is and follow it as it grows. Neatening offers what the
   handwriting service can do without a letter model.
-- **A period with no template chosen**: it uses the default of its kind (FR-034); the person
-  can choose another from the view.
+- **A period with no template chosen**: it uses the default of its kind (FR-034), and the
+  details popup says so; the person can choose another from the maintenance menu.
 - **No handwriting service**: the planner doesn't start and says why (FR-001).
 - **An entry moved to another date**: its ink, reading and edits move with it (FR-021).
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
@@ -400,6 +474,11 @@ Hardware: ink latency and refresh counts on a device, supervised.
   the field has no text yet and is read again later; search can't find it until then.
 - **A to-do of a week that spans two months**: it belongs to the week; month views show it
   only if their template asks for the weeks' to-dos.
+- **Writing into the last empty row of a full list**: the layout holds until the pause; then
+  a done row, or if none the oldest open one, gives way to "+n more", and a new empty row
+  stays (FR-048).
+- **Turning the device**: parts of the template that change kind with the orientation do so;
+  entries and their ink are unchanged.
 - **Two widgets in one template showing the same slot**: both show the same entry; writing in
   either changes it.
 
@@ -436,4 +515,5 @@ Hardware: ink latency and refresh counts on a device, supervised.
   for next week in under 3 minutes without help.
 - **SC-006**: In ink mode no converted text is ever shown, except words the person edited
   in text mode or chose to set in their font.
-- **SC-007**: Every hidden entry of a period is reachable from its view in one tap.
+- **SC-007**: Every hidden entry of a period is reachable from its view in two taps: the
+  (i), then its kind or slot.
