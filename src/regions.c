@@ -34,6 +34,14 @@ static void place(const struct region_env *e, const struct vfield *f, double *r,
 	}
 }
 
+int regions_display(const struct store *s, const struct region *rg)
+{
+	if (rg->f.k != F_ENTRY && rg->f.k != F_NEW)
+		return 0; /* the free time, the editor's names: never set */
+	struct entry *me = rg->entry ? store_get((struct store *)s, rg->entry) : NULL;
+	return me ? field_autograph(s, &me->f) : s->autograph;
+}
+
 void regions_sync(struct region **list, const struct region_env *e, const struct region_ops *ops)
 {
 	const struct view *v = e->v;
@@ -64,7 +72,7 @@ void regions_sync(struct region **list, const struct region_env *e, const struct
 			snprintf(rg->mk.slot, sizeof rg->mk.slot, "%s", f->slot);
 			rg->x = rg->y = rg->w = rg->h = -1;
 			rg->cx = rg->cy = rg->cw = rg->ch = -1;
-			rg->layer = rg->reading = -1;
+			rg->layer = rg->reading = rg->display = -1;
 			rg->guide = -1;
 			rg->r = ops->make(ops->ud, rg);
 			if (!rg->r) {
@@ -90,6 +98,9 @@ void regions_sync(struct region **list, const struct region_env *e, const struct
 			ops->reading(rg->r, rg->reading = reading);
 		if (f->layer != rg->layer)
 			ops->layer(rg->r, rg->layer = f->layer);
+		int display = regions_display(e->s, rg);
+		if (display != rg->display)
+			ops->display(rg->r, rg->display = display);
 		double g = f->guide > 0 ? f->guide : 0, first = f->guide > 0 ? f->first : 0;
 		if (g != rg->guide || first != rg->first) {
 			if (g > 0 || rg->guide > 0)

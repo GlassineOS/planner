@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The writing regions follow the fields: after every layout each live region's rectangle,
  * clip, layer, guides and reading are the field's -- an event stretched or moved, the free
- * time around it, a template or view switch, the keyboard and the page's move, an overlay.
+ * time around it, a template or view switch, the keyboard and the page's move, an overlay --
+ * and its display follows Set in Autograph (the field's own, else the settings').
  * The handwriting calls are recorded (a fake region per field). */
 #include <math.h>
 #include <stdlib.h>
@@ -15,16 +16,16 @@
 struct fake {
 	double x, y, w, h;
 	int cx, cy, cw, ch;
-	int layer, reading;
+	int layer, reading, display;
 	double guide, first;
-	int nrect, nclip;
+	int nrect, nclip, ndisplay;
 };
 static int made, destroyed;
 
 static struct ghw_region *f_make(void *ud, struct region *rg)
 {
 	struct fake *f = calloc(1, sizeof *f);
-	f->layer = f->reading = -1;
+	f->layer = f->reading = f->display = -1;
 	made++;
 	return (struct ghw_region *)f;
 }
@@ -50,7 +51,12 @@ static void f_guides(struct ghw_region *r, double s, double first)
 }
 static void f_reading(struct ghw_region *r, int on) { ((struct fake *)r)->reading = on; }
 
-static const struct region_ops OPS = { f_make, f_destroy, f_rect, f_clip, f_layer, f_guides, f_reading, NULL };
+static void f_display(struct ghw_region *r, int set)
+{
+	((struct fake *)r)->display = set, ((struct fake *)r)->ndisplay++;
+}
+
+static const struct region_ops OPS = { f_make, f_destroy, f_rect, f_clip, f_layer, f_guides, f_reading, f_display, NULL };
 
 static bool cover_all;
 static bool covered(const struct vfield *f) { return cover_all; }
@@ -264,6 +270,41 @@ int main(void)
 	t.v.per = d, t.v.W = 702, t.v.H = 884;
 	relayout(&t);
 	CHECK_INT(mismatches(t.list, &t.v, t.v.H), 0);
+
+	/* Set in Autograph: off, every region shows ink; on in the settings, every entry's region
+	 * and every empty row's is set, once; a field's own Off wins over the settings' On, its
+	 * own On over Off; the free time is never set */
+	relayout(&t);
+	ef = event_field(&t, ev->id);
+	rg = find_region(t.list, ef);
+	k = (struct fake *)rg->r;
+	CHECK_INT(k->display, 0);
+	t.s.autograph = true;
+	relayout(&t);
+	CHECK_INT(k->display, 1);
+	int nd = k->ndisplay, sets = 0, frees = 0;
+	for (int i = 0; i < t.v.nf; i++) {
+		struct fake *x = (struct fake *)find_region(t.list, &t.v.f[i])->r;
+		if (t.v.f[i].k == F_ENTRY || t.v.f[i].k == F_NEW)
+			sets += x->display == 1;
+		else
+			frees += x->display == 0;
+	}
+	int entries = 0, others = 0;
+	for (int i = 0; i < t.v.nf; i++)
+		t.v.f[i].k == F_ENTRY || t.v.f[i].k == F_NEW ? entries++ : others++;
+	CHECK(entries > 1 && sets == entries && frees == others);
+	relayout(&t);
+	CHECK_INT(k->ndisplay, nd); /* unchanged: not sent again */
+	ev->f.autograph = SHOW_OFF;
+	relayout(&t);
+	CHECK_INT(k->display, 0);
+	t.s.autograph = false, ev->f.autograph = SHOW_ON;
+	relayout(&t);
+	CHECK_INT(k->display, 1);
+	ev->f.autograph = SHOW_FOLLOW;
+	relayout(&t);
+	CHECK_INT(k->display, 0);
 
 	/* a page with no fields: every region goes */
 	t.v.nf = 0;
