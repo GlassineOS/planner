@@ -866,7 +866,9 @@ static void w_minimonth(struct ctx *c, struct wbox *b)
 		int day = first + i, cell = lead + i;
 		double x = gx + cw * (cell % 7), yy = ry + rh * (cell / 7);
 		bool today = day == v->today;
-		if (v->per.kind == P_WEEK && day >= wk.start && day <= wk.start + 6)
+		/* the period on screen is shaded: the week in a week view, the day in a day view */
+		if ((v->per.kind == P_WEEK && day >= wk.start && day <= wk.start + 6) ||
+		    (v->per.kind == P_DAY && day == v->per.start))
 			box(c, x, yy, cw, rh, 0, 0, 0, L->highlight);
 		char t[4];
 		snprintf(t, sizeof t, "%d", i + 1);
