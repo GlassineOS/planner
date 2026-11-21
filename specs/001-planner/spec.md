@@ -61,8 +61,9 @@ title.
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
 **Given** that event, **When** the person drags the block down, **Then** it moves in steps of
-30 minutes with a dashed outline at its old place, the page refreshing once per step and
-only where the block moves, and lands at 14:30–15:30, its ink unchanged. **When** the person
+30 minutes with a dashed outline at its old place while the hour gutter shows the time it
+would land on, the page refreshing once per step and only where the block moves, and lands
+at 14:30–15:30, its ink unchanged. **When** the person
 drags its lower edge, **Then** its length changes in 30-minute steps. **When** the person
 opens its date and picks another day, **Then** the event moves there with its ink and its
 reading.
@@ -219,8 +220,10 @@ it says that it needs the handwriting service and why, and doesn't start.
   - dragging an event's block moves it and dragging its edge changes its length, both in
     steps of 30 minutes. During a drag the view refreshes once per step, only where the
     block leaves and enters. A dragged block looks as it will when released; the only
-    other mark during a drag is a dashed outline at the block's old place, and the release
-    refreshes only that place as the outline goes;
+    other marks during a drag are a dashed outline at the block's old place and, in the
+    agenda's hour gutter, the time the block would land on. That readout is part of the
+    gutter, not of the block's look; it changes with each step and goes on release. The
+    release refreshes only the old place, where the outline goes, and the gutter;
   - date pickers set or change the day, week or month an entry belongs to.
 
   When an event's title needs more room than its block, the title field grows past the
@@ -405,8 +408,9 @@ Host level:
   raises "+n more", done rows give way first, then the oldest open, and one empty row stays;
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
-  block leaves and enters, and the release refreshes only the old place, where the dashed
-  outline goes;
+  block leaves and enters and the hour gutter, which shows the time the block would land
+  on, and the release refreshes only the old place, where the dashed outline goes, and the
+  gutter;
 - a long title in a short event grows its title field into the free time below the block
   without changing the event's times; a title that no longer fits shrinks evenly down to
   the smallest readable size, then is cut at the block's edge, and a tap on a cut title
