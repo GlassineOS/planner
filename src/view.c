@@ -174,23 +174,11 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 	ink_(c, f, ox, oy, k);
 	TR_OUT(pl_tr_ink_ms, pl_tr_ink_n);
 }
-static void ink_(struct ctx *c, const struct field *f, double ox, double oy, double k)
+/* the strokes and set words of a field, with the source and transform cr has */
+static void ink_paths(cairo_t *cr, const struct field *f, double ox, double oy, double k, bool neat, bool ag)
 {
-	if (!c->paint || (!f->ns && !f->nw))
-		return;
-	cairo_t *cr = c->cr;
-	{ /* nothing to draw outside what is being repainted */
-		double r, b, cx0, cy0, cx1, cy1;
-		field_extent(f, &r, &b);
-		cairo_clip_extents(cr, &cx0, &cy0, &cx1, &cy1);
-		if (ox - 8 > cx1 || oy - 8 > cy1 || ox + r * k + 8 < cx0 || oy + b * k + 8 < cy0)
-			return;
-	}
-	cairo_save(cr);
-	col(cr, c->L->pen);
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-	bool neat = field_neaten(c->s, f), ag = field_autograph(c->s, f);
 	for (int i = 0; i < f->ns; i++) {
 		const struct pl_stroke *raw = &f->s[i], *s = raw;
 		if (neat && field_neat(f, raw->k) && field_neat(f, raw->k)->n)
@@ -263,6 +251,158 @@ static void ink_(struct ctx *c, const struct field *f, double ox, double oy, dou
 		}
 		cairo_fill(cr);
 	}
+	}
+
+/* Painted ink, kept: a field's ink as coverage (A8) in device pixels, for the field's version
+ * (field.gen), its scale, the display choices and the part of a device pixel it starts at.
+ * Painting it again is one mask instead of every stroke (a day's ink ~50 ms on the device).
+ * The mask gives the frame the strokes give, to rounding. */
+#define INK_CACHE 64
+#define INK_CACHE_BYTES (24 << 20)
+static struct inkc {
+	uint32_t gen;
+	float k, fx, fy, sc;
+	bool neat, ag;
+	cairo_surface_t *m;
+	int x, y; /* the mask's top left, against the field's origin in whole device pixels */
+	size_t bytes;
+	unsigned long used;
+} inkc[INK_CACHE];
+static unsigned long inkc_clock;
+static bool inkc_off;
+
+void view_ink_cache(bool on)
+{
+	inkc_off = !on;
+	for (int i = 0; i < INK_CACHE; i++) {
+		if (inkc[i].m)
+			cairo_surface_destroy(inkc[i].m);
+		inkc[i] = (struct inkc){ 0 };
+	}
+}
+
+static struct inkc *inkc_get(cairo_t *cr, const struct field *f, double fx, double fy, double sc, double k, bool neat,
+			     bool ag)
+{
+	struct inkc *e = NULL;
+	for (int i = 0; i < INK_CACHE && !e; i++)
+		if (inkc[i].m && inkc[i].gen == f->gen && inkc[i].k == (float)k && inkc[i].fx == (float)fx &&
+		    inkc[i].fy == (float)fy && inkc[i].sc == (float)sc && inkc[i].neat == neat && inkc[i].ag == ag)
+			e = &inkc[i];
+	if (e) {
+		e->used = ++inkc_clock;
+		return e;
+	}
+	/* what the strokes and set words cover, in field units, then in device pixels with a
+	 * stroke's half width around it */
+	double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+#define BOX(x, y) (x0 = fmin(x0, x), y0 = fmin(y0, y), x1 = fmax(x1, x), y1 = fmax(y1, y))
+	for (int i = 0; i < f->ns; i++) {
+		const struct pl_stroke *raw = &f->s[i], *s = raw;
+		if (neat && field_neat(f, raw->k) && field_neat(f, raw->k)->n)
+			s = field_neat(f, raw->k);
+		int wi = field_word_of(f, raw->k);
+		if (wi >= 0 && ag && f->w[wi].set && f->w[wi].npath)
+			continue;
+		double dx = wi >= 0 ? f->w[wi].dx : 0, dy = wi >= 0 ? f->w[wi].dy : 0;
+		for (int j = 0; j < s->n; j++)
+			BOX(s->pt[j].x + dx, s->pt[j].y + dy);
+	}
+	for (int i = 0; i < f->nw; i++) {
+		const struct pl_word *w = &f->w[i];
+		if (!w->set || !w->npath || (w->nks && !ag))
+			continue;
+		for (int j = 0; j < w->npath;) { /* the points and control points: curves stay inside them */
+			int op = (int)lroundf(w->path[j++]), np = op == 0 || op == 1 ? 2 : op == 2 ? 4 : op == 3 ? 6 : 0;
+			if (op == 4)
+				continue;
+			if (!np || j + np > w->npath)
+				break;
+			for (int q = 0; q < np; q += 2)
+				BOX(w->path[j + q], w->path[j + q + 1]);
+			j += np;
+		}
+	}
+#undef BOX
+	if (x1 < x0)
+		return NULL;
+	double pad = (PL_INK_WMAX / 2 + 1) * sc + 2, ks = k * sc;
+	int ix = (int)floor(fx + x0 * ks - pad), iy = (int)floor(fy + y0 * ks - pad);
+	int iw = (int)ceil(fx + x1 * ks + pad) - ix, ih = (int)ceil(fy + y1 * ks + pad) - iy;
+	if (iw <= 0 || ih <= 0 || (size_t)iw * ih > INK_CACHE_BYTES / 4)
+		return NULL;
+	cairo_surface_t *m = cairo_image_surface_create(CAIRO_FORMAT_A8, iw, ih);
+	cairo_t *mc = cairo_create(m);
+	cairo_set_antialias(mc, cairo_get_antialias(cr));
+	cairo_translate(mc, fx - ix, fy - iy);
+	cairo_scale(mc, sc, sc);
+	cairo_set_source_rgba(mc, 0, 0, 0, 1);
+	ink_paths(mc, f, 0, 0, k, neat, ag);
+	cairo_destroy(mc);
+	cairo_surface_flush(m);
+	size_t bytes = (size_t)cairo_image_surface_get_stride(m) * ih, total = bytes;
+	for (int i = 0; i < INK_CACHE; i++)
+		total += inkc[i].bytes;
+	/* the least recently painted go, for a free slot and the memory */
+	for (;;) {
+		struct inkc *lru = NULL, *free_ = NULL;
+		for (int i = 0; i < INK_CACHE; i++) {
+			if (!inkc[i].m)
+				free_ = free_ ? free_ : &inkc[i];
+			else if (!lru || inkc[i].used < lru->used)
+				lru = &inkc[i];
+		}
+		if (free_ && total <= INK_CACHE_BYTES) {
+			e = free_;
+			break;
+		}
+		if (!lru)
+			break;
+		total -= lru->bytes;
+		cairo_surface_destroy(lru->m);
+		*lru = (struct inkc){ 0 };
+	}
+	if (!e) {
+		cairo_surface_destroy(m);
+		return NULL;
+	}
+	*e = (struct inkc){ f->gen, (float)k, (float)fx, (float)fy, (float)sc, neat, ag, m, ix, iy, bytes, ++inkc_clock };
+	return e;
+}
+
+static void ink_(struct ctx *c, const struct field *f, double ox, double oy, double k)
+{
+	if (!c->paint || (!f->ns && !f->nw))
+		return;
+	cairo_t *cr = c->cr;
+	{ /* nothing to draw outside what is being repainted */
+		double r, b, cx0, cy0, cx1, cy1;
+		field_extent(f, &r, &b);
+		cairo_clip_extents(cr, &cx0, &cy0, &cx1, &cy1);
+		if (ox - 8 > cx1 || oy - 8 > cy1 || ox + r * k + 8 < cx0 || oy + b * k + 8 < cy0)
+			return;
+	}
+	bool neat = field_neaten(c->s, f), ag = field_autograph(c->s, f);
+	cairo_matrix_t mx;
+	cairo_get_matrix(cr, &mx);
+	if (!inkc_off && f->gen && mx.xy == 0 && mx.yx == 0 && mx.xx > 0 && mx.xx == mx.yy) {
+		/* where the field starts in device pixels: whole pixels, and the part of one */
+		double dx = mx.xx * ox + mx.x0, dy = mx.yy * oy + mx.y0;
+		double bx = floor(dx), by = floor(dy);
+		double fx = round((dx - bx) * 64) / 64, fy = round((dy - by) * 64) / 64;
+		struct inkc *e = inkc_get(cr, f, fx, fy, mx.xx, k, neat, ag);
+		if (e) {
+			cairo_save(cr);
+			cairo_identity_matrix(cr);
+			col(cr, c->L->pen);
+			cairo_mask_surface(cr, e->m, bx + e->x, by + e->y);
+			cairo_restore(cr);
+			return;
+		}
+	}
+	cairo_save(cr);
+	col(cr, c->L->pen);
+	ink_paths(cr, f, ox, oy, k, neat, ag);
 	cairo_restore(cr);
 }
 

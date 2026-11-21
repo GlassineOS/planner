@@ -206,6 +206,22 @@ int main(void)
 		CHECK_INT(field_word_of(&t->f, k1), 1);
 		CHECK_INT(field_word_of(&t->f, k2), -1);
 		struct pl_point np[2] = { { 3, 20, 0.5f, 0 }, { 30, 20, 0.5f, 4 } };
+		CHECK(field_set_neat(&t->f, k0, np, 2));
+		/* the region telling it all again (a restored field): nothing changes, its ink's
+		 * version neither */
+		uint32_t gen = t->f.gen;
+		CHECK(gen != 0);
+		CHECK(!field_set_neat(&t->f, k0, np, 2));
+		CHECK(field_value_same(&a, ent, "call the bank", w, 3, 0, "s", 1));
+		CHECK(!field_value_same(&a, ent, "call the bank", w, 3, 1, "s", 1)); /* a stroke gone */
+		CHECK(!field_value_same(&a, ent, "call the bonk", w, 3, 0, "s", 1));
+		CHECK(!field_value_same(&a, ent, "call the bank", w, 2, 0, "s", 1));
+		CHECK(!field_value_same(&a, ent, "call the bank", w, 3, 0, "t", 1));
+		CHECK_INT(t->f.gen, gen);
+		np[1].y = 21;
+		CHECK(field_set_neat(&t->f, k0, np, 2));
+		CHECK(t->f.gen != gen);
+		np[1].y = 20;
 		field_set_neat(&t->f, k0, np, 2);
 		t->f.neaten = SHOW_ON;
 		a.neaten = false;

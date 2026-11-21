@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The frame: a stroke repaints only its field, and the result is the frame a whole repaint
  * makes; the damage is the tiles that changed, inside that field. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,6 +20,52 @@ static void paint(void *ud, cairo_t *cr)
 {
 	struct page *p = ud;
 	view_paint(p->v, p->s, p->L, cr);
+}
+
+/* as the planner paints on the device: twice the size */
+static void paint2(void *ud, cairo_t *cr)
+{
+	cairo_scale(cr, 2, 2);
+	paint(ud, cr);
+}
+
+/* how far two frames differ: the pixels that differ at all, and the most one channel does */
+static void frame_delta(const uint32_t *a, const uint32_t *b, size_t n, size_t *px, int *most)
+{
+	*px = 0, *most = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (a[i] == b[i])
+			continue;
+		(*px)++;
+		for (int sh = 0; sh < 24; sh += 8) {
+			int d = abs((int)(a[i] >> sh & 255) - (int)(b[i] >> sh & 255));
+			*most = d > *most ? d : *most;
+		}
+	}
+}
+
+/* the page with painted ink kept, then painted anew: the same frame, to rounding */
+static void ink_kept(void (*pf)(void *, cairo_t *), struct page *pg, int W, int H)
+{
+	struct frect runs[64], box;
+	struct frame a = { 0 }, b = { 0 };
+	view_ink_cache(true);
+	frame_update(&a, W, H, NULL, pf, pg, runs, 64, &box); /* kept here */
+	frame_free(&a);
+	a = (struct frame){ 0 };
+	frame_update(&a, W, H, NULL, pf, pg, runs, 64, &box); /* painted from what was kept */
+	view_ink_cache(false);
+	frame_update(&b, W, H, NULL, pf, pg, runs, 64, &box);
+	size_t px;
+	int most;
+	frame_delta(a.cur, b.cur, (size_t)W * H, &px, &most);
+	if (getenv("T_VERBOSE"))
+		fprintf(stderr, "ink kept %dx%d: %zu pixels differ, by at most %d\n", W, H, px, most);
+	CHECK(px < (size_t)W * H / 2000);
+	CHECK(most <= 16);
+	view_ink_cache(true);
+	frame_free(&a);
+	frame_free(&b);
 }
 
 /* one pixel at (dot_x, dot_y), on white; dot_x < 0: none */
@@ -137,6 +184,31 @@ int main(void)
 			CHECK_INT(n, 1);
 		}
 		frame_free(&d);
+	}
+	/* painted ink kept: the frame the strokes make, at the planner's size and twice it, and a
+	 * field's new stroke shows where its kept ink was painted (no stale ink) */
+	{
+		int inked = 0;
+		for (int i = 0; i < v.nf; i++) {
+			struct entry *e = v.f[i].k == F_ENTRY ? store_get(&s, v.f[i].entry) : NULL;
+			inked += e && e->f.ns > 0;
+		}
+		CHECK(inked > 0);
+		ink_kept(paint, &pg, W, H);
+		ink_kept(paint2, &pg, W * 2, H * 2);
+		struct frame k = { 0 };
+		view_ink_cache(true);
+		frame_update(&k, W * 2, H * 2, NULL, paint2, &pg, runs, 64, &box);
+		struct entry *e = store_get(&s, fd->entry);
+		uint32_t gen = e->f.gen;
+		struct pl_point pt[2] = { { 40, 4, 0.7f, 0 }, { 90, 6, 0.7f, 30 } };
+		field_add_stroke(&e->f, 4242, pt, 2);
+		CHECK(e->f.gen != gen);
+		n = frame_update(&k, W * 2, H * 2, NULL, paint2, &pg, runs, 64, &box);
+		CHECK(n > 0);
+		CHECK(box.x <= (int)(fd->x + 40) * 2 && box.x + box.w >= (int)(fd->x + 90) * 2);
+		ink_kept(paint2, &pg, W * 2, H * 2);
+		frame_free(&k);
 	}
 	frame_free(&f);
 	frame_free(&ref);

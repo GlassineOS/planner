@@ -321,6 +321,13 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 				buf[o++] = (float)w[i].path[j];
 		}
 	}
+	if (field_value_same(&P.s, rg->entry, text, pw, pw ? (int)nw : 0, ngone, state, len)) {
+		/* nothing new (a restored region tells its value again): nothing to repaint */
+		PL_TR("value of %s unchanged", rg->name);
+		free(pw);
+		free(buf);
+		return;
+	}
 	bool emptied = field_value(&P.s, &rg->entry, text, pw, pw ? (int)nw : 0, gone, ngone, state, len);
 	free(pw);
 	free(buf);
@@ -345,8 +352,12 @@ static void on_neat(void *d, struct ghw_region *r, uint32_t k, int how, const st
 		return;
 	for (size_t i = 0; i < n; i++)
 		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
-	field_set_neat(&e->f, k, q, (int)n);
+	bool changed = field_set_neat(&e->f, k, q, (int)n);
 	free(q);
+	if (!changed) {
+		PL_TR("neat stroke %u of %s unchanged", k, rg->name);
+		return;
+	}
 	note(e->id);
 	repaint_region(rg, p, n);
 }
