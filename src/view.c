@@ -17,7 +17,7 @@ double pl_tr_text_ms, pl_tr_ink_ms, pl_tr_paint_ms, pl_tr_diff_ms;
 int pl_tr_text_n, pl_tr_ink_n;
 
 #define PAD 12          /* the page's inset */
-#define BAR 60          /* the header bar */
+#define BAR V_BAR       /* the header bar */
 #define GUTTER 40       /* the agenda's hour gutter */
 #define INK_SIZE 19.0   /* the size ink is written at in a field; smaller places scale it */
 #define TITLE_MIN 11.0  /* the smallest readable size a title shrinks to (the board's 11 px) */
