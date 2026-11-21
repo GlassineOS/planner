@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "settle.h"
 #include "trace.h"
 #include "regions.h"
 #include "glassine-ink-v1-client-protocol.h"
@@ -60,7 +61,8 @@ static struct {
 	struct ghw_pen *pen;
 	int out_scale;
 	int W, H;          /* logical */
-	bool configured, running, dirty, relayout;
+	bool configured, running, dirty;
+	struct settle st; /* the relayout asked for, and when it runs (FR-046) */
 	struct buffer buf[2];
 	struct frame fr;   /* the page as last drawn (the damage is what changed in it) */
 	struct frect part; /* a part to repaint (surface coordinates), when not all of it (dirty) */
@@ -226,7 +228,7 @@ static struct region *region_of(struct ghw_region *r)
 
 static void relayout_later(void)
 {
-	P.relayout = true;
+	P.st.asked = true;
 	P.dirty = true;
 }
 
@@ -479,7 +481,7 @@ static void draw(void)
 		memcpy(px + (size_t)y * bw + b->need.x, P.fr.cur + (size_t)y * bw + b->need.x, (size_t)b->need.w * 4);
 	b->need = (struct frect){ 0 };
 	PL_TR("frame %s%s: paint %.1f ms (text %.1f ms, %d; ink %.1f ms, %d), diff %.1f ms, copy %.1f ms; %d runs, box %dx%d+%d+%d",
-	      cp ? "part" : "whole", P.relayout ? " (relayout pending)" : "", pl_tr_paint_ms, pl_tr_text_ms, pl_tr_text_n,
+	      cp ? "part" : "whole", P.st.asked ? " (relayout pending)" : "", pl_tr_paint_ms, pl_tr_text_ms, pl_tr_text_n,
 	      pl_tr_ink_ms, pl_tr_ink_n, pl_tr_diff_ms, pl_trace ? pl_tr_now() - t1 : 0, n, box.w, box.h, box.x, box.y);
 	(void)t0;
 	wl_surface_set_buffer_scale(P.surf, S);
@@ -788,7 +790,7 @@ static void editor_relayout(void)
 	if (P.configured)
 		layout();
 	else
-		P.relayout = true;
+		P.st.asked = true;
 	P.dirty = true;
 }
 
@@ -1124,8 +1126,7 @@ static bool pop_ov(enum overlay o)
 static void tap(double x, double y, bool finger)
 {
 	struct view *v = &P.v;
-	bool held = P.relayout; /* a relayout the writing asked for keeps its pause */
-	P.relayout = false;
+	settle_tap_begin(&P.st); /* a relayout the writing asked for keeps its pause */
 	/* what is shown before: a popover opened or closed over the same page repaints only
 	 * its rectangle and the bar (FR-061), not the whole page */
 	enum overlay ov0 = v->ov;
@@ -1133,9 +1134,10 @@ static void tap(double x, double y, bool finger)
 	const struct tmpl *t0 = v->t;
 	bool plain0 = !v->tm && !v->search && !v->ed && !P.dirty;
 	double px = v->pop_x, py = v->pop_y, pw = v->pop_w, ph = v->pop_h;
+	bool held = P.st.held;
 	tap_(x, y, finger);
-	if (P.relayout && P.configured && !P.refused) {
-		P.relayout = false;
+	if (settle_tap_end(&P.st) && P.configured && !P.refused) {
+		settle_done(&P.st);
 		layout();
 		P.dirty = true;
 		if (plain0 && !held && ov0 != v->ov && pop_ov(ov0) && pop_ov(v->ov) && v->per.kind == per0.kind &&
@@ -1148,7 +1150,6 @@ static void tap(double x, double y, bool finger)
 				repaint(v->pop_x - 8, v->pop_y - 8, v->pop_w + 16, v->pop_h + 16);
 		}
 	}
-	P.relayout = P.relayout || held;
 }
 
 /* the free time field of the agenda an event is in: its minutes per px */
@@ -1738,14 +1739,13 @@ int main(int argc, char **argv)
 	watch_voice();
 
 	while (P.running && !stop) {
-		if (P.relayout && !(P.pen_down || now_ms() - P.pen_up_ms < PAUSE_MS) && P.configured) {
-			P.relayout = false;
+		if (P.configured && settle_due(&P.st, P.pen_down, now_ms(), P.pen_up_ms, PAUSE_MS)) {
 			PL_TR("relayout after the pen's pause");
 			if (!P.refused)
 				layout();
 			P.dirty = true;
-		} else if (P.relayout && P.configured && !P.refused && (P.drag || P.v.ov != OV_NONE || P.pen_up_ms == 0)) {
-			P.relayout = false;
+		} else if (P.st.asked && P.configured && !P.refused && (P.drag || P.v.ov != OV_NONE || P.pen_up_ms == 0)) {
+			P.st.asked = false;
 			layout();
 		}
 		if (P.tm_left_ms && !P.v.tm && !P.v.search && now_ms() - P.tm_left_ms > KBD_GONE_MS) {
@@ -1754,7 +1754,7 @@ int main(int argc, char **argv)
 			P.lay_h = 0, P.v.vis_h = 0, P.v.scroll = 0;
 			relayout_later();
 		}
-		if (P.find && !P.relayout) {
+		if (P.find && !P.st.asked) {
 			/* a search result whose view has no place for it: the hidden list (FR-050) */
 			uint32_t id = P.find;
 			P.find = 0;
@@ -1777,7 +1777,7 @@ int main(int argc, char **argv)
 		wl_display_flush(P.dpy);
 		struct pollfd fds[2] = { { wl_display_get_fd(P.dpy), POLLIN, 0 }, { P.ino, POLLIN, 0 } };
 		int timeout = -1;
-		if (P.relayout) {
+		if (P.st.asked) {
 			long long left = PAUSE_MS - (now_ms() - P.pen_up_ms);
 			timeout = left > 0 ? (int)left + 5 : 50;
 		}
