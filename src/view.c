@@ -2250,7 +2250,7 @@ static void usage(struct ctx *c, const struct tmpl *t, enum pkind k, char *o, si
 
 
 /* the scopes (planner.css .pl-scope): what a choice applies to */
-static double scopes(struct ctx *c, double y)
+static double scopes(struct ctx *c, double y, double *xend)
 {
 	const struct look *L = c->L;
 	struct view *v = c->v;
@@ -2287,6 +2287,8 @@ static double scopes(struct ctx *c, double y)
 		hit(c, x, y, w, 38, A_SCOPE, i, 0);
 		x += w + 8;
 	}
+	if (xend)
+		*xend = x - 8;
 	return y + 38 + 12;
 }
 
@@ -2369,22 +2371,30 @@ static void year(struct ctx *c)
 	double lh = ui_text_wrap(&mg, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
 	if (c->paint)
 		ui_text_wrap(&c->g, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
-	double y = scopes(c, 64 + lh + 12);
-	/* the year shown and its arrows (.pl-ynav): ‹ 2027 › */
+	double sx;
+	double y = scopes(c, 64 + lh + 12, &sx);
+	/* the year shown and its arrows (.pl-ynav): ‹ 2027 ›; turned, the days' year puts them at
+	 * the end of the scopes' row (.pl-ynav.is-in) when they fit there, so that the twelve
+	 * months and the choices below them fit the window */
+	const double NAVW = 40 + 8 + 56 + 8 + 40;
+	bool nav_in = k == P_DAY && W > v->H && sx + 14 + NAVW <= W - 16;
 	int yr, m0, d0;
 	day_to_ymd(v->per.start, &yr, &m0, &d0);
 	yr += v->year_off;
 	int ys = day_from_ymd(yr, 1, 1), ye = day_from_ymd(yr, 12, 31);
 	char yt[8];
 	snprintf(yt, sizeof yt, "%d", yr);
-	box(c, 16, y, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
-	icon(c, IC_CHEV_L, 36, y + 20, 20, L->ink);
-	hit(c, 16, y, 40, 40, A_YEAR_NAV, -1, 0);
-	box(c, W - 56, y, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
-	icon(c, IC_CHEV_R, W - 36, y + 20, 20, L->ink);
-	hit(c, W - 56, y, 40, 40, A_YEAR_NAV, 1, 0);
-	tc(c, &(UiFont){ L->mono, 600, 0, 14, 0, 0, UI_CASE_NONE }, yt, W / 2, y + 20, 1, 0, L->ink);
-	y += 40 + 10;
+	double ny = nav_in ? y - 12 - 38 - 1 : y, /* centred on the chips’ row */
+	        nx = nav_in ? W - 16 - NAVW : 16;
+	box(c, nx, ny, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
+	icon(c, IC_CHEV_L, nx + 20, ny + 20, 20, L->ink);
+	hit(c, nx, ny, 40, 40, A_YEAR_NAV, -1, 0);
+	box(c, W - 56, ny, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
+	icon(c, IC_CHEV_R, W - 36, ny + 20, 20, L->ink);
+	hit(c, W - 56, ny, 40, 40, A_YEAR_NAV, 1, 0);
+	tc(c, &(UiFont){ L->mono, 600, 0, 14, 0, 0, UI_CASE_NONE }, yt, (nx + W - 16) / 2, ny + 20, 1, 0, L->ink);
+	if (!nav_in)
+		y += 40 + 10;
 	/* the letters, in the picker's order, the same in every year: the default and every
 	 * template a choice of this kind names */
 	const struct tmpl *ts[64];
@@ -2429,14 +2439,16 @@ static void year(struct ctx *c)
 	}
 	y += 16 + 10;
 	if (k == P_DAY) {
-		/* the days (.pl-yd): a wall calendar, a month each, three to a row, Monday first */
+		/* the days (.pl-yd): a wall calendar, a month each, three to a row upright and four
+		 * turned, Monday first */
 		UiFont mf = { L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, hf9 = fam(L->mono, 500, 0, 9), df = fam(L->mono, 600, 0, 9);
 		static const char *HD[] = { "M", "T", "W", "T", "F", "S", "S" };
-		double colw = (W - 32 - 2 * 14) / 3, dw = (colw - 6 * 3) / 7;
-		for (int r = 0; r < 4; r++) {
+		int per = W > v->H ? 4 : 3;
+		double colw = (W - 32 - (per - 1) * 14) / per, dw = (colw - 6 * 3) / 7;
+		for (int r = 0; r < 12 / per; r++) {
 			double rowh = 0;
-			for (int q = 0; q < 3; q++) {
-				int m = r * 3 + q + 1;
+			for (int q = 0; q < per; q++) {
+				int m = r * per + q + 1;
 				double mx = 16 + q * (colw + 14), my = y;
 				char mn[4];
 				snprintf(mn, sizeof mn, "%.3s", MON[m - 1]);
@@ -2543,7 +2555,7 @@ static void picker(struct ctx *c)
 	hit(c, W - 16 - bw, 14, bw, 40, A_CLOSE, 0, 0);
 	UiFont lf = fam(L->text, 400, 0, 14);
 	tc(c, &lf, "Switching shows the same entries in another layout; nothing written changes.", 16, 82, 0, W - 32, L->soft);
-	double y = scopes(c, 102) + 10;
+	double y = scopes(c, 102, NULL) + 10;
 	const char *cur = store_template(c->s, v->per, NULL);
 	const struct tmpl *ct = tmpl_find(cur) ? tmpl_find(cur) : tmpl_default(v->per.kind);
 	const struct tmpl *ts[64];
