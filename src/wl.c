@@ -18,14 +18,18 @@
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include <glassine-handwriting.h>
 #include "tablet-v2-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
 #include "view.h"
 #include "xdg-shell-client-protocol.h"
 
 #define TILE 16
 #define PAUSE_MS 1200 /* the pause after the pen lifts before the page settles (FR-046) */
+#define KBD_GONE_MS 1500 /* text mode left with the keyboard still up: then the page fits what is left */
+#define TEXT_MAX 2048
 
 struct region {
 	struct ghw_region *r;
@@ -89,6 +93,32 @@ static struct {
 	int ed_drag;
 	double ed_x0, ed_y0;
 	int ino, inowd;
+	int lay_h;         /* the height the page is laid out for; the keyboard covers, never relays */
+	/* text mode (FR-012, FR-013): the text being edited, its caret; edits of the whole view's
+	 * other fields, sent to their regions when the view goes back to ink */
+	char tm_buf[TEXT_MAX];
+	int tm_cur;
+	struct tedit {
+		char name[96];
+		uint32_t entry;
+		char *text;
+		uint8_t neaten, autograph; /* the field's own choice made in text mode, SHOW_* */
+	} *tedits;
+	int nted;
+	long long tm_left_ms;
+	char q[256];       /* search */
+	uint32_t find;     /* a search result opened: shown in the hidden list when its view has no place for it */
+	/* the keyboard: the system's on-screen keyboard types through wl_keyboard; text-input-v3
+	 * says a text field has the focus, which brings it up */
+	struct zwp_text_input_manager_v3 *tim;
+	struct zwp_text_input_v3 *ti;
+	bool ti_in, ti_on;
+	struct wl_keyboard *kbd;
+	struct xkb_context *xkb;
+	struct xkb_keymap *km;
+	struct xkb_state *ks;
+	char *ti_commit;
+	uint32_t ti_before, ti_after;
 } P = { .out_scale = 1, .touch_id = -1, .running = true };
 
 static long long now_ms(void)
@@ -225,21 +255,62 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 	}
 	if (!rg || !rg->entry || !store_get(&P.s, rg->entry))
 		return;
-	if (field_value(&P.s, &rg->entry, text, gone, ngone, state, len))
+	/* the word layout: unchanged words' ink moved along the line, edited words set in
+	 * Autograph (FR-014) */
+	struct pl_word *pw = nw ? calloc(nw, sizeof *pw) : NULL;
+	float *buf = NULL;
+	size_t nf = 0;
+	for (size_t i = 0; pw && i < nw; i++)
+		nf += w[i].npath;
+	buf = nf ? malloc(nf * sizeof *buf) : NULL;
+	size_t o = 0;
+	for (size_t i = 0; pw && i < nw; i++) {
+		pw[i] = (struct pl_word){ w[i].start, w[i].length, w[i].set != 0, (uint32_t *)w[i].strokes, (int)w[i].nstrokes,
+			(float)w[i].dx, (float)w[i].dy, { (float)w[i].x, (float)w[i].y, (float)w[i].width, (float)w[i].height }, NULL, 0 };
+		if (buf && w[i].npath) {
+			pw[i].path = buf + o;
+			pw[i].npath = (int)w[i].npath;
+			for (size_t j = 0; j < w[i].npath; j++)
+				buf[o++] = (float)w[i].path[j];
+		}
+	}
+	bool emptied = field_value(&P.s, &rg->entry, text, pw, pw ? (int)nw : 0, gone, ngone, state, len);
+	free(pw);
+	free(buf);
+	P.dirty = true;
+	if (emptied)
 		relayout_later(); /* all its ink went (struck out): the row is empty again */
 	save();
 	if (ngone)
 		P.dirty = true;
 }
 
-static const struct ghw_region_listener region_listener = { .stroke = on_stroke, .value = on_value };
+/* a neatened stroke: shown while the field's Neaten is on (FR-011), the raw one kept */
+static void on_neat(void *d, struct ghw_region *r, uint32_t k, int how, const struct ghw_point *p, size_t n)
+{
+	struct region *rg = region_of(r);
+	struct entry *e = rg && rg->entry ? store_get(&P.s, rg->entry) : NULL;
+	if (!e || !n)
+		return;
+	struct pl_point *q = malloc(n * sizeof *q);
+	if (!q)
+		return;
+	for (size_t i = 0; i < n; i++)
+		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
+	field_set_neat(&e->f, k, q, (int)n);
+	free(q);
+	save();
+	P.dirty = true;
+}
+
+static const struct ghw_region_listener region_listener = { .stroke = on_stroke, .neat = on_neat, .value = on_value };
 
 static bool covered(const struct vfield *f)
 {
 	struct view *v = &P.v;
 	if (v->ed)
 		return false; /* the editor's only field is its name */
-	if (v->ov == OV_PICKER)
+	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS)
 		return true;
 	if (v->ov == OV_INFO || v->ov == OV_MENU)
 		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
@@ -314,6 +385,11 @@ static void sync_regions(void)
 			ghw_region_set_context(rg->r, GHW_NORMAL, 0, "");
 			ghw_region_set_reading(rg->r, f->k != F_FREE);
 			ghw_region_set_layer(rg->r, f->layer);
+			if (f->k != F_FREE) {
+				struct entry *ne = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
+				bool on = ne ? field_neaten(&P.s, &ne->f) : P.s.neaten;
+				ghw_region_set_neaten(rg->r, on, P.s.strength);
+			}
 			if (f->guide > 0)
 				ghw_region_set_guides(rg->r, f->guide, f->first);
 			rg->x = rg->y = rg->w = rg->h = -1;
@@ -332,11 +408,18 @@ static void sync_regions(void)
 		}
 		if (rg->entry && f->k == F_NEW)
 			rg->f.k = F_ENTRY;
-		double x = f->x, y = f->y, w = f->w, h = f->h;
+		double x = f->x, y = f->y - P.v.scroll, w = f->w, h = f->h;
 		if (covered(f))
 			x = y = w = h = 0;
 		if (x != rg->x || y != rg->y || w != rg->w || h != rg->h) {
 			ghw_region_set_rect(rg->r, x, y, w, h);
+			/* the part the keyboard and the page's move leave visible */
+			double bot = P.v.vis_h > 0 ? P.v.vis_h - 46 : P.H;
+			double cy0 = fmax(y, 0), cy1 = fmin(y + h, bot);
+			if (P.v.scroll > 0 || P.v.vis_h > 0)
+				ghw_region_set_clip(rg->r, (int)x, (int)cy0, (int)w, cy1 > cy0 ? (int)(cy1 - cy0) : 1);
+			else
+				ghw_region_set_clip(rg->r, 0, 0, 0, 0);
 			rg->x = x, rg->y = y, rg->w = w, rg->h = h;
 		}
 	}
@@ -359,7 +442,7 @@ static void layout(void)
 	cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
 	cairo_t *cr = cairo_create(s);
 	P.v.today = day_today();
-	P.v.W = P.W, P.v.H = P.H;
+	P.v.W = P.W, P.v.H = P.lay_h ? P.lay_h : P.H;
 	view_layout(&P.v, &P.s, &P.L, cr);
 	cairo_destroy(cr);
 	cairo_surface_destroy(s);
@@ -427,6 +510,277 @@ static void draw(void)
 		wl_surface_commit(P.surf);
 	}
 	P.dirty = false;
+}
+
+/* ---- text mode (FR-012 to FR-017) ---- */
+
+static struct region *region_for(const struct vfield *f)
+{
+	for (struct region *x = P.regions; x; x = x->next)
+		if (x->live && ((f->k == F_ENTRY && x->entry == f->entry) || !strcmp(x->name, f->name)))
+			return x;
+	return NULL;
+}
+
+static struct tedit *edit_of(const char *name)
+{
+	for (int i = 0; i < P.nted; i++)
+		if (!strcmp(P.tedits[i].name, name))
+			return &P.tedits[i];
+	return NULL;
+}
+
+/* a field's current text in the whole view: its edit, else its value */
+static const char *text_of(void *ud, const struct vfield *f)
+{
+	struct tedit *t = edit_of(f->name);
+	if (t)
+		return t->text;
+	struct entry *e = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
+	return e && e->f.value ? e->f.value : "";
+}
+
+static const struct vfield *focused(void)
+{
+	for (int i = 0; P.v.tm_name[0] && i < P.v.nf; i++)
+		if (!strcmp(P.v.f[i].name, P.v.tm_name))
+			return &P.v.f[i];
+	return NULL;
+}
+
+/* the text field with the focus, told to the system's text input (the keyboard comes up) */
+static void ti_state(void)
+{
+	if (!P.ti || !P.ti_in)
+		return;
+	bool want = (P.v.tm && P.v.tm_name[0]) || P.v.search || P.v.tm == 2;
+	if (!want) {
+		if (P.ti_on) {
+			zwp_text_input_v3_disable(P.ti);
+			zwp_text_input_v3_commit(P.ti);
+			P.ti_on = false;
+		}
+		return;
+	}
+	if (!P.ti_on)
+		zwp_text_input_v3_enable(P.ti);
+	P.ti_on = true;
+	const char *t = P.v.search ? P.q : P.tm_buf;
+	int cur = P.v.search ? (int)strlen(P.q) : P.tm_cur;
+	zwp_text_input_v3_set_surrounding_text(P.ti, t, cur, cur);
+	zwp_text_input_v3_set_text_change_cause(P.ti, ZWP_TEXT_INPUT_V3_CHANGE_CAUSE_OTHER);
+	zwp_text_input_v3_set_content_type(P.ti, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+	const struct vfield *f = focused();
+	if (f)
+		zwp_text_input_v3_set_cursor_rectangle(P.ti, (int)f->x, (int)(f->y - P.v.scroll), (int)f->w, (int)fmin(f->h, 40));
+	zwp_text_input_v3_commit(P.ti);
+}
+
+/* the focused field's text into the edits */
+static void keep_edit(void)
+{
+	const struct vfield *f = focused();
+	if (!f)
+		return;
+	struct tedit *t = edit_of(f->name);
+	if (!t) {
+		struct tedit *n = realloc(P.tedits, (P.nted + 1) * sizeof *n);
+		if (!n)
+			return;
+		P.tedits = n;
+		t = &P.tedits[P.nted++];
+		memset(t, 0, sizeof *t);
+		snprintf(t->name, sizeof t->name, "%s", f->name);
+		t->entry = f->k == F_ENTRY ? f->entry : 0;
+	}
+	free(t->text);
+	t->text = strdup(P.tm_buf);
+	struct entry *e = t->entry ? store_get(&P.s, t->entry) : NULL;
+	bool n = e ? field_neaten(&P.s, &e->f) : P.s.neaten, a = e ? field_autograph(&P.s, &e->f) : P.s.autograph;
+	if (P.v.tm_neaten != n || t->neaten)
+		t->neaten = P.v.tm_neaten ? SHOW_ON : SHOW_OFF;
+	if (P.v.tm_autograph != a || t->autograph)
+		t->autograph = P.v.tm_autograph ? SHOW_ON : SHOW_OFF;
+}
+
+static void tm_focus(const struct vfield *f)
+{
+	keep_edit();
+	P.v.tm_name[0] = 0;
+	if (f) {
+		snprintf(P.v.tm_name, sizeof P.v.tm_name, "%s", f->name);
+		struct tedit *t = edit_of(f->name);
+		snprintf(P.tm_buf, sizeof P.tm_buf, "%s", t ? t->text : text_of(NULL, f));
+		P.tm_cur = (int)strlen(P.tm_buf);
+		struct entry *e = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
+		P.v.tm_neaten = t && t->neaten ? t->neaten == SHOW_ON : e ? field_neaten(&P.s, &e->f) : P.s.neaten;
+		P.v.tm_autograph = t && t->autograph ? t->autograph == SHOW_ON : e ? field_autograph(&P.s, &e->f) : P.s.autograph;
+		double sc = view_scroll_to(&P.v, f);
+		if (sc != P.v.scroll) {
+			P.v.scroll = sc;
+			layout(); /* the regions follow the page's move; nothing is laid out again */
+		}
+	}
+	P.v.tm_text = P.tm_buf;
+	P.v.tm_cur = P.tm_cur;
+	P.dirty = true;
+	ti_state();
+}
+
+/* a finger tap on a field (f), or the cog's text mode for the whole view (f NULL) */
+static void tm_open(const struct vfield *f)
+{
+	P.tm_left_ms = 0;
+	P.v.tm = f ? 1 : 2;
+	P.v.text_of = text_of;
+	if (f) {
+		struct region *rg = region_for(f);
+		if (rg)
+			ghw_region_set_mode(rg->r, GHW_MODE_TEXT);
+	} else if (P.pen)
+		ghw_pen_set_mode(P.pen, GHW_MODE_TEXT);
+	tm_focus(f);
+	layout(); /* the bar's targets; every field stays where it is */
+}
+
+/* back to ink: each changed text goes to its region before the region goes back to ink mode
+ * (its value comes back with the changed words set in Autograph); unchanged words keep their
+ * ink. An empty row with text typed into it becomes its entry */
+static void tm_close(void)
+{
+	if (!P.v.tm)
+		return;
+	keep_edit();
+	bool made = false;
+	for (int i = 0; i < P.nted; i++) {
+		struct tedit *t = &P.tedits[i];
+		struct region *rg = NULL;
+		for (struct region *x = P.regions; x && !rg; x = x->next)
+			if ((t->entry && x->entry == t->entry) || !strcmp(x->name, t->name))
+				rg = x;
+		struct entry *e = t->entry ? store_get(&P.s, t->entry) : NULL;
+		const char *was = e && e->f.value ? e->f.value : "";
+		bool changed = strcmp(was, t->text) != 0;
+		if (!e && rg && *t->text) {
+			e = field_typed(&P.s, &rg->entry, &rg->mk, t->text);
+			made = e != NULL;
+		} else if (e && changed)
+			field_typed(&P.s, &t->entry, NULL, t->text); /* search finds it at once */
+		if (e) {
+			if (t->neaten)
+				e->f.neaten = t->neaten;
+			if (t->autograph)
+				e->f.autograph = t->autograph;
+		}
+		if (rg && changed)
+			ghw_region_edit(rg->r, t->text);
+		if (rg && e)
+			ghw_region_set_neaten(rg->r, field_neaten(&P.s, &e->f), P.s.strength);
+		free(t->text);
+	}
+	free(P.tedits);
+	P.tedits = NULL;
+	P.nted = 0;
+	if (P.v.tm == 2 && P.pen)
+		ghw_pen_set_mode(P.pen, GHW_MODE_INK);
+	else
+		for (struct region *x = P.regions; x; x = x->next)
+			ghw_region_set_mode(x->r, GHW_MODE_INK);
+	save();
+	P.v.tm = 0;
+	P.v.tm_name[0] = 0;
+	P.v.text_of = NULL;
+	P.tm_left_ms = P.v.vis_h > 0 ? now_ms() : 0;
+	ti_state();
+	layout(); /* the bar's targets go; every field stays where it is */
+	P.dirty = true;
+	if (made)
+		relayout_later(); /* a new row to write in */
+}
+
+/* the keyboard's text into the field (or the search) with the focus; before and after are
+ * characters to delete around the caret, or bytes (an input method's) */
+static void type_text_(const char *in, int before, int after, bool bytes)
+{
+	char *b = P.v.search ? P.q : P.tm_buf;
+	size_t cap = P.v.search ? sizeof P.q : sizeof P.tm_buf;
+	int cur = P.v.search ? (int)strlen(P.q) : P.tm_cur, len = (int)strlen(b);
+	if (!P.v.search && !focused())
+		return;
+	if (bytes) { /* bytes to whole characters */
+		int nb = 0, k = cur;
+		while (k > 0 && cur - k < before) {
+			k--;
+			if (((unsigned char)b[k] & 0xc0) != 0x80)
+				nb++;
+		}
+		int na = 0;
+		k = cur;
+		while (k < len && k - cur < after) {
+			k++;
+			if (k == len || ((unsigned char)b[k] & 0xc0) != 0x80)
+				na++;
+		}
+		before = nb, after = na;
+	}
+	/* delete before and after the caret, whole UTF-8 characters */
+	while (before-- > 0 && cur > 0) {
+		int k = cur - 1;
+		while (k > 0 && ((unsigned char)b[k] & 0xc0) == 0x80)
+			k--;
+		memmove(b + k, b + cur, len - cur + 1);
+		len -= cur - k;
+		cur = k;
+	}
+	while (after-- > 0 && cur < len) {
+		int k = cur + 1;
+		while (k < len && ((unsigned char)b[k] & 0xc0) == 0x80)
+			k++;
+		memmove(b + cur, b + k, len - k + 1);
+		len -= k - cur;
+	}
+	size_t n = in ? strlen(in) : 0;
+	if (n && len + n < cap) {
+		memmove(b + cur + n, b + cur, len - cur + 1);
+		memcpy(b + cur, in, n);
+		cur += (int)n;
+	}
+	if (P.v.search) {
+		P.v.q = P.q;
+		P.v.q_cur = cur;
+		layout(); /* the results' targets */
+	} else {
+		P.tm_cur = cur;
+		P.v.tm_text = P.tm_buf;
+		P.v.tm_cur = cur;
+	}
+	P.dirty = true;
+	ti_state();
+}
+
+static void type_text(const char *in, int before, int after)
+{
+	type_text_(in, before, after, false);
+}
+
+static void caret_move(int d)
+{
+	if (P.v.search || !focused())
+		return;
+	int len = (int)strlen(P.tm_buf), c = P.tm_cur;
+	if (d == -2)
+		c = 0;
+	else if (d == 2)
+		c = len;
+	else if (d < 0 && c > 0)
+		for (c--; c > 0 && ((unsigned char)P.tm_buf[c] & 0xc0) == 0x80; c--)
+			;
+	else if (d > 0 && c < len)
+		for (c++; c < len && ((unsigned char)P.tm_buf[c] & 0xc0) == 0x80; c++)
+			;
+	P.tm_cur = P.v.tm_cur = c;
+	P.dirty = true;
+	ti_state();
 }
 
 /* ---- actions ---- */
@@ -508,6 +862,30 @@ static void tap(double x, double y, bool finger)
 		return;
 	}
 	const struct vhit *h = view_hit(v, x, y);
+	if (v->tm) {
+		/* text mode: the bar's switches and its way out; in the whole view a finger moves
+		 * the focus from field to field; a tap anywhere else goes back to ink (one field) */
+		const struct vfield *f = finger ? view_field_at(v, x, y) : NULL;
+		if (h && h->fixed) {
+			if (h->a == A_TM_NEATEN)
+				v->tm_neaten = !v->tm_neaten, P.dirty = true;
+			else if (h->a == A_TM_AUTOGRAPH)
+				v->tm_autograph = !v->tm_autograph, P.dirty = true;
+			else if (h->a == A_TM_DONE)
+				tm_close();
+			return;
+		}
+		if (v->tm == 2 && f)
+			tm_focus(f);
+		else if (!(v->tm == 1 && f && !strcmp(f->name, v->tm_name)))
+			tm_close();
+		return;
+	}
+	if (v->search && !(h && (h->a == A_SEARCH || h->a == A_RESULT))) {
+		v->search = false; /* the search ends: its words stay for the next */
+		ti_state();
+		P.dirty = true;
+	}
 	bool in_pop = (v->ov == OV_INFO || v->ov == OV_MENU) && x >= v->pop_x && x < v->pop_x + v->pop_w && y >= v->pop_y &&
 		      y < v->pop_y + v->pop_h;
 	if ((v->ov == OV_INFO || v->ov == OV_MENU) && !in_pop && !(h && h->a == A_INFO)) {
@@ -516,10 +894,64 @@ static void tap(double x, double y, bool finger)
 		relayout_later();
 		return;
 	}
+	if (finger && !v->ed && v->ov == OV_NONE && (!h || h->a == A_EVENT || h->a == A_NONE)) {
+		/* a finger tap on a field opens its text mode (FR-012); the pen never does. A cut
+		 * title shows whole first (FR-018) */
+		if (h && h->a == A_EVENT && h->arg) {
+			v->title = h->id;
+			v->ov = OV_TITLE;
+			relayout_later();
+			return;
+		}
+		const struct vfield *f = view_field_at(v, x, y);
+		if (f) {
+			tm_open(f);
+			return;
+		}
+	}
 	if (!h)
 		return;
 	struct entry *e;
 	switch (h->a) {
+	case A_SETTINGS: v->ov = OV_SETTINGS; relayout_later(); break;
+	case A_TEXTMODE: /* the cog's text mode for the whole view (FR-013) */
+		v->ov = OV_NONE;
+		tm_open(NULL);
+		relayout_later();
+		break;
+	case A_SET_NEATEN:
+	case A_SET_AUTOGRAPH:
+	case A_SET_STRENGTH:
+		if (h->a == A_SET_NEATEN)
+			P.s.neaten = !P.s.neaten;
+		else if (h->a == A_SET_AUTOGRAPH)
+			P.s.autograph = !P.s.autograph;
+		else /* Light, Medium, Strong */
+			P.s.strength = P.s.strength < 0.5f ? 0.65f : P.s.strength < 0.85f ? 1.0f : 0.35f;
+		store_save_settings(&P.s);
+		for (struct region *x = P.regions; x; x = x->next) {
+			struct entry *re = x->entry ? store_get(&P.s, x->entry) : NULL;
+			if (x->f.k != F_FREE)
+				ghw_region_set_neaten(x->r, re ? field_neaten(&P.s, &re->f) : P.s.neaten, P.s.strength);
+		}
+		P.dirty = true;
+		relayout_later();
+		break;
+	case A_SEARCH:
+		v->search = true;
+		v->q = P.q;
+		v->q_cur = (int)strlen(P.q);
+		ti_state();
+		relayout_later();
+		break;
+	case A_RESULT:
+		if ((e = store_get(&P.s, h->id))) {
+			v->search = false;
+			ti_state();
+			P.find = e->id;
+			choose_period(e->per);
+		}
+		break;
 	case A_VIEW: choose_period(period_of(h->arg, v->per.kind == (enum pkind)h->arg ? v->per.start : (v->today >= v->per.start && v->today <= period_end(v->per) ? v->today : v->per.start))); break;
 	case A_PREV: choose_period(period_step(v->per, -1)); break;
 	case A_NEXT: choose_period(period_step(v->per, 1)); break;
@@ -616,7 +1048,7 @@ static void finger_down(double x, double y)
 		P.ed_x0 = x, P.ed_y0 = y;
 		return;
 	}
-	const struct vhit *h = P.refused ? NULL : view_hit(&P.v, x, y);
+	const struct vhit *h = P.refused || P.v.tm ? NULL : view_hit(&P.v, x, y);
 	if (h && h->a == A_EVENT && P.v.ov == OV_NONE) {
 		struct entry *e = store_get(&P.s, h->id);
 		double mpp = mpp_of(h->id);
@@ -775,6 +1207,7 @@ static const struct wl_pointer_listener pointer_listener = { p_enter, p_leave, p
 /* the pen: its strokes reach the fields through the regions; here only a tap outside them */
 static bool in_field(double x, double y)
 {
+	y += P.v.scroll;
 	for (int i = 0; i < P.v.nf; i++) {
 		const struct vfield *f = &P.v.f[i];
 		if (x >= f->x && x < f->x + f->w && y >= f->y && y < f->y + f->h && !covered(f))
@@ -796,6 +1229,8 @@ static void tt_out(void *d, struct zwp_tablet_tool_v2 *t) {}
 static double down_x, down_y;
 static void tt_down(void *d, struct zwp_tablet_tool_v2 *t, uint32_t s)
 {
+	if (P.v.tm)
+		tm_close(); /* writing with the pen goes back to ink (FR-012) */
 	P.tool_down = true;
 	P.pen_down = true;
 	down_x = P.tool_x, down_y = P.tool_y;
@@ -805,7 +1240,7 @@ static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 	P.tool_down = false;
 	P.pen_down = false;
 	P.pen_up_ms = now_ms();
-	if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y))
+	if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
 		tap(down_x, down_y, false);
 }
 static void tt_motion(void *d, struct zwp_tablet_tool_v2 *t, wl_fixed_t x, wl_fixed_t y)
@@ -832,8 +1267,112 @@ static void ts_tool(void *d, struct zwp_tablet_seat_v2 *s, struct zwp_tablet_too
 static void ts_pad(void *d, struct zwp_tablet_seat_v2 *s, struct zwp_tablet_pad_v2 *p) {}
 static const struct zwp_tablet_seat_v2_listener tseat_listener = { ts_tablet, ts_tool, ts_pad };
 
+
+/* ---- the keyboard: the system's on-screen keyboard (wl_keyboard), an input method
+ * (text-input-v3) ---- */
+
+static void k_keymap(void *d, struct wl_keyboard *k, uint32_t fmt, int32_t fd, uint32_t size)
+{
+	if (fmt != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+		close(fd);
+		return;
+	}
+	char *m = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	close(fd);
+	if (m == MAP_FAILED)
+		return;
+	if (!P.xkb)
+		P.xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	struct xkb_keymap *km = P.xkb ? xkb_keymap_new_from_string(P.xkb, m, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
+	munmap(m, size);
+	if (!km)
+		return;
+	if (P.ks)
+		xkb_state_unref(P.ks);
+	if (P.km)
+		xkb_keymap_unref(P.km);
+	P.km = km;
+	P.ks = xkb_state_new(km);
+}
+static void k_enter(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf, struct wl_array *keys) {}
+static void k_leave(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf) {}
+static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t time, uint32_t key, uint32_t st)
+{
+	if (st != WL_KEYBOARD_KEY_STATE_PRESSED || !P.ks || !(P.v.tm || P.v.search))
+		return;
+	xkb_keysym_t sym = xkb_state_key_get_one_sym(P.ks, key + 8);
+	const struct vfield *f = focused();
+	switch (sym) {
+	case XKB_KEY_BackSpace: type_text(NULL, 1, 0); return;
+	case XKB_KEY_Delete: type_text(NULL, 0, 1); return;
+	case XKB_KEY_Left: caret_move(-1); return;
+	case XKB_KEY_Right: caret_move(1); return;
+	case XKB_KEY_Home: caret_move(-2); return;
+	case XKB_KEY_End: caret_move(2); return;
+	case XKB_KEY_Escape:
+		if (P.v.search)
+			P.v.search = false, ti_state(), P.dirty = true;
+		else
+			tm_close();
+		return;
+	case XKB_KEY_Return:
+	case XKB_KEY_KP_Enter:
+		if (!P.v.search && f && f->h > 48)
+			type_text("\n", 0, 0); /* a note's next line */
+		else if (!P.v.search)
+			tm_close();
+		return;
+	default: break;
+	}
+	char u[16];
+	if (xkb_state_key_get_utf8(P.ks, key + 8, u, sizeof u) > 0 && (unsigned char)u[0] >= 0x20 && u[0] != 0x7f)
+		type_text(u, 0, 0);
+}
+static void k_mods(void *d, struct wl_keyboard *k, uint32_t s, uint32_t dep, uint32_t lat, uint32_t lock, uint32_t grp)
+{
+	if (P.ks)
+		xkb_state_update_mask(P.ks, dep, lat, lock, 0, 0, grp);
+}
+static void k_repeat(void *d, struct wl_keyboard *k, int32_t rate, int32_t delay) {}
+static const struct wl_keyboard_listener kbd_listener = { k_keymap, k_enter, k_leave, k_key, k_mods, k_repeat };
+
+static void ti_enter(void *d, struct zwp_text_input_v3 *t, struct wl_surface *s)
+{
+	P.ti_in = true;
+	P.ti_on = false;
+	ti_state();
+}
+static void ti_leave(void *d, struct zwp_text_input_v3 *t, struct wl_surface *s)
+{
+	P.ti_in = false;
+	P.ti_on = false;
+}
+static void ti_preedit(void *d, struct zwp_text_input_v3 *t, const char *text, int32_t b, int32_t e) {}
+static void ti_commit(void *d, struct zwp_text_input_v3 *t, const char *text)
+{
+	free(P.ti_commit);
+	P.ti_commit = text ? strdup(text) : NULL;
+}
+static void ti_delete(void *d, struct zwp_text_input_v3 *t, uint32_t before, uint32_t after)
+{
+	P.ti_before = before, P.ti_after = after;
+}
+static void ti_done(void *d, struct zwp_text_input_v3 *t, uint32_t serial)
+{
+	if (P.ti_commit || P.ti_before || P.ti_after)
+		type_text_(P.ti_commit, (int)P.ti_before, (int)P.ti_after, true);
+	free(P.ti_commit);
+	P.ti_commit = NULL;
+	P.ti_before = P.ti_after = 0;
+}
+static const struct zwp_text_input_v3_listener ti_listener = { ti_enter, ti_leave, ti_preedit, ti_commit, ti_delete, ti_done };
+
 static void seat_caps(void *d, struct wl_seat *s, uint32_t caps)
 {
+	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !P.kbd) {
+		P.kbd = wl_seat_get_keyboard(s);
+		wl_keyboard_add_listener(P.kbd, &kbd_listener, NULL);
+	}
 	if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !P.touch) {
 		P.touch = wl_seat_get_touch(s);
 		wl_touch_add_listener(P.touch, &touch_listener, NULL);
@@ -876,6 +1415,29 @@ static const struct xdg_surface_listener xs_listener = { xs_configure };
 
 static void top_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h, struct wl_array *st)
 {
+	/* the keyboard came up over a text field: the window is shorter, the page is not laid
+	 * out again; it moves up by whole rows to keep the field above the keyboard (FR-013) */
+	int lh = P.lay_h ? P.lay_h : P.H;
+	if (w > 0 && h > 0 && w == P.W && h < lh && (P.v.tm || P.v.search || P.lay_h)) {
+		P.lay_h = lh;
+		P.v.vis_h = h;
+		P.H = h;
+		free(P.last);
+		P.last = NULL;
+		const struct vfield *f = focused();
+		P.v.scroll = f ? view_scroll_to(&P.v, f) : P.v.scroll;
+		if (P.configured)
+			layout();
+		P.dirty = true;
+		return;
+	}
+	if (w > 0 && h > 0 && P.lay_h && w == P.W && h >= P.lay_h) {
+		/* the keyboard went: all of the page again */
+		P.lay_h = 0;
+		P.v.vis_h = 0;
+		P.v.scroll = 0;
+		P.tm_left_ms = 0;
+	}
 	if (w > 0 && h > 0 && (w != P.W || h != P.H)) {
 		P.W = w, P.H = h;
 		free(P.last);
@@ -907,6 +1469,8 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *if
 		wl_output_add_listener(o, &output_listener, NULL);
 	} else if (!strcmp(iface, zwp_tablet_manager_v2_interface.name))
 		P.tabman = wl_registry_bind(r, name, &zwp_tablet_manager_v2_interface, 1);
+	else if (!strcmp(iface, zwp_text_input_manager_v3_interface.name))
+		P.tim = wl_registry_bind(r, name, &zwp_text_input_manager_v3_interface, 1);
 }
 static void global_remove(void *d, struct wl_registry *r, uint32_t name) {}
 static const struct wl_registry_listener reg_listener = { global, global_remove };
@@ -994,6 +1558,10 @@ int main(int argc, char **argv)
 		struct zwp_tablet_seat_v2 *ts = zwp_tablet_manager_v2_get_tablet_seat(P.tabman, P.seat);
 		zwp_tablet_seat_v2_add_listener(ts, &tseat_listener, NULL);
 	}
+	if (P.tim && P.seat) {
+		P.ti = zwp_text_input_manager_v3_get_text_input(P.tim, P.seat);
+		zwp_text_input_v3_add_listener(P.ti, &ti_listener, NULL);
+	}
 	wl_display_roundtrip(P.dpy);
 	P.surf = wl_compositor_create_surface(P.comp);
 	P.pen = ghw_pen_new(P.dpy, P.surf, &pen_listener, NULL);
@@ -1021,6 +1589,28 @@ int main(int argc, char **argv)
 			P.relayout = false;
 			layout();
 		}
+		if (P.tm_left_ms && !P.v.tm && !P.v.search && now_ms() - P.tm_left_ms > KBD_GONE_MS) {
+			/* text mode was left and the keyboard stays: the page fits what is left */
+			P.tm_left_ms = 0;
+			P.lay_h = 0, P.v.vis_h = 0, P.v.scroll = 0;
+			relayout_later();
+		}
+		if (P.find && !P.relayout) {
+			/* a search result whose view has no place for it: the hidden list (FR-050) */
+			uint32_t id = P.find;
+			P.find = 0;
+			struct entry *fe = store_get(&P.s, id);
+			if (fe && !view_field_of(&P.v, id) && fe->kind != E_MARK) {
+				struct hidden_group g[16];
+				int ng = view_hidden(&P.s, P.v.t, P.v.per, g, 16);
+				for (int i = 0; i < ng; i++)
+					if (g[i].kind == fe->kind && !strcmp(g[i].slot, fe->slot)) {
+						P.v.ov = OV_HIDDEN;
+						P.v.hidden_kind = i;
+						relayout_later();
+					}
+			}
+		}
 		if (P.dirty)
 			draw();
 		wl_display_flush(P.dpy);
@@ -1029,6 +1619,11 @@ int main(int argc, char **argv)
 		if (P.relayout) {
 			long long left = PAUSE_MS - (now_ms() - P.pen_up_ms);
 			timeout = left > 0 ? (int)left + 5 : 50;
+		}
+		if (P.tm_left_ms) {
+			long long left = KBD_GONE_MS - (now_ms() - P.tm_left_ms);
+			int t2 = left > 0 ? (int)left + 5 : 5;
+			timeout = timeout < 0 || t2 < timeout ? t2 : timeout;
 		}
 		if (wl_display_prepare_read(P.dpy) < 0) {
 			wl_display_dispatch_pending(P.dpy);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The planner's data (store.h). */
 #include <ctype.h>
+#include <math.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -125,18 +126,110 @@ int pkind_parse(const char *s)
 
 /* ---- fields ---- */
 
+static void words_free(struct field *f)
+{
+	for (int i = 0; i < f->nw; i++) {
+		free(f->w[i].ks);
+		free(f->w[i].path);
+	}
+	free(f->w);
+	f->w = NULL;
+	f->nw = 0;
+}
+
 void field_free(struct field *f)
 {
 	for (int i = 0; i < f->ns; i++)
 		free(f->s[i].pt);
 	free(f->s);
+	for (int i = 0; i < f->nneat; i++)
+		free(f->neat[i].pt);
+	free(f->neat);
+	words_free(f);
 	free(f->value);
 	free(f->state);
 	memset(f, 0, sizeof *f);
 }
 
+static void strokes_remove(struct pl_stroke *s, int *n, uint32_t k)
+{
+	for (int i = 0; i < *n; i++)
+		if (s[i].k == k) {
+			free(s[i].pt);
+			memmove(&s[i], &s[i + 1], (*n - i - 1) * sizeof *s);
+			(*n)--;
+			return;
+		}
+}
+
+void field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n)
+{
+	strokes_remove(f->neat, &f->nneat, k);
+	struct pl_stroke *s = realloc(f->neat, (f->nneat + 1) * sizeof *s);
+	if (!s)
+		return;
+	f->neat = s;
+	struct pl_point *c = malloc((n ? n : 1) * sizeof *c);
+	if (!c)
+		return;
+	memcpy(c, p, n * sizeof *c);
+	f->neat[f->nneat++] = (struct pl_stroke){ k, c, n };
+}
+
+const struct pl_stroke *field_neat(const struct field *f, uint32_t k)
+{
+	for (int i = 0; i < f->nneat; i++)
+		if (f->neat[i].k == k)
+			return &f->neat[i];
+	return NULL;
+}
+
+void field_set_words(struct field *f, const struct pl_word *w, int n)
+{
+	words_free(f);
+	if (n <= 0)
+		return;
+	f->w = calloc(n, sizeof *f->w);
+	if (!f->w)
+		return;
+	for (int i = 0; i < n; i++) {
+		struct pl_word *d = &f->w[f->nw++];
+		*d = w[i];
+		d->ks = w[i].nks ? malloc(w[i].nks * sizeof *d->ks) : NULL;
+		d->path = w[i].npath ? malloc(w[i].npath * sizeof *d->path) : NULL;
+		if (d->ks)
+			memcpy(d->ks, w[i].ks, w[i].nks * sizeof *d->ks);
+		else
+			d->nks = 0;
+		if (d->path)
+			memcpy(d->path, w[i].path, w[i].npath * sizeof *d->path);
+		else
+			d->npath = 0;
+	}
+}
+
+int field_word_of(const struct field *f, uint32_t k)
+{
+	for (int i = 0; i < f->nw; i++)
+		for (int j = 0; j < f->w[i].nks; j++)
+			if (f->w[i].ks[j] == k)
+				return i;
+	return -1;
+}
+
+bool field_neaten(const struct store *s, const struct field *f)
+{
+	return f->neaten == SHOW_FOLLOW ? s->neaten : f->neaten == SHOW_ON;
+}
+
+bool field_autograph(const struct store *s, const struct field *f)
+{
+	return f->autograph == SHOW_FOLLOW ? s->autograph : f->autograph == SHOW_ON;
+}
+
 void field_remove_stroke(struct field *f, uint32_t k)
 {
+	strokes_remove(f->neat, &f->nneat, k);
 	for (int i = 0; i < f->ns; i++)
 		if (f->s[i].k == k) {
 			free(f->s[i].pt);
@@ -184,12 +277,20 @@ bool field_empty(const struct field *f)
 void field_extent(const struct field *f, double *right, double *bottom)
 {
 	double r = 0, b = 0;
-	for (int i = 0; i < f->ns; i++)
+	for (int i = 0; i < f->ns; i++) {
+		int wi = field_word_of(f, f->s[i].k);
+		double dx = wi >= 0 ? f->w[wi].dx : 0, dy = wi >= 0 ? f->w[wi].dy : 0;
 		for (int j = 0; j < f->s[i].n; j++) {
-			if (f->s[i].pt[j].x > r)
-				r = f->s[i].pt[j].x;
-			if (f->s[i].pt[j].y > b)
-				b = f->s[i].pt[j].y;
+			if (f->s[i].pt[j].x + dx > r)
+				r = f->s[i].pt[j].x + dx;
+			if (f->s[i].pt[j].y + dy > b)
+				b = f->s[i].pt[j].y + dy;
+		}
+	}
+	for (int i = 0; i < f->nw; i++)
+		if (f->w[i].set) {
+			r = fmax(r, f->w[i].box[0] + f->w[i].box[2]);
+			b = fmax(b, f->w[i].box[1] + f->w[i].box[3]);
 		}
 	*right = r;
 	*bottom = b;
@@ -201,6 +302,7 @@ void store_init(struct store *s, const char *dir)
 {
 	memset(s, 0, sizeof *s);
 	s->next_id = 1;
+	s->strength = 0.65f;
 	s->dir = dir ? strdup(dir) : NULL;
 }
 
@@ -356,8 +458,8 @@ struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake 
 	return e;
 }
 
-bool field_value(struct store *s, uint32_t *entry, const char *text, const uint32_t *gone, size_t ngone,
-		 const void *state, size_t len)
+bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,
+		 const uint32_t *gone, size_t ngone, const void *state, size_t len)
 {
 	struct entry *e = *entry ? store_get(s, *entry) : NULL;
 	if (!e)
@@ -365,6 +467,7 @@ bool field_value(struct store *s, uint32_t *entry, const char *text, const uint3
 	for (size_t i = 0; i < ngone; i++)
 		field_remove_stroke(&e->f, gone[i]);
 	field_set_value(&e->f, text, state, len);
+	field_set_words(&e->f, w, nw);
 	if (e->kind != E_EVENT && field_empty(&e->f)) {
 		/* all its ink went (struck out): the row is empty again, not an entry */
 		store_delete(s, e->id);
@@ -372,6 +475,24 @@ bool field_value(struct store *s, uint32_t *entry, const char *text, const uint3
 		return true;
 	}
 	return false;
+}
+
+struct entry *field_typed(struct store *s, uint32_t *entry, const struct fmake *mk, const char *text)
+{
+	struct entry *e = *entry ? store_get(s, *entry) : NULL;
+	if (!e) {
+		if (!mk || mk->kind >= E_NKINDS || !text || !*text)
+			return NULL;
+		e = store_add(s, mk->kind, mk->per);
+		if (!e)
+			return NULL;
+		e->rank = mk->rank;
+		snprintf(e->slot, sizeof e->slot, "%s", mk->slot);
+		*entry = e->id;
+	}
+	free(e->f.value);
+	e->f.value = *text ? strdup(text) : NULL;
+	return e;
 }
 
 /* ---- template choices ---- */
@@ -554,17 +675,17 @@ static void put32(struct buf *b, uint32_t v)
 	bput(b, (char *)c, 4);
 }
 
-static char *ink_b64(const struct field *f)
+static char *ink_b64(const struct pl_stroke *ss, int ns)
 {
 	struct buf b = { 0 };
 	put32(&b, 1); /* format */
-	put32(&b, f->ns);
-	for (int i = 0; i < f->ns; i++) {
-		put32(&b, f->s[i].k);
-		put32(&b, f->s[i].n);
-		uint32_t t0 = f->s[i].n ? f->s[i].pt[0].t : 0;
-		for (int j = 0; j < f->s[i].n; j++) {
-			const struct pl_point *p = &f->s[i].pt[j];
+	put32(&b, ns);
+	for (int i = 0; i < ns; i++) {
+		put32(&b, ss[i].k);
+		put32(&b, ss[i].n);
+		uint32_t t0 = ss[i].n ? ss[i].pt[0].t : 0;
+		for (int j = 0; j < ss[i].n; j++) {
+			const struct pl_point *p = &ss[i].pt[j];
 			put32(&b, (uint32_t)(int32_t)(p->x * 64));
 			put32(&b, (uint32_t)(int32_t)(p->y * 64));
 			put32(&b, (uint32_t)(p->p * 255 + 0.5) | (p->t - t0) << 8);
@@ -586,7 +707,7 @@ static uint32_t get32(const uint8_t *d, size_t len, size_t *o)
 	return v;
 }
 
-static void ink_parse(struct field *f, const char *s)
+static void ink_parse(struct field *f, const char *s, bool neat)
 {
 	size_t len, o = 0;
 	uint8_t *d = unb64(s, &len);
@@ -608,9 +729,87 @@ static void ink_parse(struct field *f, const char *s)
 				p[j].p = (pt & 0xff) / 255.0f;
 				p[j].t = pt >> 8;
 			}
-			field_add_stroke(f, k, p, n);
+			if (neat)
+				field_set_neat(f, k, p, n);
+			else
+				field_add_stroke(f, k, p, n);
 			free(p);
 		}
+	}
+	free(d);
+}
+
+/* the word layout: per word start, length, set, its strokes, dx, dy, box (1/64 px) and path
+ * (numbers x 64), little-endian */
+static char *words_b64(const struct field *f)
+{
+	struct buf b = { 0 };
+	put32(&b, 1);
+	put32(&b, f->nw);
+	for (int i = 0; i < f->nw; i++) {
+		const struct pl_word *w = &f->w[i];
+		put32(&b, w->start);
+		put32(&b, w->len);
+		put32(&b, w->set);
+		put32(&b, w->nks);
+		for (int j = 0; j < w->nks; j++)
+			put32(&b, w->ks[j]);
+		put32(&b, (uint32_t)(int32_t)lroundf(w->dx * 64));
+		put32(&b, (uint32_t)(int32_t)lroundf(w->dy * 64));
+		for (int j = 0; j < 4; j++)
+			put32(&b, (uint32_t)(int32_t)lroundf(w->box[j] * 64));
+		put32(&b, w->npath);
+		for (int j = 0; j < w->npath; j++)
+			put32(&b, (uint32_t)(int32_t)lroundf(w->path[j] * 64));
+	}
+	char *s = b64((uint8_t *)b.p, b.n);
+	free(b.p);
+	return s;
+}
+
+static void words_parse(struct field *f, const char *s)
+{
+	size_t len, o = 0;
+	uint8_t *d = unb64(s, &len);
+	if (!d)
+		return;
+	if (get32(d, len, &o) == 1) {
+		uint32_t n = get32(d, len, &o);
+		struct pl_word *w = n && n < len ? calloc(n, sizeof *w) : NULL;
+		uint32_t got = 0;
+		for (; w && got < n && o <= len; got++) {
+			struct pl_word *x = &w[got];
+			x->start = get32(d, len, &o);
+			x->len = get32(d, len, &o);
+			x->set = get32(d, len, &o) != 0;
+			uint32_t nk = get32(d, len, &o);
+			if (o > len || nk > (len - o) / 4)
+				break;
+			x->ks = malloc((nk ? nk : 1) * sizeof *x->ks);
+			x->nks = nk;
+			for (uint32_t j = 0; j < nk; j++)
+				x->ks[j] = get32(d, len, &o);
+			x->dx = (int32_t)get32(d, len, &o) / 64.0f;
+			x->dy = (int32_t)get32(d, len, &o) / 64.0f;
+			for (int j = 0; j < 4; j++)
+				x->box[j] = (int32_t)get32(d, len, &o) / 64.0f;
+			uint32_t np = get32(d, len, &o);
+			if (o > len || np > (len - o) / 4) {
+				free(x->ks);
+				break;
+			}
+			x->path = malloc((np ? np : 1) * sizeof *x->path);
+			x->npath = np;
+			for (uint32_t j = 0; j < np; j++)
+				x->path[j] = (int32_t)get32(d, len, &o) / 64.0f;
+		}
+		if (w && got == n)
+			field_set_words(f, w, n);
+		for (uint32_t i = 0; w && i < got; i++) {
+			free(w[i].ks);
+			free(w[i].path);
+		}
+		free(w);
 	}
 	free(d);
 }
@@ -677,9 +876,24 @@ static void entry_ics(struct buf *b, const struct entry *x)
 		free(t);
 	}
 	if (x->f.ns) {
-		char *t = ink_b64(&x->f);
+		char *t = ink_b64(x->f.s, x->f.ns);
 		line(b, "X-GLASSINE-INK", t);
 		free(t);
+	}
+	if (x->f.nneat) {
+		char *t = ink_b64(x->f.neat, x->f.nneat);
+		line(b, "X-GLASSINE-NEAT", t);
+		free(t);
+	}
+	if (x->f.nw) {
+		char *t = words_b64(&x->f);
+		line(b, "X-GLASSINE-WORDS", t);
+		free(t);
+	}
+	if (x->f.neaten || x->f.autograph) {
+		static const char *SH[] = { "follow", "off", "on" };
+		snprintf(v, sizeof v, "neaten=%s;autograph=%s", SH[x->f.neaten % 3], SH[x->f.autograph % 3]);
+		line(b, "X-GLASSINE-SHOW", v);
 	}
 	if (x->f.state_len) {
 		char *t = b64(x->f.state, x->f.state_len);
@@ -838,7 +1052,16 @@ bool store_parse_ics(struct store *s, const char *text)
 			free(x->f.value);
 			x->f.value = unesc_text(val);
 		} else if (!strcmp(name, "X-GLASSINE-INK"))
-			ink_parse(&x->f, val);
+			ink_parse(&x->f, val, false);
+		else if (!strcmp(name, "X-GLASSINE-NEAT"))
+			ink_parse(&x->f, val, true);
+		else if (!strcmp(name, "X-GLASSINE-WORDS"))
+			words_parse(&x->f, val);
+		else if (!strcmp(name, "X-GLASSINE-SHOW")) {
+			const char *a = strstr(val, "neaten="), *g = strstr(val, "autograph=");
+			x->f.neaten = a ? (!strncmp(a + 7, "on", 2) ? SHOW_ON : !strncmp(a + 7, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
+			x->f.autograph = g ? (!strncmp(g + 10, "on", 2) ? SHOW_ON : !strncmp(g + 10, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
+		}
 		else if (!strcmp(name, "X-GLASSINE-STATE")) {
 			free(x->f.state);
 			x->f.state = unb64(val, &x->f.state_len);
@@ -1038,6 +1261,17 @@ bool store_save_choices(struct store *s)
 	return ok;
 }
 
+bool store_save_settings(struct store *s)
+{
+	if (!s->dir)
+		return true;
+	mkdirs(s->dir);
+	char b[256];
+	snprintf(b, sizeof b, "# the planner's settings\nneaten %d\nstrength %.2f\nautograph %d\n", s->neaten, s->strength,
+		 s->autograph);
+	return write_atomic(s->dir, "settings.conf", b);
+}
+
 bool store_load(struct store *s)
 {
 	if (!s->dir)
@@ -1052,6 +1286,20 @@ bool store_load(struct store *s)
 		free(t);
 		if (have)
 			seen_set(s, &st);
+	}
+	t = read_all(s->dir, "settings.conf");
+	if (t) {
+		for (char *l = strtok(t, "\n"); l; l = strtok(NULL, "\n")) {
+			int v;
+			float f;
+			if (sscanf(l, "neaten %d", &v) == 1)
+				s->neaten = v != 0;
+			else if (sscanf(l, "autograph %d", &v) == 1)
+				s->autograph = v != 0;
+			else if (sscanf(l, "strength %f", &f) == 1 && f >= 0 && f <= 1)
+				s->strength = f;
+		}
+		free(t);
 	}
 	t = read_all(s->dir, "templates.conf");
 	if (t) {
