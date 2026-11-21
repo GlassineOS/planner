@@ -293,28 +293,53 @@ static struct inkc *inkc_get(cairo_t *cr, const struct field *f, double fx, doub
 		e->used = ++inkc_clock;
 		return e;
 	}
-	/* drawn once into a recording, for its extent, then into the mask */
-	cairo_surface_t *rec = cairo_recording_surface_create(CAIRO_CONTENT_ALPHA, NULL);
-	cairo_t *rc = cairo_create(rec);
-	cairo_set_antialias(rc, cairo_get_antialias(cr));
-	cairo_translate(rc, fx, fy);
-	cairo_scale(rc, sc, sc);
-	cairo_set_source_rgba(rc, 0, 0, 0, 1);
-	ink_paths(rc, f, 0, 0, k, neat, ag);
-	cairo_destroy(rc);
-	double x0, y0, w, h;
-	cairo_recording_surface_ink_extents(rec, &x0, &y0, &w, &h);
-	int ix = (int)floor(x0), iy = (int)floor(y0), iw = (int)ceil(x0 + w) - ix, ih = (int)ceil(y0 + h) - iy;
-	if (iw <= 0 || ih <= 0 || (size_t)iw * ih > INK_CACHE_BYTES / 4) {
-		cairo_surface_destroy(rec);
-		return NULL;
+	/* what the strokes and set words cover, in field units, then in device pixels with a
+	 * stroke's half width around it */
+	double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+#define BOX(x, y) (x0 = fmin(x0, x), y0 = fmin(y0, y), x1 = fmax(x1, x), y1 = fmax(y1, y))
+	for (int i = 0; i < f->ns; i++) {
+		const struct pl_stroke *raw = &f->s[i], *s = raw;
+		if (neat && field_neat(f, raw->k) && field_neat(f, raw->k)->n)
+			s = field_neat(f, raw->k);
+		int wi = field_word_of(f, raw->k);
+		if (wi >= 0 && ag && f->w[wi].set && f->w[wi].npath)
+			continue;
+		double dx = wi >= 0 ? f->w[wi].dx : 0, dy = wi >= 0 ? f->w[wi].dy : 0;
+		for (int j = 0; j < s->n; j++)
+			BOX(s->pt[j].x + dx, s->pt[j].y + dy);
 	}
+	for (int i = 0; i < f->nw; i++) {
+		const struct pl_word *w = &f->w[i];
+		if (!w->set || !w->npath || (w->nks && !ag))
+			continue;
+		for (int j = 0; j < w->npath;) { /* the points and control points: curves stay inside them */
+			int op = (int)lroundf(w->path[j++]), np = op == 0 || op == 1 ? 2 : op == 2 ? 4 : op == 3 ? 6 : 0;
+			if (op == 4)
+				continue;
+			if (!np || j + np > w->npath)
+				break;
+			for (int q = 0; q < np; q += 2)
+				BOX(w->path[j + q], w->path[j + q + 1]);
+			j += np;
+		}
+	}
+#undef BOX
+	if (x1 < x0)
+		return NULL;
+	double pad = (PL_INK_WMAX / 2 + 1) * sc + 2, ks = k * sc;
+	int ix = (int)floor(fx + x0 * ks - pad), iy = (int)floor(fy + y0 * ks - pad);
+	int iw = (int)ceil(fx + x1 * ks + pad) - ix, ih = (int)ceil(fy + y1 * ks + pad) - iy;
+	if (iw <= 0 || ih <= 0 || (size_t)iw * ih > INK_CACHE_BYTES / 4)
+		return NULL;
 	cairo_surface_t *m = cairo_image_surface_create(CAIRO_FORMAT_A8, iw, ih);
 	cairo_t *mc = cairo_create(m);
-	cairo_set_source_surface(mc, rec, -ix, -iy);
-	cairo_paint(mc);
+	cairo_set_antialias(mc, cairo_get_antialias(cr));
+	cairo_translate(mc, fx - ix, fy - iy);
+	cairo_scale(mc, sc, sc);
+	cairo_set_source_rgba(mc, 0, 0, 0, 1);
+	ink_paths(mc, f, 0, 0, k, neat, ag);
 	cairo_destroy(mc);
-	cairo_surface_destroy(rec);
+	cairo_surface_flush(m);
 	size_t bytes = (size_t)cairo_image_surface_get_stride(m) * ih, total = bytes;
 	for (int i = 0; i < INK_CACHE; i++)
 		total += inkc[i].bytes;
