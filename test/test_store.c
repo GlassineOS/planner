@@ -235,6 +235,75 @@ int main(void)
 		store_free(&a), store_free(&b), store_free(&c);
 	}
 
+	/* the journal (FR-024): each stroke kept at once without writing planner.ics, the file
+	 * written later; nothing another instance journalled is lost */
+	{
+		char jd[] = "out/test-journal-XXXXXX";
+		CHECK(mkdtemp(jd) != NULL);
+		const int DEAD = 0x3ffffff0; /* an instance that ended without saving */
+		struct pl_point pt[2] = { { 3, 20, 0.5f, 0 }, { 30, 22, 0.5f, 8 } };
+		struct fmake mk = { E_TODO, period_of(P_DAY, d), "", 1 };
+		/* a stroke noted, then a crash: the next start has it, the latest note winning */
+		struct store a;
+		store_init(&a, jd);
+		a.jid = DEAD;
+		uint32_t ea = 0;
+		CHECK(field_stroke(&a, &ea, &mk, 0, pt, 2) != NULL);
+		CHECK(store_note(&a, ea));
+		CHECK(field_stroke(&a, &ea, &mk, 1, pt, 2) != NULL);
+		CHECK(store_note(&a, ea));
+		char jp[256];
+		snprintf(jp, sizeof jp, "%s/planner.ics", jd);
+		CHECK(access(jp, F_OK) != 0); /* planner.ics not written per stroke */
+		struct store b;
+		store_init(&b, jd);
+		b.jid = (int)getppid(); /* another instance, running */
+		store_load(&b);
+		CHECK_INT(b.n, 1);
+		CHECK(b.n == 1 && b.e[0]->f.ns == 2 && !strcmp(b.e[0]->uid, store_get(&a, ea)->uid));
+		/* b's save folds the ended instance's journal into planner.ics and removes it */
+		CHECK(store_save(&b));
+		snprintf(jp, sizeof jp, "%s/planner.journal.%d", jd, DEAD);
+		CHECK(access(jp, F_OK) != 0);
+		struct store c;
+		store_init(&c, jd);
+		store_load(&c);
+		CHECK(c.n == 1 && c.e[0]->f.ns == 2);
+		store_free(&c);
+		/* a running instance's stroke on an entry another one knows: that one's save keeps
+		 * the journal, so the stroke survives the running one crashing later */
+		struct store r;
+		store_init(&r, jd);
+		r.jid = (int)getpid();
+		store_load(&r);
+		uint32_t er = r.e[0]->id;
+		CHECK(field_stroke(&r, &er, NULL, 7, pt, 2) != NULL);
+		CHECK(store_note(&r, er));
+		CHECK(store_save(&b)); /* b knows the entry: its two strokes */
+		snprintf(jp, sizeof jp, "%s/planner.journal.%d", jd, (int)getpid());
+		CHECK(access(jp, F_OK) == 0);
+		store_init(&c, jd);
+		store_load(&c);
+		CHECK(c.n == 1 && c.e[0]->f.ns == 3);
+		store_free(&c);
+		/* its own save folds it in and removes its journal */
+		CHECK(store_save(&r));
+		CHECK(access(jp, F_OK) != 0);
+		/* a struck-out row: the emptied entry is deleted and saved whole (a delete is never
+		 * journalled), so a restart doesn't bring it back */
+		uint32_t gone[3] = { 0, 1, 7 };
+		CHECK(field_value(&r, &er, "", NULL, 0, gone, 3, NULL, 0));
+		CHECK(er == 0);
+		CHECK(store_save(&r));
+		store_init(&c, jd);
+		store_load(&c);
+		CHECK_INT(c.n, 0);
+		store_free(&c);
+		store_free(&r);
+		store_free(&a);
+		store_free(&b);
+	}
+
 	/* the solver gives every widget at least its minimum, upright and turned */
 	for (int i = 0; i < pl_ntemplates; i++)
 		for (int land = 0; land < 2; land++) {

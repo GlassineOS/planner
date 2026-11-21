@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <math.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,15 +22,17 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <glassine-handwriting.h>
+#include "frame.h"
+#include "glassine-ink-v1-client-protocol.h"
 #include "tablet-v2-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
 #include "view.h"
 #include "xdg-shell-client-protocol.h"
 
-#define TILE 16
 #define PAUSE_MS 1200 /* the pause after the pen lifts before the page settles (FR-046) */
 #define KBD_GONE_MS 1500 /* text mode left with the keyboard still up: then the page fits what is left */
 #define TEXT_MAX 2048
+#define SAVE_IDLE_MS 4000 /* strokes are journalled at once; planner.ics written after this idle time */
 
 struct region {
 	struct ghw_region *r;
@@ -48,7 +51,8 @@ struct buffer {
 	void *px;
 	size_t size;
 	int w, h;
-	bool busy;
+	bool busy, fresh;
+	struct frect need; /* where it differs from the frame (changed since it was last on screen) */
 };
 
 static struct {
@@ -68,8 +72,11 @@ static struct {
 	int W, H;          /* logical */
 	bool configured, running, dirty, relayout;
 	struct buffer buf[2];
-	uint32_t *last;    /* the last frame committed (for the damage) */
-	int last_w, last_h;
+	struct frame fr;   /* the page as last drawn (the damage is what changed in it) */
+	struct frect part; /* a part to repaint (surface coordinates), when not all of it (dirty) */
+	long long save_due; /* the journal is ahead of planner.ics: write it after the idle time */
+	struct glassine_ink_manager_v1 *inkman;
+	struct glassine_ink_surface_v1 *inks;
 	struct store s;
 	struct look L;
 	char voice[32];
@@ -121,6 +128,13 @@ static struct {
 	uint32_t ti_before, ti_after;
 } P = { .out_scale = 1, .touch_id = -1, .running = true };
 
+/* SIGTERM and the like: out of the loop, what is only journalled saved */
+static volatile sig_atomic_t stop;
+static void on_signal(int sig)
+{
+	stop = 1;
+}
+
 static long long now_ms(void)
 {
 	struct timespec t;
@@ -163,6 +177,7 @@ static struct buffer *get_buffer(int w, int h)
 			close(fd);
 			wl_buffer_add_listener(b->b, &buf_listener, b);
 			b->w = w, b->h = h;
+			b->fresh = true;
 		}
 		return b;
 	}
@@ -175,6 +190,40 @@ static void save(void)
 {
 	if (!store_save(&P.s))
 		fprintf(stderr, "glassine-planner: could not save the entries\n");
+	else
+		P.save_due = 0;
+}
+
+/* an entry changed by the pen: journalled at once (FR-024), planner.ics written after the
+ * idle time, on the way out, or with the next whole save */
+static void note(uint32_t id)
+{
+	if (!store_note(&P.s, id)) {
+		save();
+		return;
+	}
+	P.save_due = now_ms() + SAVE_IDLE_MS;
+}
+
+/* a part of the page to repaint, surface coordinates */
+static void repaint(double x, double y, double w, double h)
+{
+	struct frect r = { (int)floor(x) - 4, (int)floor(y) - 4, (int)ceil(w) + 8, (int)ceil(h) + 8 };
+	P.part = frect_union(P.part, r);
+}
+
+/* what a change of a region's ink repaints: its field, unless the change moves more (an
+ * event's title grows or shrinks its block) */
+static void repaint_region(const struct region *rg, const struct ghw_point *p, size_t n)
+{
+	struct entry *e = rg->entry ? store_get(&P.s, rg->entry) : NULL;
+	if (rg->f.layer || (e && e->kind == E_EVENT) || rg->w <= 0) {
+		P.dirty = true;
+		return;
+	}
+	repaint(rg->x, rg->y, rg->w, rg->h);
+	for (size_t i = 0; i < n; i++) /* ink written past the field's edge */
+		repaint(rg->x + p[i].x - 4, rg->y + p[i].y - 4, 8, 8);
 }
 
 static struct region *region_of(struct ghw_region *r)
@@ -235,8 +284,8 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 	free(q);
 	if (!e)
 		return;
-	save(); /* FR-024: kept at once */
-	P.dirty = true;
+	note(e->id); /* FR-024: kept at once */
+	repaint_region(rg, p, n);
 	if (made)
 		relayout_later(); /* a new row to write in, after the pause */
 }
@@ -279,12 +328,13 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 	bool emptied = field_value(&P.s, &rg->entry, text, pw, pw ? (int)nw : 0, gone, ngone, state, len);
 	free(pw);
 	free(buf);
-	P.dirty = true;
-	if (emptied)
+	if (emptied) {
 		relayout_later(); /* all its ink went (struck out): the row is empty again */
-	save();
-	if (ngone)
-		P.dirty = true;
+		save(); /* a delete is never journalled */
+	} else {
+		note(rg->entry);
+		repaint_region(rg, NULL, 0);
+	}
 }
 
 /* a neatened stroke: shown while the field's Neaten is on (FR-011), the raw one kept */
@@ -301,8 +351,8 @@ static void on_neat(void *d, struct ghw_region *r, uint32_t k, int how, const st
 		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
 	field_set_neat(&e->f, k, q, (int)n);
 	free(q);
-	save();
-	P.dirty = true;
+	note(e->id);
+	repaint_region(rg, p, n);
 }
 
 static const struct ghw_region_listener region_listener = { .stroke = on_stroke, .neat = on_neat, .value = on_value };
@@ -451,6 +501,18 @@ static void layout(void)
 	sync_regions();
 }
 
+static void paint_page(void *ud, cairo_t *cr)
+{
+	int S = P.out_scale < 1 ? 1 : P.out_scale;
+	cairo_scale(cr, S, S);
+	if (P.refused)
+		view_paint_refused(&P.L, cr, P.W, P.H, &P.refused_close);
+	else
+		view_paint(&P.v, &P.s, &P.L, cr);
+}
+
+/* the page into the frame, whole (dirty) or the part that changed; the buffer gets what
+ * changed since it was last on screen, the surface the changed tiles (FR-061) */
 static void draw(void)
 {
 	if (!P.configured)
@@ -459,59 +521,35 @@ static void draw(void)
 	struct buffer *b = get_buffer(bw, bh);
 	if (!b)
 		return; /* both are on screen: the next release draws */
-	cairo_surface_t *cs = cairo_image_surface_create_for_data(b->px, CAIRO_FORMAT_RGB24, bw, bh, bw * 4);
-	cairo_t *cr = cairo_create(cs);
-	cairo_scale(cr, S, S);
-	if (P.refused)
-		view_paint_refused(&P.L, cr, P.W, P.H, &P.refused_close);
-	else
-		view_paint(&P.v, &P.s, &P.L, cr);
-	cairo_destroy(cr);
-	cairo_surface_flush(cs);
-	cairo_surface_destroy(cs);
+	struct frect clip = { P.part.x * S, P.part.y * S, P.part.w * S, P.part.h * S };
+	const struct frect *cp = P.dirty || P.part.w <= 0 ? NULL : &clip;
+	struct frect runs[128], box;
+	int n = frame_update(&P.fr, bw, bh, cp, paint_page, NULL, runs, 128, &box);
+	if (n < 0)
+		return;
+	for (int i = 0; i < 2; i++)
+		P.buf[i].need = frect_union(P.buf[i].need, box);
+	if (b->fresh)
+		b->need = (struct frect){ 0, 0, bw, bh };
+	uint32_t *px = b->px;
+	for (int y = b->need.y; y < b->need.y + b->need.h; y++)
+		memcpy(px + (size_t)y * bw + b->need.x, P.fr.cur + (size_t)y * bw + b->need.x, (size_t)b->need.w * 4);
+	b->need = (struct frect){ 0 };
 	wl_surface_set_buffer_scale(P.surf, S);
 	wl_surface_attach(P.surf, b->b, 0, 0);
-	/* damage only the tiles that changed (FR-061) */
-	uint32_t *px = b->px;
-	int n = 0;
-	if (P.last && P.last_w == bw && P.last_h == bh) {
-		for (int ty = 0; ty < bh; ty += TILE)
-			for (int tx = 0; tx < bw; tx += TILE) {
-				int w = tx + TILE > bw ? bw - tx : TILE, h = ty + TILE > bh ? bh - ty : TILE;
-				bool diff = false;
-				for (int y = ty; y < ty + h && !diff; y++)
-					diff = memcmp(px + (size_t)y * bw + tx, P.last + (size_t)y * bw + tx, w * 4) != 0;
-				if (diff) {
-					/* the run of changed tiles on this row */
-					int x0 = tx;
-					while (tx + TILE < bw) {
-						int w2 = tx + 2 * TILE > bw ? bw - tx - TILE : TILE;
-						bool d2 = false;
-						for (int y = ty; y < ty + h && !d2; y++)
-							d2 = memcmp(px + (size_t)y * bw + tx + TILE, P.last + (size_t)y * bw + tx + TILE, w2 * 4) != 0;
-						if (!d2)
-							break;
-						tx += TILE;
-					}
-					int x1 = tx + TILE > bw ? bw : tx + TILE;
-					wl_surface_damage_buffer(P.surf, x0, ty, x1 - x0, h);
-					n++;
-				}
-			}
-	} else {
+	if (b->fresh) {
 		wl_surface_damage_buffer(P.surf, 0, 0, bw, bh);
 		n = 1;
-		free(P.last);
-		P.last = malloc((size_t)bw * bh * 4);
-		P.last_w = bw, P.last_h = bh;
-	}
-	if (P.last)
-		memcpy(P.last, px, (size_t)bw * bh * 4);
+		b->fresh = false;
+	} else
+		for (int i = 0; i < n; i++)
+			wl_surface_damage_buffer(P.surf, runs[i].x, runs[i].y, runs[i].w, runs[i].h);
 	if (n) {
 		b->busy = true;
 		wl_surface_commit(P.surf);
 	}
 	P.dirty = false;
+	P.part = (struct frect){ 0 };
 }
 
 /* ---- text mode (FR-012 to FR-017) ---- */
@@ -1436,8 +1474,7 @@ static void top_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h,
 		P.lay_h = lh;
 		P.v.vis_h = h;
 		P.H = h;
-		free(P.last);
-		P.last = NULL;
+		P.dirty = true;
 		const struct vfield *f = focused();
 		P.v.scroll = f ? view_scroll_to(&P.v, f) : P.v.scroll;
 		if (P.configured)
@@ -1454,8 +1491,7 @@ static void top_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h,
 	}
 	if (w > 0 && h > 0 && (w != P.W || h != P.H)) {
 		P.W = w, P.H = h;
-		free(P.last);
-		P.last = NULL;
+		P.dirty = true;
 	}
 }
 static void top_close(void *d, struct xdg_toplevel *t)
@@ -1483,6 +1519,8 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *if
 		wl_output_add_listener(o, &output_listener, NULL);
 	} else if (!strcmp(iface, zwp_tablet_manager_v2_interface.name))
 		P.tabman = wl_registry_bind(r, name, &zwp_tablet_manager_v2_interface, 1);
+	else if (!strcmp(iface, glassine_ink_manager_v1_interface.name) && ver >= 2)
+		P.inkman = wl_registry_bind(r, name, &glassine_ink_manager_v1_interface, 2);
 	else if (!strcmp(iface, zwp_text_input_manager_v3_interface.name))
 		P.tim = wl_registry_bind(r, name, &zwp_text_input_manager_v3_interface, 1);
 }
@@ -1549,6 +1587,12 @@ int main(int argc, char **argv)
 	data_dir(dir, sizeof dir);
 	store_init(&P.s, dir);
 	store_load(&P.s);
+	if (P.s.nrep)
+		P.save_due = 1; /* journals of an earlier run: into planner.ics when idle */
+	struct sigaction sa = { .sa_handler = on_signal }; /* no SA_RESTART: poll returns */
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGINT, &sa, NULL);
+	sigaction(SIGHUP, &sa, NULL);
 	tmpl_user_load(dir);
 	look_voice_name(P.voice, sizeof P.voice);
 	look_init(&P.L, P.voice);
@@ -1579,6 +1623,16 @@ int main(int argc, char **argv)
 	wl_display_roundtrip(P.dpy);
 	P.surf = wl_compositor_create_surface(P.comp);
 	P.pen = ghw_pen_new(P.dpy, P.surf, &pen_listener, NULL);
+	if (P.inkman) {
+		/* the panel previews a stroke in the fields with the pen the planner draws with, so
+		 * the line doesn't change when the frame replaces the preview */
+		P.inks = glassine_ink_manager_v1_get_ink_surface(P.inkman, P.surf);
+		glassine_ink_surface_v1_set_brush(P.inks, GLASSINE_INK_SURFACE_V1_TOOL_TIP, GLASSINE_INK_SURFACE_V1_KIND_PEN,
+						  wl_fixed_from_double(PL_INK_WMIN), wl_fixed_from_double(PL_INK_WMAX),
+						  wl_fixed_from_double(PL_INK_EXP));
+		glassine_ink_surface_v1_set_brush(P.inks, GLASSINE_INK_SURFACE_V1_TOOL_ERASER, GLASSINE_INK_SURFACE_V1_KIND_NONE,
+						  0, 0, wl_fixed_from_int(1));
+	}
 	/* FR-001: without writing regions read by the service, the planner doesn't start */
 	P.refused = !P.pen || !(ghw_pen_capabilities(P.pen) & GHW_CAP_REGIONS);
 	if (P.refused)
@@ -1593,7 +1647,7 @@ int main(int argc, char **argv)
 	wl_surface_commit(P.surf);
 	watch_voice();
 
-	while (P.running) {
+	while (P.running && !stop) {
 		if (P.relayout && !(P.pen_down || now_ms() - P.pen_up_ms < PAUSE_MS) && P.configured) {
 			P.relayout = false;
 			if (!P.refused)
@@ -1625,7 +1679,9 @@ int main(int argc, char **argv)
 					}
 			}
 		}
-		if (P.dirty)
+		if (P.save_due && !P.pen_down && now_ms() >= P.save_due)
+			save(); /* the journal into planner.ics, idle */
+		if (P.dirty || P.part.w > 0)
 			draw();
 		wl_display_flush(P.dpy);
 		struct pollfd fds[2] = { { wl_display_get_fd(P.dpy), POLLIN, 0 }, { P.ino, POLLIN, 0 } };
@@ -1633,6 +1689,11 @@ int main(int argc, char **argv)
 		if (P.relayout) {
 			long long left = PAUSE_MS - (now_ms() - P.pen_up_ms);
 			timeout = left > 0 ? (int)left + 5 : 50;
+		}
+		if (P.save_due) {
+			long long left = P.save_due - now_ms();
+			int t2 = left > 0 ? (int)left + 5 : 5;
+			timeout = timeout < 0 || t2 < timeout ? t2 : timeout;
 		}
 		if (P.tm_left_ms) {
 			long long left = KBD_GONE_MS - (now_ms() - P.tm_left_ms);
@@ -1658,8 +1719,10 @@ int main(int argc, char **argv)
 			reload_voice();
 		}
 	}
-	/* every change was saved when it was made (FR-024); no save on the way out, which would
-	 * write this instance's view of the entries over another's */
+	/* every change was kept when it was made (FR-024); what is only journalled goes into
+	 * planner.ics now (a save merges another instance's entries, never writes over them) */
+	if (P.save_due)
+		save();
 	for (struct region *x = P.regions; x;) {
 		struct region *n = x->next;
 		ghw_region_destroy(x->r);

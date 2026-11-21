@@ -22,7 +22,7 @@ DESTDIR ?=
 O := out
 CORE := store grid tfile editor
 CORE_OBJ := $(CORE:%=$(O)/%.o)
-SCREEN := look view
+SCREEN := look view frame
 SCREEN_OBJ := $(SCREEN:%=$(O)/%.o)
 
 ifeq ($(UI_SYSTEM),1)
@@ -52,7 +52,9 @@ endif
 
 WL_PROTO := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols 2>/dev/null)
 WL_PKGS := wayland-client xkbcommon
-PROTOS := stable/xdg-shell/xdg-shell.xml stable/tablet/tablet-v2.xml unstable/text-input/text-input-unstable-v3.xml
+# protocols/: GlassineOS/protocols' (the panel's pen preview), as the compositor has them
+PROTOS := stable/xdg-shell/xdg-shell.xml stable/tablet/tablet-v2.xml unstable/text-input/text-input-unstable-v3.xml \
+	protocols/glassine-ink-v1.xml
 PROTO_NAMES := $(basename $(notdir $(PROTOS)))
 PROTO_C := $(PROTO_NAMES:%=$(O)/proto/%-protocol.c)
 PROTO_H := $(PROTO_NAMES:%=$(O)/proto/%-client-protocol.h)
@@ -78,7 +80,7 @@ $(O)/hw/libglassine-handwriting.so: | $(O)
 
 $(O)/proto/%-protocol.c $(O)/proto/%-client-protocol.h: | $(O)
 	mkdir -p $(O)/proto
-	x=$$(for p in $(PROTOS); do case $$p in */$*.xml) echo $(WL_PROTO)/$$p;; esac; done); \
+	x=$$(for p in $(PROTOS); do case $$p in */$*.xml) if [ -f $$p ]; then echo $$p; else echo $(WL_PROTO)/$$p; fi;; esac; done); \
 	wayland-scanner client-header $$x $(O)/proto/$*-client-protocol.h && \
 	wayland-scanner private-code $$x $(O)/proto/$*-protocol.c
 
@@ -95,6 +97,9 @@ $(O)/sample.o: test/sample.c test/sample.h src/store.h | $(O)
 $(O)/test_store: test/test_store.c $(O)/sample.o $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) -o $@ $< $(O)/sample.o $(CORE_OBJ) $(LDLIBS)
 
+$(O)/test_frame: test/test_frame.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
+	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
+
 $(O)/test_view: test/test_view.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
@@ -104,8 +109,9 @@ $(O)/test_editor: test/test_editor.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) tes
 $(O)/render: test/render.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
-check: $(O)/test_store $(O)/test_view $(O)/test_editor $(O)/render all
+check: $(O)/test_store $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/render all
 	./$(O)/test_store
+	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_frame
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_view
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_editor
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render
