@@ -640,6 +640,7 @@ static void tm_open(const struct vfield *f)
 	} else if (P.pen)
 		ghw_pen_set_mode(P.pen, GHW_MODE_TEXT);
 	tm_focus(f);
+	layout(); /* the bar's targets; every field stays where it is */
 }
 
 /* back to ink: each changed text goes to its region before the region goes back to ink mode
@@ -691,19 +692,37 @@ static void tm_close(void)
 	P.v.text_of = NULL;
 	P.tm_left_ms = P.v.vis_h > 0 ? now_ms() : 0;
 	ti_state();
+	layout(); /* the bar's targets go; every field stays where it is */
 	P.dirty = true;
 	if (made)
 		relayout_later(); /* a new row to write in */
 }
 
-/* the keyboard's text into the field (or the search) with the focus */
-static void type_text(const char *in, int before, int after)
+/* the keyboard's text into the field (or the search) with the focus; before and after are
+ * characters to delete around the caret, or bytes (an input method's) */
+static void type_text_(const char *in, int before, int after, bool bytes)
 {
 	char *b = P.v.search ? P.q : P.tm_buf;
 	size_t cap = P.v.search ? sizeof P.q : sizeof P.tm_buf;
 	int cur = P.v.search ? (int)strlen(P.q) : P.tm_cur, len = (int)strlen(b);
 	if (!P.v.search && !focused())
 		return;
+	if (bytes) { /* bytes to whole characters */
+		int nb = 0, k = cur;
+		while (k > 0 && cur - k < before) {
+			k--;
+			if (((unsigned char)b[k] & 0xc0) != 0x80)
+				nb++;
+		}
+		int na = 0;
+		k = cur;
+		while (k < len && k - cur < after) {
+			k++;
+			if (k == len || ((unsigned char)b[k] & 0xc0) != 0x80)
+				na++;
+		}
+		before = nb, after = na;
+	}
 	/* delete before and after the caret, whole UTF-8 characters */
 	while (before-- > 0 && cur > 0) {
 		int k = cur - 1;
@@ -737,6 +756,11 @@ static void type_text(const char *in, int before, int after)
 	}
 	P.dirty = true;
 	ti_state();
+}
+
+static void type_text(const char *in, int before, int after)
+{
+	type_text_(in, before, after, false);
 }
 
 static void caret_move(int d)
@@ -1336,7 +1360,7 @@ static void ti_delete(void *d, struct zwp_text_input_v3 *t, uint32_t before, uin
 static void ti_done(void *d, struct zwp_text_input_v3 *t, uint32_t serial)
 {
 	if (P.ti_commit || P.ti_before || P.ti_after)
-		type_text(P.ti_commit, (int)P.ti_before, (int)P.ti_after); /* bytes; whole characters here */
+		type_text_(P.ti_commit, (int)P.ti_before, (int)P.ti_after, true);
 	free(P.ti_commit);
 	P.ti_commit = NULL;
 	P.ti_before = P.ti_after = 0;

@@ -179,6 +179,8 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 		if (!w->set || !w->npath)
 			continue;
 		cairo_new_path(cr);
+		/* ops as GHW_PATH_*: 0 move, 1 line, 2 quad, 3 cubic, 4 close, each followed by its
+		 * coordinates (region coordinates) */
 		for (int j = 0; j < w->npath;) {
 			int op = (int)lroundf(w->path[j++]);
 #define PX(n) (ox + w->path[j + (n)] * k)
@@ -1326,7 +1328,8 @@ static double results(struct ctx *c, double x, double y, double w)
 		ui_text(&c->g, &lf, head_, x + 16, y + 12, 0, w - 32, L->soft, &kh);
 	y += 12 + kh + 4;
 	UiFont qf = fam(L->mono, 400, 0, 11.5f);
-	for (int i = 0; i < n && i < RESULTS && y + 46 < v->H - 8; i++) {
+	double vh = v->vis_h > 0 && v->vis_h < v->H ? v->vis_h : v->H; /* above the keyboard */
+	for (int i = 0; i < n && i < RESULTS && y + 46 < vh - 8; i++) {
 		char when[40];
 		when_of(e[i], when, sizeof when);
 		double ww = tw(c, &qf, when);
