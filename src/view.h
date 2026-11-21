@@ -133,6 +133,8 @@ int view_hidden(struct store *s, const struct tmpl *t, struct period per, struct
 
 void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t *measure);
 void view_paint(struct view *v, struct store *s, const struct look *L, cairo_t *cr);
+/* keep painted ink per field (on by default); off drops what is kept */
+void view_ink_cache(bool on);
 /* the refused screen (FR-001): no writing regions on this system */
 void view_paint_refused(const struct look *L, cairo_t *cr, double W, double H, struct vhit *close);
 /* the target at x, y on the screen (the page's targets moved up by scroll) */
