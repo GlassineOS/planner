@@ -225,11 +225,16 @@ int main(void)
 			y.rg_n = 1, y.rg0 = day_from_ymd(yr, 5, 3);
 			snprintf(y.rg_tmpl, sizeof y.rg_tmpl, "day-diary");
 			shot(&s, VOICES[vi], &y, "templates.year.days.picking");
+			/* turned (board templates.year.days.landscape): four months to a row */
+			y.W = 936, y.H = 662;
+			shot(&s, VOICES[vi], &y, "templates.year.days.landscape.picking");
+			y.rg_n = 0, y.rg_tmpl[0] = 0;
+			shot(&s, VOICES[vi], &y, "templates.year.days.landscape");
 			while (s.nc > nc0)
 				store_unchoose(&s, s.nc - 1);
 			if (*dt)
 				store_choose(&s, d, d.start, dt);
-			n += 4;
+			n += 6;
 		}
 		/* Neaten's strength, the row's last word (board cog.strength) */
 		{
