@@ -441,6 +441,78 @@ int main(void)
 					CHECK(view_hit(&w, apr->x + 1, apr->y + 1) == apr);
 			}
 		}
+		/* weeks and months turned (board templates.year.landscape): two columns of six
+		 * months, January to June and July to December, every period its own target inside
+		 * the window, the arrows on the scopes' row, the choices listed inside the window */
+		for (int kk = 0; kk < 2; kk++) {
+			enum pkind pk = kk ? P_MONTH : P_WEEK;
+			struct period pp = period_of(pk, today);
+			int nc1 = s.nc;
+			if (pk == P_WEEK) {
+				store_choose(&s, period_of(P_WEEK, day_from_ymd(2027, 1, 4)), period_end(period_of(P_WEEK, day_from_ymd(2027, 3, 29))),
+					     "week-columns");
+				store_choose(&s, period_of(P_WEEK, day_from_ymd(2027, 4, 5)), -1, "week-spread");
+				struct period w20 = period_of(P_WEEK, day_from_ymd(2027, 5, 17));
+				store_choose(&s, w20, w20.start, "week-lists");
+			} else
+				store_choose(&s, pp, pp.start, "month-goals");
+			for (int vi = 0; vi < 3; vi++) {
+				struct look LT;
+				look_init(&LT, VO[vi]);
+				for (int off = 0; off < 12; off++) {
+					struct view w = { .per = pp, .today = today, .W = 936, .H = 662, .hidden_kind = -1, .ov = OV_PICKER,
+							  .year = true, .scope = 1, .year_off = off };
+					view_layout(&w, &s, &LT, cr);
+					int yr = 2027 + off, want = 0, cells = 0, own = 0, inside = 0;
+					for (int d0 = day_from_ymd(yr, 1, 1); d0 <= day_from_ymd(yr, 12, 31); d0++)
+						want += pk == P_MONTH ? d0 == period_of(P_MONTH, d0).start : period_of(P_WEEK, d0).start == d0;
+					for (int i = 0; i < w.nh; i++)
+						if (w.hit[i].a == A_CELL) {
+							const struct vhit *h = &w.hit[i];
+							cells++;
+							own += view_hit(&w, h->x + h->w / 2, h->y + h->h / 2) == h;
+							inside += h->x >= 0 && h->x + h->w <= w.W && h->y + h->h <= w.H;
+							CHECK(h->w >= 40 && h->h >= 26);
+						}
+					CHECK_INT(cells, want);
+					CHECK_INT(own, want);
+					CHECK_INT(inside, want);
+					/* January and July share the first row; June sits above the choices */
+					int jl = day_from_ymd(yr, 7, 1), ja = day_from_ymd(yr, 1, 1);
+					const struct vhit *jan = NULL, *jul = NULL;
+					for (int i = 0; i < w.nh; i++)
+						if (w.hit[i].a == A_CELL) {
+							int st = w.hit[i].arg;
+							if (!jan || (st >= ja && st < ja + 7 && w.hit[i].x < jan->x))
+								jan = st >= ja && st < ja + 31 ? &w.hit[i] : jan;
+							if (st >= jl && st < jl + 31 && (!jul || w.hit[i].x < jul->x))
+								jul = &w.hit[i];
+						}
+					CHECK(jan && jul);
+					if (jan && jul)
+						CHECK(jul->x > w.W / 2 && jan->x < w.W / 2 && jul->y < jan->y + jan->h && jul->y + jul->h > jan->y);
+					const struct vhit *pv = find(&w, A_YEAR_NAV, -1), *sc = find(&w, A_SCOPE, 3);
+					CHECK(pv && sc);
+					if (pv && sc)
+						CHECK(pv->x > sc->x + sc->w && pv->y < sc->y + sc->h && pv->y + pv->h > sc->y);
+					int rows = 0;
+					for (int i = 0; i < w.nh; i++)
+						if (w.hit[i].a == A_RANGE_CHANGE || w.hit[i].a == A_RANGE_REMOVE) {
+							rows++;
+							CHECK(w.hit[i].y + w.hit[i].h <= w.H);
+						}
+					if (off == 0) { /* every choice of the year shows (the ones set here and any before) */
+						int kinds = 0;
+						for (int i = 0; i < s.nc; i++)
+							kinds += s.c[i].from.kind == pk;
+						CHECK(rows >= (pk == P_WEEK ? 3 : 1));
+						CHECK_INT(rows, kinds);
+					}
+				}
+			}
+			while (s.nc > nc1)
+				store_unchoose(&s, s.nc - 1);
+		}
 		/* upright stays three to a row */
 		struct view u = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_PICKER, .year = true };
 		view_layout(&u, &s, &L, cr);
