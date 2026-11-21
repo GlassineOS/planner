@@ -88,6 +88,15 @@ struct store {
 	int nc;
 	char def[3][40];   /* each kind's default template ("" = the built-in default) */
 	char *dir;         /* NULL: in memory only (tests, renders) */
+	/* the entries' file as this store last read or wrote it: a save finds another writer's
+	 * entries (another instance) by a change of it, and keeps them */
+	bool seen;
+	long long seen_ino, seen_size, seen_mtime;
+	char (*deleted)[48]; /* uids deleted here: another writer's copy of them stays deleted */
+	int ndel;
+	char (*filed)[48];   /* uids the file held when last read or written: one gone from it
+	                      * since was deleted by another writer */
+	int nfiled;
 };
 
 void store_init(struct store *s, const char *dir);
@@ -106,7 +115,9 @@ void store_choose(struct store *s, struct period from, int to, const char *tmpl)
 
 /* the files (FR-024: written at once, atomically) */
 bool store_load(struct store *s);
-bool store_save(struct store *s);        /* entries */
+/* entries; when the file changed since this store read or wrote it, the entries only the
+ * file has (written by another instance) are taken in first, except those deleted here */
+bool store_save(struct store *s);
 bool store_save_choices(struct store *s);
 /* the entries' file as text (tests: a template switch must leave it byte for byte) */
 char *store_ics(const struct store *s);

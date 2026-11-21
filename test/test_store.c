@@ -99,6 +99,59 @@ int main(void)
 	store_delete(&r, id);
 	CHECK(store_get(&r, id) == NULL);
 
+	/* two instances on one data directory: neither save loses the other's entries; an entry
+	 * deleted in one stays deleted (the device run's empty store after a stroke) */
+	{
+		char d2[] = "out/test-two-XXXXXX";
+		CHECK(mkdtemp(d2) != NULL);
+		struct store a, b, c;
+		store_init(&a, d2);
+		store_init(&b, d2);
+		CHECK(store_load(&a) && store_load(&b)); /* both start on an empty directory */
+		struct entry *t = store_add(&a, E_TODO, period_of(P_DAY, d));
+		sample_ink(&t->f, "buy milk", 2, 27, 5);
+		char uid[48];
+		snprintf(uid, sizeof uid, "%s", t->uid);
+		CHECK(store_save(&a));       /* a's first stroke, kept at once */
+		CHECK(store_save(&b));       /* b, with nothing of its own, saves later */
+		store_init(&c, d2);
+		store_load(&c);
+		CHECK_INT(c.n, 1);
+		CHECK(c.n == 1 && !strcmp(c.e[0]->uid, uid) && c.e[0]->f.ns == t->f.ns);
+		store_free(&c);
+		/* b took a's entry in; b's own entry and a's later one both survive */
+		CHECK_INT(b.n, 1);
+		struct entry *u = store_add(&b, E_NOTE, period_of(P_DAY, d));
+		snprintf(u->slot, sizeof u->slot, "notes");
+		sample_ink(&u->f, "rain", 2, 27, 6);
+		CHECK(store_save(&b));
+		struct entry *h = store_add(&a, E_HABIT, period_of(P_DAY, d));
+		struct entry *mk = store_add(&a, E_MARK, period_of(P_DAY, d));
+		mk->habit = h->id;
+		CHECK(store_save(&a));
+		CHECK_INT(a.n, 4);
+		CHECK(store_save(&b));
+		CHECK_INT(b.n, 4);
+		struct entry *bm = NULL, *bh = NULL;
+		for (int i = 0; i < b.n; i++)
+			bm = b.e[i]->kind == E_MARK ? b.e[i] : bm, bh = b.e[i]->kind == E_HABIT ? b.e[i] : bh;
+		CHECK(bm && bh && bm->habit == bh->id); /* the mark still names its habit */
+		/* a deletes the to-do; b's next save doesn't bring it back, and a keeps it gone */
+		store_delete(&a, t->id);
+		CHECK(store_save(&a));
+		CHECK(store_save(&b));
+		CHECK(store_save(&a));
+		store_init(&c, d2);
+		store_load(&c);
+		bool back = false;
+		for (int i = 0; i < c.n; i++)
+			back |= !strcmp(c.e[i]->uid, uid);
+		CHECK(!back);
+		CHECK_INT(b.n, 3); /* b dropped it too: the file had it and lost it */
+		store_free(&c);
+		store_free(&a), store_free(&b);
+	}
+
 	/* the solver gives every widget at least its minimum, upright and turned */
 	for (int i = 0; i < pl_ntemplates; i++)
 		for (int land = 0; land < 2; land++) {
