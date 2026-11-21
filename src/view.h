@@ -66,6 +66,7 @@ struct vhit {
 };
 
 #define V_FIELDS 160
+#define V_BAR 60 /* the header bar's height (logical px) */
 #define V_HITS 200
 struct view {
 	/* what is shown */

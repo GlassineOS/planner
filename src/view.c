@@ -9,10 +9,15 @@
 #include <string.h>
 #include <time.h>
 
+#include "trace.h"
 #include "view.h"
 
+int pl_trace;
+double pl_tr_text_ms, pl_tr_ink_ms, pl_tr_paint_ms, pl_tr_diff_ms;
+int pl_tr_text_n, pl_tr_ink_n;
+
 #define PAD 12          /* the page's inset */
-#define BAR 60          /* the header bar */
+#define BAR V_BAR       /* the header bar */
 #define GUTTER 40       /* the agenda's hour gutter */
 #define INK_SIZE 19.0   /* the size ink is written at in a field; smaller places scale it */
 #define TITLE_MIN 11.0  /* the smallest readable size a title shrinks to (the board's 11 px) */
@@ -57,19 +62,27 @@ static UiFont fam(const char *family, int w, int it, float px)
 	return (UiFont){ family, w, it, px, 0, 0, UI_CASE_NONE };
 }
 
+#define TR_IN() double tr0_ = pl_trace ? pl_tr_now() : 0
+#define TR_OUT(ms, n) (pl_trace ? ((ms) += pl_tr_now() - tr0_, (n)++) : 0)
+
 static double tw(struct ctx *c, const UiFont *f, const char *s)
 {
 	double h;
-	return ui_text_w(&c->g, f, s, &h);
+	TR_IN();
+	double w = ui_text_w(&c->g, f, s, &h);
+	TR_OUT(pl_tr_text_ms, pl_tr_text_n);
+	return w;
 }
 
 /* text with its vertical centre at cy */
 static double tc(struct ctx *c, const UiFont *f, const char *s, double x, double cy, int align, double maxw, ui_col cl)
 {
 	double h;
+	TR_IN();
 	double w = ui_text_w(&c->g, f, s, &h);
 	if (c->paint)
 		ui_text(&c->g, f, s, x, cy - h / 2, align, maxw, cl, &h);
+	TR_OUT(pl_tr_text_ms, pl_tr_text_n);
 	return w;
 }
 
@@ -77,9 +90,11 @@ static double tc(struct ctx *c, const UiFont *f, const char *s, double x, double
 static double tb(struct ctx *c, const UiFont *f, const char *s, double x, double by, int align, double maxw, ui_col cl)
 {
 	double h;
+	TR_IN();
 	double w = ui_text_w(&c->g, f, s, &h);
 	if (c->paint)
 		ui_text(&c->g, f, s, x, by - h, align, maxw, cl, &h);
+	TR_OUT(pl_tr_text_ms, pl_tr_text_n);
 	return w;
 }
 
@@ -152,7 +167,14 @@ double pl_ink_width(double p)
  * from its outline in Autograph; while the field's Set in Autograph is on, a word that was
  * read filled from its outline in Autograph too (its strokes kept, not drawn); ink that is no
  * word (a drawing) as written */
+static void ink_(struct ctx *c, const struct field *f, double ox, double oy, double k);
 static void ink(struct ctx *c, const struct field *f, double ox, double oy, double k)
+{
+	TR_IN();
+	ink_(c, f, ox, oy, k);
+	TR_OUT(pl_tr_ink_ms, pl_tr_ink_n);
+}
+static void ink_(struct ctx *c, const struct field *f, double ox, double oy, double k)
 {
 	if (!c->paint || (!f->ns && !f->nw))
 		return;
