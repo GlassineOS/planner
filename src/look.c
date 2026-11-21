@@ -2,6 +2,7 @@
 /* The planner's look (look.h). */
 #include <ctype.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,7 +124,22 @@ static void src(cairo_t *cr, ui_col c)
 	cairo_set_source_rgba(cr, (c >> 16 & 255) / 255.0, (c >> 8 & 255) / 255.0, (c & 255) / 255.0, (c >> 24 & 255) / 255.0);
 }
 
-void lk_rect(cairo_t *cr, double x, double y, double w, double h, double r)
+/* At a fractional scale (shell spec 012 FR-021) the planner's own boxes and rules have their
+ * edges on whole device pixels and a whole number of them, one or more, as their line width;
+ * a whole scale draws the values as given. */
+static bool fractional(cairo_t *cr)
+{
+	double s = ui_dev_scale(cr);
+	return fabs(s - round(s)) > 1e-6;
+}
+static void snap_box(cairo_t *cr, double *x, double *y, double *w, double *h)
+{
+	double x1 = ui_snap_x(cr, *x + *w), y1 = ui_snap_y(cr, *y + *h);
+	*x = ui_snap_x(cr, *x), *y = ui_snap_y(cr, *y);
+	*w = x1 - *x, *h = y1 - *y;
+}
+
+static void rect(cairo_t *cr, double x, double y, double w, double h, double r)
 {
 	if (r > w / 2)
 		r = w / 2;
@@ -141,6 +157,13 @@ void lk_rect(cairo_t *cr, double x, double y, double w, double h, double r)
 	cairo_close_path(cr);
 }
 
+void lk_rect(cairo_t *cr, double x, double y, double w, double h, double r)
+{
+	if (fractional(cr))
+		snap_box(cr, &x, &y, &w, &h);
+	rect(cr, x, y, w, h, r);
+}
+
 void lk_fill(cairo_t *cr, ui_col c)
 {
 	src(cr, c);
@@ -151,7 +174,11 @@ void lk_fill(cairo_t *cr, ui_col c)
 void lk_stroke_box(cairo_t *cr, double x, double y, double w, double h, double r, double lw, ui_col c)
 {
 	cairo_save(cr);
-	lk_rect(cr, x + lw / 2, y + lw / 2, w - lw, h - lw, r > lw / 2 ? r - lw / 2 : 0);
+	if (fractional(cr)) {
+		snap_box(cr, &x, &y, &w, &h);
+		lw = ui_snap_len(cr, lw);
+	}
+	rect(cr, x + lw / 2, y + lw / 2, w - lw, h - lw, r > lw / 2 ? r - lw / 2 : 0);
 	src(cr, c);
 	cairo_set_line_width(cr, lw);
 	cairo_stroke(cr);
@@ -164,11 +191,18 @@ void lk_rule(cairo_t *cr, double x, double y, double w, double lw, ui_col c, int
 		return;
 	cairo_save(cr);
 	src(cr, c);
+	double k = 1;
+	if (fractional(cr)) { /* the dots too: whole device pixels on and off */
+		double h = lw;
+		snap_box(cr, &x, &y, &w, &h);
+		lw = ui_snap_len(cr, lw);
+		k = ui_snap_len(cr, 1.5 * lw) / (1.5 * lw);
+	}
 	if (dash == 0) {
 		cairo_rectangle(cr, x, y, w, lw);
 		cairo_fill(cr);
 	} else {
-		double on = dash == 2 ? lw : 3 * lw, off = dash == 2 ? lw * 1.5 : 2 * lw;
+		double on = dash == 2 ? lw : 3 * lw, off = dash == 2 ? lw * 1.5 * k : 2 * lw;
 		/* dotted (CSS): square dots one line width wide */
 		for (double p = x; p < x + w; p += on + off) {
 			cairo_rectangle(cr, p, y, fmin(on, x + w - p), lw);
