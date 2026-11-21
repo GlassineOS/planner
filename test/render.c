@@ -204,6 +204,21 @@ int main(void)
 			/* the next year (board templates.year.nav): the from-on choice runs on into it */
 			w.year_off = 1;
 			shot(&s, VOICES[vi], &w, "templates.year.next");
+			/* turned (board templates.year.landscape): two columns of six months; the next year,
+			 * then a range being picked for Spread */
+			{
+				struct view z = w;
+				z.W = 936, z.H = 662;
+				shot(&s, VOICES[vi], &z, "templates.year.landscape.next");
+				z.year_off = 0;
+				shot(&s, VOICES[vi], &z, "templates.year.landscape");
+				z.rg_n = 1, z.rg0 = day_from_ymd(yr, 3, 22);
+				snprintf(z.rg_tmpl, sizeof z.rg_tmpl, "week-spread");
+				shot(&s, VOICES[vi], &z, "templates.year.landscape.picking");
+				z.rg_n = 0, z.rg_tmpl[0] = 0, z.per = period_of(P_MONTH, today);
+				shot(&s, VOICES[vi], &z, "templates.year.months.landscape");
+				n += 4;
+			}
 			while (s.nc > nc0)
 				store_unchoose(&s, s.nc - 1);
 			/* the days of the year as a wall calendar (board templates.year.days): a range of
