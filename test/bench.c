@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* What a view change costs the planner's CPU, stage by stage: the layout, the whole frame
  * painted into the frame buffer (text, ink), and the comparison with the frame before, at a
- * screen's size and scale. Each action runs REPS times; the median is printed.
+ * screen's size and scale. Each action runs REPS times; the median is printed, and the first
+ * run (no painted ink kept yet: a page shown for the first time).
  *   bench [DATA_DIR]   a planner's data directory (read only), else the sample entries
- * Env: BENCH_W, BENCH_H (logical px, default 702 x 884), BENCH_SCALE (2), BENCH_REPS (9). */
+ * Env: BENCH_W, BENCH_H (logical px, default 702 x 884), BENCH_SCALE (2), BENCH_REPS (9),
+ * BENCH_NO_INK_CACHE=1 (every field's ink painted anew each time). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +20,7 @@ static struct view V;
 static struct store S;
 static struct look L;
 static int SC = 2;
+static bool kept = true; /* painted ink kept */
 
 static void paint(void *ud, cairo_t *cr)
 {
@@ -49,6 +52,8 @@ static void act(const char *name, struct frame *fr, void (*from)(void), void (*g
 		from();
 		view_layout(&V, &S, &L, mcr);
 		frame_update(fr, bw, bh, NULL, paint, NULL, runs, 128, &box);
+		if (r == 0)
+			view_ink_cache(kept); /* the first time: no ink kept yet (a page not shown before) */
 		go();
 		double t0 = pl_tr_now();
 		pl_tr_text_ms = 0, pl_tr_text_n = 0;
@@ -60,9 +65,11 @@ static void act(const char *name, struct frame *fr, void (*from)(void), void (*g
 		lay[r] = t1 - t0, pnt[r] = pl_tr_paint_ms, txt[r] = pl_tr_text_ms, ink[r] = pl_tr_ink_ms, dif[r] = pl_tr_diff_ms;
 		all[r] = t2 - t0;
 	}
-	printf("%-26s total %6.1f  layout %6.1f  paint %6.1f (text %6.1f, %4d; ink %5.1f, %3d)  diff %5.1f  runs %3d box %dx%d\n", name,
-	       med(all, reps), med(lay, reps), med(pnt, reps), med(txt, reps), pl_tr_text_n, med(ink, reps), pl_tr_ink_n,
-	       med(dif, reps), runs_n, box.w, box.h);
+	double cold = all[0], cold_ink = ink[0];
+	printf("%-26s total %6.1f  layout %6.1f  paint %6.1f (text %6.1f, %4d; ink %5.1f, %3d)  diff %5.1f  runs %3d box %dx%d"
+	       "  first: total %6.1f ink %5.1f\n",
+	       name, med(all, reps), med(lay, reps), med(pnt, reps), med(txt, reps), pl_tr_text_n, med(ink, reps), pl_tr_ink_n,
+	       med(dif, reps), runs_n, box.w, box.h, cold, cold_ink);
 	cairo_destroy(mcr);
 	cairo_surface_destroy(ms);
 }
@@ -90,6 +97,8 @@ int main(int argc, char **argv)
 	}
 	const char *e;
 	int reps = (e = getenv("BENCH_REPS")) ? atoi(e) : 9;
+	kept = !getenv("BENCH_NO_INK_CACHE");
+	view_ink_cache(kept);
 	reps = reps < 1 ? 1 : reps > 64 ? 64 : reps;
 	SC = (e = getenv("BENCH_SCALE")) ? atoi(e) : 2;
 	char voice[64];
@@ -101,7 +110,7 @@ int main(int argc, char **argv)
 	V.W = (e = getenv("BENCH_W")) ? atoi(e) : 702;
 	V.H = (e = getenv("BENCH_H")) ? atoi(e) : 884;
 	struct frame fr = { 0 };
-	printf("voice %s, %gx%g x%d, %d reps, ms (median)\n", voice, V.W, V.H, SC, reps);
+	printf("voice %s, %gx%g x%d, %d reps, ms (median; first: the first rep, no ink kept)\n", voice, V.W, V.H, SC, reps);
 	act("day -> next day", &fr, day0, day1, reps);
 	act("day -> week", &fr, day0, week0, reps);
 	act("week -> next week", &fr, week0, week1, reps);

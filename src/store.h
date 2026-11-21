@@ -68,6 +68,7 @@ struct field {
 	struct pl_stroke *neat; /* the neatened strokes, by the raw stroke's number */
 	int nneat;
 	uint8_t neaten, autograph; /* SHOW_* */
+	uint32_t gen; /* its ink's version: new on every change to strokes, neat strokes or words (0: none yet) */
 };
 void field_free(struct field *f);
 void field_add_stroke(struct field *f, uint32_t k, const struct pl_point *p, int n);
@@ -75,7 +76,8 @@ void field_remove_stroke(struct field *f, uint32_t k);
 void field_set_value(struct field *f, const char *text, const void *state, size_t len);
 /* the word layout (copied); n 0 clears it */
 void field_set_words(struct field *f, const struct pl_word *w, int n);
-void field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n);
+/* false: that neat stroke was there already, the same */
+bool field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n);
 const struct pl_stroke *field_neat(const struct field *f, uint32_t k);
 /* the word an ink stroke belongs to, or -1 (ink that is no word: a drawing) */
 int field_word_of(const struct field *f, uint32_t k);
@@ -157,6 +159,9 @@ struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake 
 			   const struct pl_point *p, int n);
 /* the region's value: strokes that left (gone), the text and the saved state. An entry other
  * than an event whose ink and text are all gone is deleted, *entry = 0 (true) */
+/* the value the region sends is what the field has already (a restored region tells it again) */
+bool field_value_same(struct store *s, uint32_t entry, const char *text, const struct pl_word *w, int nw, size_t ngone,
+		      const void *state, size_t len);
 bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,
 		 const uint32_t *gone, size_t ngone, const void *state, size_t len);
 /* text typed in text mode into a field with no entry yet (an empty row): its entry, made
