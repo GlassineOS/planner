@@ -453,6 +453,17 @@ static void choose_period(struct period p)
 
 /* ---- the template editor (FR-045, FR-049): it only arranges, it is given no store to write ---- */
 
+/* laid out at once, even in the pause after the pen: the editor's tree (or the editor itself)
+ * may just have been freed, and the next frame must not paint the old layout */
+static void editor_relayout(void)
+{
+	if (P.configured)
+		layout();
+	else
+		P.relayout = true;
+	P.dirty = true;
+}
+
 static void editor_enter(int how)
 {
 	struct view *v = &P.v;
@@ -472,7 +483,7 @@ static void editor_enter(int how)
 	P.ed.data = &P.s;
 	v->ed = &P.ed;
 	v->ov = OV_NONE;
-	relayout_later();
+	editor_relayout();
 }
 
 static void editor_leave(const char *ring)
@@ -482,7 +493,7 @@ static void editor_leave(const char *ring)
 	snprintf(v->ring, sizeof v->ring, "%s", ring && P.ed.from_picker ? ring : "");
 	v->ed = NULL;
 	editor_close(&P.ed);
-	relayout_later();
+	editor_relayout();
 }
 
 static void editor_tap(int op, int arg)
@@ -495,7 +506,7 @@ static void editor_tap(int op, int arg)
 	switch (editor_act(&P.ed, op, arg, P.s.dir)) {
 	case ER_SAVED: editor_leave(id); break;
 	case ER_CLOSED: editor_leave(NULL); break;
-	case ER_CHANGED: relayout_later(); break;
+	case ER_CHANGED: editor_relayout(); break;
 	default: break;
 	}
 }
@@ -663,7 +674,7 @@ static void editor_drag_end(double x, double y)
 		int steps = (int)lround((fabs(dx) > fabs(dy) ? dx : dy) / 60);
 		for (int i = 0; i < abs(steps); i++)
 			editor_act(&P.ed, steps > 0 ? ED_MORE : ED_LESS, 0, NULL);
-		relayout_later();
+		editor_relayout();
 		return;
 	}
 	for (int i = 0; i < v->g.n; i++) { /* the widget: onto the nearest edge of the one under the finger */
@@ -678,7 +689,7 @@ static void editor_drag_end(double x, double y)
 				side = k;
 		P.ed.target = (struct tnode *)p->n;
 		editor_act(&P.ed, ED_DROP, side, NULL);
-		relayout_later();
+		editor_relayout();
 		return;
 	}
 }
