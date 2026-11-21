@@ -388,6 +388,13 @@ it says that it needs the handwriting service and why, and doesn't start.
   Opening or closing the details popup, its cogwheel menu, a hidden-entries list or a
   widget's whole content refreshes only that rectangle. Ink is drawn with the pen's normal
   latency.
+- **FR-062**: The planner tells the panel what each change on its page is, so the panel does
+  not have to find out by watching. The answer to a tap on a control (a view, a period, a
+  template, a popup opened or closed, text mode) is a new page: it is shown at once and exact,
+  in one refresh. A step of an event moved or stretched with the finger, or of a widget dragged
+  in the template editor, is motion: it is shown fast while the drag lasts, and the result of
+  the drag brings the exact picture. What the writing changes says nothing, and a system
+  whose panel takes no such advice shows the planner as before.
 
 ## Contracts
 
@@ -398,7 +405,7 @@ it says that it needs the handwriting service and why, and doesn't start.
 | Neatening and Autograph, the person's font | consumed | 1 | `GlassineOS/handwriting` spec 003 |
 | Interleaf and the voices, the drawing library | consumed | current | `GlassineOS/ui` |
 | System on-screen keyboard | consumed | — | `GlassineOS/shell`, `GlassineOS/wvkbd` |
-| Ink protocol (ink areas, brushes) | consumed | glassine_ink_v1 | `GlassineOS/protocols` |
+| Ink protocol (ink areas, brushes; what a commit is, version 4) | consumed | glassine_ink_v1 | `GlassineOS/protocols` |
 | The planner's entries as standard calendar objects, with ink, slots and template choices | owned, not yet an interface | — | the calendar backend's spec, later |
 
 ## Device scope and risk
