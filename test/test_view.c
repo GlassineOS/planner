@@ -16,6 +16,12 @@ static const struct vhit *find(const struct view *v, enum act a, int arg)
 	return NULL;
 }
 
+static uint32_t px(cairo_surface_t *sf, double x, double y)
+{
+	const unsigned char *d = cairo_image_surface_get_data(sf);
+	return ((const uint32_t *)(d + (int)y * cairo_image_surface_get_stride(sf)))[(int)x] & 0xffffff;
+}
+
 int main(void)
 {
 	setenv("GLASSINE_PLANNER_TODAY", SAMPLE_TODAY, 1);
@@ -292,6 +298,46 @@ int main(void)
 			CHECK(find(&w, A_CLOSE, -1) != NULL);
 		}
 		store_choose(&s, d, d.start, "day-lists");
+	}
+	/* the mini month on a day template shades the day on screen, also after a tap moves to
+	 * another day (today keeps its ring); a week view shades its week */
+	{
+		int y, m, dd;
+		day_to_ymd(today, &y, &m, &dd);
+		int other = dd < days_in_month(y, m) ? today + 1 : today - 1;
+		struct view w = { .per = period_of(P_DAY, other), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		view_layout(&w, &s, &L, cr);
+		CHECK_STR(w.t->id, "day-lists");
+		view_paint(&w, &s, &L, cr);
+		cairo_surface_flush(sf);
+		const struct vhit *sel = NULL, *now = NULL;
+		for (int i = 0; i < w.nh; i++)
+			if (w.hit[i].a == A_DAY && w.hit[i].arg == other)
+				sel = &w.hit[i];
+			else if (w.hit[i].a == A_DAY && w.hit[i].arg == today)
+				now = &w.hit[i];
+		CHECK(sel && now);
+		if (sel && now) {
+			uint32_t hl = L.highlight & 0xffffff;
+			CHECK_INT(px(sf, sel->x + 2, sel->y + 2), hl);
+			CHECK(px(sf, now->x + 2, now->y + 2) != hl);
+		}
+		/* back on today: today is shaded, the other day is not */
+		w.per = period_of(P_DAY, today);
+		view_layout(&w, &s, &L, cr);
+		view_paint(&w, &s, &L, cr);
+		cairo_surface_flush(sf);
+		sel = now = NULL;
+		for (int i = 0; i < w.nh; i++)
+			if (w.hit[i].a == A_DAY && w.hit[i].arg == other)
+				sel = &w.hit[i];
+			else if (w.hit[i].a == A_DAY && w.hit[i].arg == today)
+				now = &w.hit[i];
+		CHECK(sel && now);
+		if (sel && now) {
+			CHECK_INT(px(sf, now->x + 2, now->y + 2), L.highlight & 0xffffff);
+			CHECK(px(sf, sel->x + 2, sel->y + 2) != (L.highlight & 0xffffff));
+		}
 	}
 	/* the settings */
 	{
