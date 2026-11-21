@@ -13,6 +13,14 @@
 #include "look.h"
 #include "store.h"
 
+/* the pen as the planner draws it and as the panel previews it while the frame is on its
+ * way (glassine_ink_v1 set_brush, the same numbers): diameters in surface px at no and at
+ * full pressure, pressure^PL_INK_EXP between */
+#define PL_INK_WMIN 1.3
+#define PL_INK_WMAX 2.5
+#define PL_INK_EXP 1.0
+double pl_ink_width(double pressure);
+
 enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE };
 
 /* a handwriting field: one writing region */
