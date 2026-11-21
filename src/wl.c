@@ -364,7 +364,7 @@ static bool covered(const struct vfield *f)
 		return true;
 	if (v->ov == OV_INFO || v->ov == OV_MENU)
 		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
-	if (v->ov == OV_HIDDEN)
+	if (v->ov == OV_HIDDEN || v->ov == OV_MOVE)
 		return f->y + f->h > v->H - round((v->H - 60) * 0.66);
 	return false;
 }
@@ -937,6 +937,7 @@ static void tap(double x, double y, bool finger)
 		 * title shows whole first (FR-018) */
 		if (h && h->a == A_EVENT && h->arg) {
 			v->title = h->id;
+			v->back = OV_NONE;
 			v->ov = OV_TITLE;
 			relayout_later();
 			return;
@@ -998,20 +999,112 @@ static void tap(double x, double y, bool finger)
 	case A_COG: v->ov = OV_MENU; relayout_later(); break;
 	case A_BACK: v->ov = OV_INFO; relayout_later(); break;
 	case A_HIDDEN: v->ov = OV_HIDDEN; v->hidden_kind = h->arg; relayout_later(); break;
-	case A_PICKER: v->ov = OV_PICKER; v->scope = 0; v->ring[0] = 0; relayout_later(); break;
+	case A_PICKER:
+		v->ov = OV_PICKER, v->scope = 0, v->ring[0] = 0;
+		v->year = false, v->rg_n = 0, v->rg_tmpl[0] = 0, v->from_set = false;
+		relayout_later();
+		break;
+	case A_YEAR: v->year = true, v->scope = 1, v->rg_n = 0, v->rg_tmpl[0] = 0; relayout_later(); break;
+	case A_CELL: { /* a period of the year: the first, then the last of a range */
+		enum pkind k = v->per.kind;
+		if (v->rg_n != 1) {
+			v->rg0 = h->arg, v->rg_n = 1;
+			relayout_later();
+			break;
+		}
+		v->rg1 = h->arg, v->rg_n = 2;
+		if (v->rg1 < v->rg0) {
+			int t = v->rg0;
+			v->rg0 = v->rg1, v->rg1 = t;
+		}
+		if (v->rg_tmpl[0]) { /* the template was picked first: chosen for the range */
+			store_choose(&P.s, period_of(k, v->rg0), period_end(period_of(k, v->rg1)), v->rg_tmpl);
+			store_save_choices(&P.s);
+			v->rg_n = 0, v->rg_tmpl[0] = 0;
+		} else /* then the template for it */
+			v->year = false, v->scope = 1;
+		relayout_later();
+		break;
+	}
+	case A_RANGE_CHANGE: /* a range's or a "from on"'s template, in the list */
+		if (h->arg < P.s.nc) {
+			const struct choice *ch = &P.s.c[h->arg];
+			v->year = false;
+			if (ch->to < 0)
+				v->scope = 2, v->from_set = true, v->from_day = ch->from.start;
+			else
+				v->scope = 1, v->rg0 = ch->from.start, v->rg1 = ch->to, v->rg_n = 2;
+			relayout_later();
+		}
+		break;
+	case A_RANGE_REMOVE:
+		store_unchoose(&P.s, h->arg);
+		store_save_choices(&P.s);
+		relayout_later();
+		break;
+	case A_OPEN: v->title = h->id, v->back = OV_HIDDEN, v->ov = OV_TITLE; relayout_later(); break;
+	case A_MOVE:
+		if ((e = store_get(&P.s, h->id))) {
+			v->move = e->id, v->move_at = e->per.start, v->back = OV_HIDDEN, v->ov = OV_MOVE;
+			relayout_later();
+		}
+		break;
+	case A_MOVE_NAV:
+		if ((e = store_get(&P.s, v->move))) {
+			int y, m, d;
+			day_to_ymd(v->move_at, &y, &m, &d);
+			if (e->per.kind == P_MONTH)
+				y += h->arg;
+			else if ((m += h->arg) < 1)
+				m = 12, y--;
+			else if (m > 12)
+				m = 1, y++;
+			v->move_at = day_from_ymd(y, m, 1);
+			relayout_later();
+		}
+		break;
+	case A_MOVE_TO:
+		if (store_move(&P.s, v->move, h->arg))
+			save();
+		v->ov = OV_HIDDEN, v->back = OV_NONE;
+		{
+			struct hidden_group g[16];
+			if (view_hidden(&P.s, v->t, v->per, g, 16) <= v->hidden_kind)
+				v->ov = OV_NONE;
+		}
+		relayout_later();
+		break;
 	case A_EDIT: editor_enter(h->arg); break;
 	case A_ED: editor_tap(h->arg, (int)h->id - 100); break;
-	case A_SCOPE: v->scope = h->arg; relayout_later(); break;
+	case A_SCOPE:
+		v->scope = h->arg;
+		if (h->arg == 1 && v->rg_n != 2) /* a range: its periods first, in the year */
+			v->year = true, v->rg_n = 0, v->rg_tmpl[0] = 0;
+		else if (h->arg != 1)
+			v->year = false;
+		relayout_later();
+		break;
 	case A_PICK: {
 		const struct tmpl *ts[64];
 		if (h->arg >= tmpl_list(v->per.kind, ts, 64))
 			break;
 		const struct tmpl *t = ts[h->arg];
 		v->ring[0] = 0;
+		if (v->scope == 1 && v->rg_n != 2) { /* a range: the template first, then its periods */
+			snprintf(v->rg_tmpl, sizeof v->rg_tmpl, "%s", t->id);
+			v->year = true, v->rg_n = 0;
+			relayout_later();
+			break;
+		}
 		if (v->scope == 3)
 			snprintf(P.s.def[v->per.kind], sizeof P.s.def[0], "%s", t->id);
+		else if (v->scope == 1)
+			store_choose(&P.s, period_of(v->per.kind, v->rg0), period_end(period_of(v->per.kind, v->rg1)), t->id);
+		else if (v->scope == 2 && v->from_set)
+			store_choose(&P.s, period_of(v->per.kind, v->from_day), -1, t->id);
 		else
 			store_choose(&P.s, v->per, v->scope == 2 ? -1 : v->per.start, t->id);
+		v->rg_n = 0, v->from_set = false;
 		store_save_choices(&P.s);
 		v->ov = OV_NONE;
 		relayout_later();
@@ -1024,7 +1117,11 @@ static void tap(double x, double y, bool finger)
 			struct hidden_group g[16];
 			if (view_hidden(&P.s, v->t, v->per, g, 16) <= v->hidden_kind)
 				v->ov = OV_NONE;
-		} else
+		} else if (v->ov == OV_PICKER && v->year) /* the year: back to the list */
+			v->year = false, v->rg_n = 0, v->rg_tmpl[0] = 0;
+		else if ((v->ov == OV_TITLE || v->ov == OV_MOVE) && v->back != OV_NONE)
+			v->ov = v->back, v->back = OV_NONE;
+		else
 			v->ov = OV_NONE;
 		relayout_later();
 		break;

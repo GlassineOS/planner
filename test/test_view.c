@@ -235,6 +235,64 @@ int main(void)
 		view_layout(&w, &s, &L, cr);
 		CHECK(find(&w, A_RESULT, -1) == NULL);
 	}
+	/* the picker: four scopes, Plan ahead; the year: a cell per week, the choices listed */
+	{
+		struct period wk = period_of(P_WEEK, today);
+		int nc0 = s.nc;
+		store_choose(&s, period_of(P_WEEK, today - 70), period_end(period_of(P_WEEK, today - 14)), "week-columns");
+		store_choose(&s, wk, wk.start, "week-lists");
+		struct view w = { .per = wk, .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_PICKER };
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_SCOPE, 0) && find(&w, A_SCOPE, 1) && find(&w, A_SCOPE, 2) && find(&w, A_SCOPE, 3));
+		const struct vhit *ya = find(&w, A_YEAR, -1);
+		CHECK(ya && view_hit(&w, ya->x + 4, ya->y + 4) == ya);
+		w.year = true;
+		view_layout(&w, &s, &L, cr);
+		int cells = 0, now = 0;
+		for (int i = 0; i < w.nh; i++)
+			if (w.hit[i].a == A_CELL) {
+				cells++;
+				now += w.hit[i].arg == wk.start;
+			}
+		CHECK(cells >= 52 && cells <= 53);
+		CHECK_INT(now, 1);
+		/* the range: Change; the single week: Remove */
+		const struct vhit *ch = find(&w, A_RANGE_CHANGE, -1), *rm = find(&w, A_RANGE_REMOVE, -1);
+		CHECK(ch && rm && s.c[ch->arg].to != s.c[ch->arg].from.start && s.c[rm->arg].to == s.c[rm->arg].from.start);
+		/* a range being chosen: a template picked first, then two weeks */
+		w.rg_n = 1, w.rg0 = wk.start, snprintf(w.rg_tmpl, sizeof w.rg_tmpl, "week-spread");
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_CELL, -1) != NULL);
+		while (s.nc > nc0)
+			store_unchoose(&s, s.nc - 1);
+		CHECK_INT(s.nc, nc0);
+	}
+	/* the hidden list: Open, Move and Delete per entry; Move shows the month's days */
+	{
+		struct period d = period_of(P_DAY, today);
+		store_choose(&s, d, d.start, "day-agenda");
+		struct view w = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = 0, .ov = OV_HIDDEN };
+		view_layout(&w, &s, &L, cr);
+		const struct vhit *op = find(&w, A_OPEN, -1), *mv = find(&w, A_MOVE, -1), *dl = find(&w, A_CLOSE, 1);
+		CHECK(op && mv && dl && op->id == mv->id && op->x < mv->x && mv->x < dl->x);
+		CHECK(view_hit(&w, mv->x + 4, mv->y + 4) == mv);
+		struct entry *me = mv ? store_get(&s, mv->id) : NULL;
+		CHECK(me != NULL);
+		if (me) {
+			w.ov = OV_MOVE, w.back = OV_HIDDEN, w.move = me->id, w.move_at = me->per.start;
+			view_layout(&w, &s, &L, cr);
+			int days = 0, y, m, dd;
+			for (int i = 0; i < w.nh; i++)
+				days += w.hit[i].a == A_MOVE_TO;
+			day_to_ymd(me->per.start, &y, &m, &dd);
+			CHECK_INT(days, days_in_month(y, m));
+			CHECK(find(&w, A_MOVE_NAV, -1) && find(&w, A_CLOSE, -1));
+			w.ov = OV_TITLE, w.title = me->id;
+			view_layout(&w, &s, &L, cr);
+			CHECK(find(&w, A_CLOSE, -1) != NULL);
+		}
+		store_choose(&s, d, d.start, "day-lists");
+	}
 	/* the settings */
 	{
 		struct view w = { .per = period_of(P_DAY, today), .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_SETTINGS };
