@@ -149,7 +149,9 @@ double pl_ink_width(double p)
 /* the ink of a field at ox, oy, scaled by k (1 in its own field: ink is never scaled there),
  * word by word as its region laid it out (FR-014): an ink word's strokes moved by its dx, dy,
  * neatened while the field's Neaten is on (FR-011); a set word (edited in text mode) filled
- * from its outline in Autograph; ink that is no word (a drawing) as written */
+ * from its outline in Autograph; while the field's Set in Autograph is on, a word that was
+ * read filled from its outline in Autograph too (its strokes kept, not drawn); ink that is no
+ * word (a drawing) as written */
 static void ink(struct ctx *c, const struct field *f, double ox, double oy, double k)
 {
 	if (!c->paint || (!f->ns && !f->nw))
@@ -166,7 +168,7 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 	col(cr, c->L->pen);
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-	bool neat = field_neaten(c->s, f);
+	bool neat = field_neaten(c->s, f), ag = field_autograph(c->s, f);
 	for (int i = 0; i < f->ns; i++) {
 		const struct pl_stroke *raw = &f->s[i], *s = raw;
 		if (neat && field_neat(f, raw->k) && field_neat(f, raw->k)->n)
@@ -174,6 +176,8 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 		if (!s->n)
 			continue;
 		int wi = field_word_of(f, raw->k);
+		if (wi >= 0 && ag && f->w[wi].set && f->w[wi].npath)
+			continue; /* shown set in Autograph */
 		double dx = wi >= 0 ? f->w[wi].dx * k : 0, dy = wi >= 0 ? f->w[wi].dy * k : 0;
 		double ks = k < 1 ? fmax(0.6, k) : 1;
 #define W_AT(a, b) fmax(0.9, pl_ink_width(((a).p + (b).p) / 2) * ks)
@@ -201,8 +205,8 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 	cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
 	for (int i = 0; i < f->nw; i++) {
 		const struct pl_word *w = &f->w[i];
-		if (!w->set || !w->npath)
-			continue;
+		if (!w->set || !w->npath || (w->nks && !ag))
+			continue; /* a read word shown set only while Set in Autograph is on */
 		cairo_new_path(cr);
 		/* ops as GHW_PATH_*: 0 move, 1 line, 2 quad, 3 cubic, 4 close, each followed by its
 		 * coordinates (region coordinates) */
