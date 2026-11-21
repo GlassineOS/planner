@@ -140,6 +140,10 @@ void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t 
  * buttons) lies where it is painted. A measure at another scale wraps and fits text
  * differently, and a target can land off its painted control */
 void view_layout_at(struct view *v, struct store *s, const struct look *L, double scale);
+/* ui_text_wrap with its lines lh apart (a factor of the line's height) at any scale of g's
+ * context, as at scale 1; pango alone spaces them by lh times the scale */
+double view_text_wrap(UiGc *g, const UiFont *f, const char *s, double x, double y, double w, int maxlines, double lh,
+		      ui_col c);
 void view_paint(struct view *v, struct store *s, const struct look *L, cairo_t *cr);
 /* keep painted ink per field (on by default); off drops what is kept */
 void view_ink_cache(bool on);
