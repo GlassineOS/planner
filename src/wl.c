@@ -218,6 +218,12 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 	for (size_t i = 0; i < ngone; i++)
 		field_remove_stroke(&e->f, gone[i]);
 	field_set_value(&e->f, text, state, len);
+	if (e->kind != E_EVENT && field_empty(&e->f)) {
+		/* all its ink went (struck out): the row is empty again, not an entry */
+		store_delete(&P.s, e->id);
+		rg->entry = 0;
+		relayout_later();
+	}
 	save();
 	if (ngone)
 		P.dirty = true;
