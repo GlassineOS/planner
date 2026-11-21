@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "content.h"
 #include "settle.h"
 #include "trace.h"
 #include "regions.h"
@@ -63,6 +64,9 @@ static struct {
 	int W, H;          /* logical */
 	bool configured, running, dirty;
 	struct settle st; /* the relayout asked for, and when it runs (FR-046) */
+	struct content said; /* what the next commit is said to be (FR-062) */
+	uint32_t ink_ver; /* the ink protocol's version bound */
+	bool unsaid; /* GLASSINE_PLANNER_CONTENT=off: nothing is said (to compare on a device) */
 	struct buffer buf[2];
 	struct frame fr;   /* the page as last drawn (the damage is what changed in it) */
 	struct frect part; /* a part to repaint (surface coordinates), when not all of it (dirty) */
@@ -483,9 +487,14 @@ static void draw(void)
 	for (int y = b->need.y; y < b->need.y + b->need.h; y++)
 		memcpy(px + (size_t)y * bw + b->need.x, P.fr.cur + (size_t)y * bw + b->need.x, (size_t)b->need.w * 4);
 	b->need = (struct frect){ 0 };
-	PL_TR("frame %s%s: paint %.1f ms (text %.1f ms, %d; ink %.1f ms, %d), diff %.1f ms, copy %.1f ms; %d runs, box %dx%d+%d+%d",
+	/* what this commit is, for the panel (FR-062); a frame that changed nothing is not sent */
+	enum content_kind said = content_commit(&P.said, n > 0 || b->fresh);
+	if (!P.inks || P.ink_ver < GLASSINE_INK_SURFACE_V1_SET_CONTENT_SINCE_VERSION || P.unsaid)
+		said = CONTENT_NONE;
+	PL_TR("frame %s%s: paint %.1f ms (text %.1f ms, %d; ink %.1f ms, %d), diff %.1f ms, copy %.1f ms; %d runs, box %dx%d+%d+%d%s",
 	      cp ? "part" : "whole", P.st.asked ? " (relayout pending)" : "", pl_tr_paint_ms, pl_tr_text_ms, pl_tr_text_n,
-	      pl_tr_ink_ms, pl_tr_ink_n, pl_tr_diff_ms, pl_trace ? pl_tr_now() - t1 : 0, n, box.w, box.h, box.x, box.y);
+	      pl_tr_ink_ms, pl_tr_ink_n, pl_tr_diff_ms, pl_trace ? pl_tr_now() - t1 : 0, n, box.w, box.h, box.x, box.y,
+	      said == CONTENT_PAGE ? ", said page" : said == CONTENT_MOTION ? ", said motion" : "");
 	(void)t0;
 	wl_surface_set_buffer_scale(P.surf, S);
 	wl_surface_attach(P.surf, b->b, 0, 0);
@@ -498,6 +507,8 @@ static void draw(void)
 			wl_surface_damage_buffer(P.surf, runs[i].x, runs[i].y, runs[i].w, runs[i].h);
 	if (n) {
 		b->busy = true;
+		if (said != CONTENT_NONE)
+			glassine_ink_surface_v1_set_content(P.inks, (uint32_t)said);
 		wl_surface_commit(P.surf);
 	}
 	P.dirty = false;
@@ -1139,6 +1150,7 @@ static void tap(double x, double y, bool finger)
 	bool plain0 = !v->tm && !v->search && !v->ed && !P.dirty;
 	double px = v->pop_x, py = v->pop_y, pw = v->pop_w, ph = v->pop_h;
 	bool held = P.st.held;
+	bool drawn0 = P.dirty || P.part.w > 0;
 	tap_(x, y, finger);
 	if (settle_tap_end(&P.st) && P.configured && !P.refused) {
 		settle_done(&P.st);
@@ -1154,6 +1166,9 @@ static void tap(double x, double y, bool finger)
 				repaint(v->pop_x - 8, v->pop_y - 8, v->pop_w + 16, v->pop_h + 16);
 		}
 	}
+	/* the tap's answer is a new picture, complete: a page for the panel (FR-062) */
+	if (!drawn0 && (P.dirty || P.part.w > 0))
+		content_tap(&P.said);
 }
 
 /* the free time field of the agenda an event is in: its minutes per px */
@@ -1208,6 +1223,7 @@ static void finger_motion(double x, double y)
 			P.ed.drop_target = t;
 			P.ed.drop_side = side;
 			editor_relayout();
+			content_step(&P.said);
 		}
 		return;
 	}
@@ -1229,6 +1245,7 @@ static void finger_motion(double x, double y)
 		P.v.drag = P.drag;
 		P.v.drag_s0 = P.drag_s0, P.v.drag_e0 = P.drag_e0;
 		relayout_later(); /* once per step, only where the block leaves and enters */
+		content_step(&P.said);
 	}
 }
 
@@ -1256,6 +1273,7 @@ static void editor_drag_end(double x, double y)
 
 static void finger_up(double x, double y)
 {
+	content_end(&P.said); /* what is drawn now is a drag's result, no step */
 	if (P.ed_drag && (fabs(x - P.tx) >= 24 || fabs(y - P.ty) >= 24)) {
 		editor_drag_end(x, y);
 		P.ed_drag = 0;
@@ -1310,6 +1328,7 @@ static void t_frame(void *d, struct wl_touch *t) {}
 static void t_cancel(void *d, struct wl_touch *t)
 {
 	P.touch_id = -1;
+	content_end(&P.said);
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
 		if (e)
@@ -1613,8 +1632,10 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *if
 		wl_output_add_listener(o, &output_listener, NULL);
 	} else if (!strcmp(iface, zwp_tablet_manager_v2_interface.name))
 		P.tabman = wl_registry_bind(r, name, &zwp_tablet_manager_v2_interface, 1);
-	else if (!strcmp(iface, glassine_ink_manager_v1_interface.name) && ver >= 2)
-		P.inkman = wl_registry_bind(r, name, &glassine_ink_manager_v1_interface, 2);
+	else if (!strcmp(iface, glassine_ink_manager_v1_interface.name) && ver >= 2) {
+		P.ink_ver = ver < 4 ? ver : 4; /* 2: the brush; 4: what a commit is (FR-062) */
+		P.inkman = wl_registry_bind(r, name, &glassine_ink_manager_v1_interface, P.ink_ver);
+	}
 	else if (!strcmp(iface, zwp_text_input_manager_v3_interface.name))
 		P.tim = wl_registry_bind(r, name, &zwp_text_input_manager_v3_interface, 1);
 }
@@ -1672,6 +1693,7 @@ static void reload_voice(void)
 int main(int argc, char **argv)
 {
 	pl_trace = getenv("GLASSINE_PLANNER_TRACE") && *getenv("GLASSINE_PLANNER_TRACE") == '1';
+	P.unsaid = getenv("GLASSINE_PLANNER_CONTENT") && !strcmp(getenv("GLASSINE_PLANNER_CONTENT"), "off");
 	for (int i = 1; i < argc; i++)
 		if (!strcmp(argv[i], "--help")) {
 			printf("usage: glassine-planner\n  the pen-first planner; its entries are kept in "
