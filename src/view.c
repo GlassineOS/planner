@@ -14,6 +14,7 @@
 #define BAR 60          /* the header bar */
 #define GUTTER 40       /* the agenda's hour gutter */
 #define INK_SIZE 19.0   /* the size ink is written at in a field; smaller places scale it */
+#define TITLE_MIN 11.0  /* the smallest readable size a title shrinks to (the board's 11 px) */
 #define MAXE 256
 
 static const char *DOW[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
@@ -86,7 +87,16 @@ static void hit(struct ctx *c, double x, double y, double w, double h, enum act 
 	struct view *v = c->v;
 	if (c->paint || v->nh >= V_HITS)
 		return;
-	v->hit[v->nh++] = (struct vhit){ x, y, w, h, a, arg, id };
+	v->hit[v->nh++] = (struct vhit){ x, y, w, h, a, arg, id, false };
+}
+
+/* a target on the bar above the keyboard: screen coordinates */
+static void hitf(struct ctx *c, double x, double y, double w, double h, enum act a, int arg)
+{
+	struct view *v = c->v;
+	if (c->paint || v->nh >= V_HITS)
+		return;
+	v->hit[v->nh++] = (struct vhit){ x, y, w, h, a, arg, 0, true };
 }
 
 static struct vfield *field(struct ctx *c, enum fkind k, double x, double y, double w, double h)
@@ -129,33 +139,96 @@ static void new_field(struct ctx *c, enum ekind k, struct period per, const char
 	f->first = first;
 }
 
-/* the ink of a field at ox, oy, scaled by k (1 in its own field: ink is never scaled there) */
+/* the ink of a field at ox, oy, scaled by k (1 in its own field: ink is never scaled there),
+ * word by word as its region laid it out (FR-014): an ink word's strokes moved by its dx, dy,
+ * neatened while the field's Neaten is on (FR-011); a set word (edited in text mode) filled
+ * from its outline in Autograph; ink that is no word (a drawing) as written */
 static void ink(struct ctx *c, const struct field *f, double ox, double oy, double k)
 {
-	if (!c->paint || !f->ns)
+	if (!c->paint || (!f->ns && !f->nw))
 		return;
 	cairo_t *cr = c->cr;
 	cairo_save(cr);
 	col(cr, c->L->pen);
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+	bool neat = field_neaten(c->s, f);
 	for (int i = 0; i < f->ns; i++) {
-		const struct pl_stroke *s = &f->s[i];
+		const struct pl_stroke *raw = &f->s[i], *s = raw;
+		if (neat && field_neat(f, raw->k) && field_neat(f, raw->k)->n)
+			s = field_neat(f, raw->k);
 		if (!s->n)
 			continue;
+		int wi = field_word_of(f, raw->k);
+		double dx = wi >= 0 ? f->w[wi].dx * k : 0, dy = wi >= 0 ? f->w[wi].dy * k : 0;
 		double p = 0;
-		for (int j = 0; j < s->n; j++)
-			p += s->pt[j].p;
-		p /= s->n;
+		for (int j = 0; j < raw->n; j++)
+			p += raw->pt[j].p;
+		p /= raw->n ? raw->n : 1;
 		cairo_set_line_width(cr, fmax(0.9, (1.3 + 1.2 * p) * (k < 1 ? fmax(0.6, k) : 1)));
-		cairo_move_to(cr, ox + s->pt[0].x * k, oy + s->pt[0].y * k);
+		cairo_move_to(cr, ox + dx + s->pt[0].x * k, oy + dy + s->pt[0].y * k);
 		if (s->n == 1)
-			cairo_line_to(cr, ox + s->pt[0].x * k + 0.01, oy + s->pt[0].y * k);
+			cairo_line_to(cr, ox + dx + s->pt[0].x * k + 0.01, oy + dy + s->pt[0].y * k);
 		for (int j = 1; j < s->n; j++)
-			cairo_line_to(cr, ox + s->pt[j].x * k, oy + s->pt[j].y * k);
+			cairo_line_to(cr, ox + dx + s->pt[j].x * k, oy + dy + s->pt[j].y * k);
 		cairo_stroke(cr);
 	}
+	cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
+	for (int i = 0; i < f->nw; i++) {
+		const struct pl_word *w = &f->w[i];
+		if (!w->set || !w->npath)
+			continue;
+		cairo_new_path(cr);
+		/* ops as GHW_PATH_*: 0 move, 1 line, 2 quad, 3 cubic, 4 close, each followed by its
+		 * coordinates (region coordinates) */
+		for (int j = 0; j < w->npath;) {
+			int op = (int)lroundf(w->path[j++]);
+#define PX(n) (ox + w->path[j + (n)] * k)
+#define PY(n) (oy + w->path[j + (n)] * k)
+			if (op == 0 && j + 2 <= w->npath) {
+				cairo_move_to(cr, PX(0), PY(1));
+				j += 2;
+			} else if (op == 1 && j + 2 <= w->npath) {
+				cairo_line_to(cr, PX(0), PY(1));
+				j += 2;
+			} else if (op == 2 && j + 4 <= w->npath) {
+				double x0, y0;
+				if (!cairo_has_current_point(cr))
+					cairo_move_to(cr, PX(0), PY(1));
+				cairo_get_current_point(cr, &x0, &y0);
+				double cx = PX(0), cy = PY(1), x1 = PX(2), y1 = PY(3);
+				cairo_curve_to(cr, x0 + 2.0 / 3 * (cx - x0), y0 + 2.0 / 3 * (cy - y0), x1 + 2.0 / 3 * (cx - x1),
+					       y1 + 2.0 / 3 * (cy - y1), x1, y1);
+				j += 4;
+			} else if (op == 3 && j + 6 <= w->npath) {
+				cairo_curve_to(cr, PX(0), PY(1), PX(2), PY(3), PX(4), PY(5));
+				j += 6;
+			} else if (op == 4)
+				cairo_close_path(cr);
+			else
+				break;
+#undef PX
+#undef PY
+		}
+		cairo_fill(cr);
+	}
 	cairo_restore(cr);
+}
+
+/* the top of a field's ink, as laid out */
+static double ink_top(const struct field *f)
+{
+	double top = 1e9;
+	for (int i = 0; i < f->ns; i++) {
+		int wi = field_word_of(f, f->s[i].k);
+		double dy = wi >= 0 ? f->w[wi].dy : 0;
+		for (int j = 0; j < f->s[i].n; j++)
+			top = fmin(top, f->s[i].pt[j].y + dy);
+	}
+	for (int i = 0; i < f->nw; i++)
+		if (f->w[i].set)
+			top = fmin(top, f->w[i].box[1]);
+	return top;
 }
 
 /* a field's ink in a place smaller than where it was written: fitted to the line height h */
@@ -163,12 +236,8 @@ static void ink_fit(struct ctx *c, const struct field *f, double x, double y, do
 {
 	double r, b;
 	field_extent(f, &r, &b);
-	double top = 1e9;
-	for (int i = 0; i < f->ns; i++)
-		for (int j = 0; j < f->s[i].n; j++)
-			if (f->s[i].pt[j].y < top)
-				top = f->s[i].pt[j].y;
-	if (!f->ns || b <= top)
+	double top = ink_top(f);
+	if ((!f->ns && !f->nw) || b <= top)
 		return;
 	double k = fmin(1, h / fmax(b - top, INK_SIZE));
 	cairo_save(c->cr);
@@ -987,10 +1056,49 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		}
 		double y1 = by + top + (fmax(s0, ws * 60) / 60.0 - ws) * pitch, y2 = by + top + (fmin(e0, we * 60) / 60.0 - ws) * pitch;
 		double bx = b->x + gut, bw = b->w - gut - (compact ? 2 : 6), byy = round(y1) + 1, bh = fmax(8, round(y2 - y1) - 2);
-		box(c, bx, byy, bw, bh, compact ? fmin(L->ui_r, 8) : L->ui_r, L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
+		/* the title's room (FR-018): its block, and the free time below it down to the next
+		 * event or the agenda's end. A title that needs more grows its block into that room
+		 * (a dotted lower edge); one that doesn't fit shrinks evenly down to the smallest
+		 * readable size, then is cut at the block's edge */
+		double gh = bh, k = 1, fh = bh;
+		bool cut = false, grown = false;
+		if (!compact) {
+			double limit = by + top + (we - ws) * pitch;
+			for (int j = 0; j < ne; j++) {
+				if (j == i || ev[j]->allday)
+					continue;
+				int sj = (ev[j]->per.start - day) * 1440 + ev[j]->start;
+				if (sj >= e0 && sj < we * 60)
+					limit = fmin(limit, by + top + (sj / 60.0 - ws) * pitch);
+			}
+			double room = fmax(bh, round(limit) - byy - 1), r, bt;
+			field_extent(&x->f, &r, &bt);
+			double needw = r + 4, needh = bt + 4;
+			if (needw > bw || needh > bh) {
+				k = fmin(1, fmin(bw / fmax(needw, 1), room / fmax(needh, 1)));
+				if (k < TITLE_MIN / INK_SIZE) {
+					k = TITLE_MIN / INK_SIZE;
+					cut = true;
+				}
+				gh = fmin(room, fmax(bh, ceil(needh * k)));
+				grown = gh > bh;
+			}
+			/* while written, the field reaches a line below its ink, into the room */
+			fh = k < 1 ? gh : fmin(room, fmax(gh, bt > bh - 6 ? bt + PL_ROW : bh));
+		}
+		box(c, bx, byy, bw, gh, compact ? fmin(L->ui_r, 8) : L->ui_r, L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
 		    L->voice == V_STATIONERY ? L->soft : L->ink, L->paper);
+		if (grown && c->paint) { /* the grown part's lower edge is dotted */
+			double lw = L->voice == V_STATIONERY || L->voice == V_EDITORIAL ? 1 : 1.5;
+			cairo_rectangle(c->cr, bx, byy + gh - 3, bw, 3);
+			lk_fill(c->cr, L->paper);
+			lk_rule(c->cr, bx, byy + gh - 2, bw, 2, L->ink, 2);
+			cairo_rectangle(c->cr, bx, byy + gh - 3, lw, 3);
+			cairo_rectangle(c->cr, bx + bw - lw, byy + gh - 3, lw, 3);
+			lk_fill(c->cr, L->voice == V_STATIONERY ? L->soft : L->ink);
+		}
 		if (L->ev_bar)
-			box(c, bx, byy, 3, bh, 0, 0, 0, L->ink);
+			box(c, bx, byy, 3, gh, 0, 0, 0, L->ink);
 		if (!compact && y2 - y1 >= 24) {
 			char w1[8], w2[8], when[20];
 			hm(w1, sizeof w1, s0 < 0 ? 0 : s0);
@@ -1006,17 +1114,17 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			ink_fit(c, &x->f, bx + 3, byy + 1, bw - 4, fmin(bh - 2, 15));
 			hit(c, bx, byy, bw, bh, A_DAY, day, 0);
 		} else {
-			struct vfield *ef = entry_field(c, x, bx, byy, bw, bh, 0, 0);
+			struct vfield *ef = entry_field(c, x, bx, byy, bw, fh, 0, 0);
 			if (ef)
 				ef->layer = 1;
 			if (c->paint) {
 				cairo_save(c->cr);
-				cairo_rectangle(c->cr, bx + 1, byy, bw - 2, bh);
+				cairo_rectangle(c->cr, bx + 1, byy, bw - 2, gh);
 				cairo_clip(c->cr);
-				ink(c, &x->f, bx, byy, 1);
+				ink(c, &x->f, bx, byy, k);
 				cairo_restore(c->cr);
 			}
-			hit(c, bx, byy, bw, bh, A_EVENT, 0, x->id);
+			hit(c, bx, byy, bw, gh, A_EVENT, cut, x->id);
 		}
 	}
 	/* an event being dragged (FR-018): a dashed outline where it was, and in the gutter the
@@ -1145,6 +1253,100 @@ static void pop_frame(struct ctx *c, double x, double y, double w, double h)
 	}
 }
 
+
+/* ---- search, at the top of the (i) popover (board info.search, answer B; FR-050) ---- */
+
+static void when_of(const struct entry *e, char *o, size_t n)
+{
+	int y, m, d;
+	day_to_ymd(e->per.start, &y, &m, &d);
+	if (e->per.kind == P_WEEK)
+		snprintf(o, n, "week %d", week_number(e->per.start));
+	else if (e->per.kind == P_MONTH)
+		snprintf(o, n, "%s %d", MON[m - 1], y);
+	else
+		snprintf(o, n, "%s %d %.3s", DOW3[day_weekday(e->per.start)], d, MON[m - 1]);
+}
+
+/* text with a caret at byte cur (-1: none), from x on the line whose vertical centre is cy,
+ * clipped to w; moved left when the caret would be past the right edge */
+static void caret_text(struct ctx *c, const UiFont *f, const char *t, int cur, double x, double cy, double w, ui_col cl)
+{
+	t = t ? t : "";
+	double h, full = ui_text_w(&c->g, f, t, &h), cx = 0;
+	if (cur >= 0) {
+		char pre[1024];
+		snprintf(pre, sizeof pre, "%.*s", cur, t);
+		cx = ui_text_w(&c->g, f, pre, &h);
+	}
+	double sh = cx > w - 4 ? cx - (w - 4) : 0;
+	if (!c->paint)
+		return;
+	cairo_save(c->cr);
+	cairo_rectangle(c->cr, x, cy - h, w, 2 * h);
+	cairo_clip(c->cr);
+	ui_text(&c->g, f, t, x - sh, cy - h / 2, 0, 0, cl, &h);
+	if (cur >= 0) {
+		cairo_rectangle(c->cr, x - sh + cx, cy - 10, 2, 20);
+		lk_fill(c->cr, c->L->ink);
+	}
+	cairo_restore(c->cr);
+	(void)full;
+}
+
+static double search_box(struct ctx *c, double x, double y, double w)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	double bx = x + 12, by = y + 10, bw = w - 24;
+	box(c, bx, by, bw, 40, L->ui_r, 1.5, L->ink, 0);
+	icon(c, IC_SEARCH, bx + 12 + 9, by + 20, 18, L->ink);
+	UiFont f = fam(L->text, 400, 0, 15);
+	bool typed = v->search && v->q && *v->q;
+	caret_text(c, &f, typed ? v->q : "Search the planner", v->search ? (typed ? v->q_cur : 0) : -1, bx + 12 + 18 + 10, by + 20,
+		   bw - 12 - 18 - 10 - 8, typed ? L->ink : L->soft);
+	hit(c, bx, by, bw, 40, A_SEARCH, 0, 0);
+	return by + 40 + 4;
+}
+
+#define RESULTS 8
+static double results(struct ctx *c, double x, double y, double w)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *e[RESULTS + 1];
+	int n = store_search(c->s, v->q, e, RESULTS + 1);
+	char head_[48];
+	if (n > RESULTS)
+		snprintf(head_, sizeof head_, "More than %d found", RESULTS);
+	else
+		snprintf(head_, sizeof head_, n ? "%d found" : "Nothing found", n);
+	UiFont lf = L->label;
+	double kh;
+	ui_text_w(&c->g, &lf, "X", &kh);
+	if (c->paint)
+		ui_text(&c->g, &lf, head_, x + 16, y + 12, 0, w - 32, L->soft, &kh);
+	y += 12 + kh + 4;
+	UiFont qf = fam(L->mono, 400, 0, 11.5f);
+	double vh = v->vis_h > 0 && v->vis_h < v->H ? v->vis_h : v->H; /* above the keyboard */
+	for (int i = 0; i < n && i < RESULTS && y + 46 < vh - 8; i++) {
+		char when[40];
+		when_of(e[i], when, sizeof when);
+		double ww = tw(c, &qf, when);
+		if (e[i]->kind == E_MARK) {
+			struct entry *h = store_get(c->s, e[i]->habit);
+			if (h)
+				ink_fit(c, &h->f, x + 16, y + 6, w - 32 - ww - 10, 34);
+		} else
+			ink_fit(c, &e[i]->f, x + 16, y + 6, w - 32 - ww - 10, 34);
+		tc(c, &qf, when, x + w - 16, y + 23, 2, 0, L->soft);
+		rule(c, x + 16, y + 46 - L->row_w, w - 32);
+		hit(c, x, y, w, 46, A_RESULT, 0, e[i]->id);
+		y += 46;
+	}
+	return y;
+}
+
 static double pop_content(struct ctx *c, double x, double y, double w)
 {
 	const struct look *L = c->L;
@@ -1169,6 +1371,11 @@ static double pop_content(struct ctx *c, double x, double y, double w)
 	hit(c, gx, y + 3, 40, 40, menu ? A_BACK : A_COG, 0, 0);
 	y += 46;
 	rule(c, x, y - L->row_w, w);
+	if (!menu) {
+		y = search_box(c, x, y, w);
+		if (v->search && v->q && *v->q)
+			return results(c, x, y, w) + 6 - y0;
+	}
 	if (!menu) {
 		/* the template and how this period got it */
 		static const char *how[] = { "chosen for this %s", "from a range of %ss", "for every %s from a date on",
@@ -1221,7 +1428,7 @@ static double pop_content(struct ctx *c, double x, double y, double w)
 			{ IC_KEYBOARD, "Text mode for this view", "every field as text, with the keyboard", 1, A_TEXTMODE },
 			{ IC_LAYOUT, "Template", NULL, 0, A_PICKER },
 			{ IC_EDIT, "Edit this template", "add, move and resize widgets", 0, A_EDIT },
-			{ IC_SLIDERS, "Settings", "how ink is shown, the agenda’s hours", 0, A_NONE },
+			{ IC_SLIDERS, "Settings", "how ink is shown, the agenda’s hours", 0, A_SETTINGS },
 		};
 		char tsub[96];
 		snprintf(tsub, sizeof tsub, "%s · choose another, or plan ahead", v->t->name);
@@ -1391,6 +1598,302 @@ static void sheet_hidden(struct ctx *c)
 	hit(c, 0, y, W, sh, A_NONE, 0, 0); /* the sheet takes its taps: after its own targets */
 }
 
+/* ---- text mode (boards text.field, text.view; FR-012 to FR-017) ---- */
+
+#define TBAR 46
+
+static UiFont plex(float px)
+{
+	return fam("IBM Plex Sans", 400, 0, px);
+}
+
+static double vis_of(const struct view *v)
+{
+	return v->vis_h > 0 && v->vis_h < v->H ? v->vis_h : v->H;
+}
+
+static const char *text_of(struct ctx *c, const struct vfield *f)
+{
+	struct view *v = c->v;
+	if (v->text_of)
+		return v->text_of(v->text_ud, f);
+	struct entry *e = f->k == F_ENTRY ? store_get(c->s, f->entry) : NULL;
+	return e && e->f.value ? e->f.value : "";
+}
+
+/* wrapped lines of t in w: byte start and length of each */
+struct tline {
+	int s, n;
+};
+static int wrap(struct ctx *c, const UiFont *f, const char *t, double w, struct tline *out, int max)
+{
+	int n = 0, len = (int)strlen(t), ls = 0, last = -1;
+	char buf[1024];
+	for (int i = 0; i <= len && n < max; i++) {
+		if (i < len && t[i] != ' ' && t[i] != '\n')
+			continue;
+		double h;
+		snprintf(buf, sizeof buf, "%.*s", i - ls, t + ls);
+		if (ui_text_w(&c->g, f, buf, &h) > w && last > ls) {
+			out[n++] = (struct tline){ ls, last - ls };
+			ls = last + 1;
+			i = last;
+			last = -1;
+			continue;
+		}
+		if (i == len || t[i] == '\n') {
+			out[n++] = (struct tline){ ls, i - ls };
+			ls = i + 1;
+			last = -1;
+		} else
+			last = i;
+	}
+	if (!n)
+		out[n++] = (struct tline){ 0, 0 };
+	return n;
+}
+
+/* one field as an ordinary text field: the focused one with a caret and a 2 px edge, the
+ * others (the whole view) as quiet boxes over their row */
+static void tfield(struct ctx *c, const struct vfield *f, const char *t, int cur, bool focus)
+{
+	const struct look *L = c->L;
+	if (!c->paint)
+		return;
+	if (f->h <= 48) { /* a row */
+		if (focus) {
+			double x = f->x - 5, y = f->y - 3, w = f->w + 9;
+			box(c, x, y, w, 40, L->ui_r, 2, L->ink, L->paper);
+			UiFont pf = plex(16);
+			caret_text(c, &pf, t, cur, x + 10, y + 20, w - 20, L->ink);
+		} else {
+			double x = f->x - 1, y = f->y + f->h - 4 - 26, w = f->w + 1;
+			box(c, x, y, w, 26, 4, 1, L->ink, L->paper);
+			UiFont pf = plex(14);
+			caret_text(c, &pf, t, -1, x + 8, y + 13, w - 16, L->ink);
+		}
+		return;
+	}
+	/* a tall field (notes, an event's title): the text wrapped in a box over it */
+	double x = f->x - 4, y = f->y + 2, w = f->w + 4, h = fmax(40, f->h - 4);
+	box(c, x, y, w, h, focus ? L->ui_r : 4, focus ? 2 : 1, L->ink, L->paper);
+	UiFont pf = plex(focus ? 16 : 14);
+	struct tline ln[64];
+	int n = wrap(c, &pf, t, w - 20, ln, 64);
+	double lh = pf.px * 1.45, ty = y + 8;
+	cairo_save(c->cr);
+	cairo_rectangle(c->cr, x, y, w, h);
+	cairo_clip(c->cr);
+	for (int i = 0; i < n; i++) {
+		char b[1024];
+		snprintf(b, sizeof b, "%.*s", ln[i].n, t + ln[i].s);
+		bool here = cur >= ln[i].s && cur <= ln[i].s + ln[i].n && (i == n - 1 || cur < ln[i + 1].s);
+		caret_text(c, &pf, b, here ? cur - ln[i].s : -1, x + 10, ty + lh / 2, w - 20, L->ink);
+		ty += lh;
+	}
+	cairo_restore(c->cr);
+}
+
+static const struct vfield *field_named(const struct view *v, const char *name)
+{
+	for (int i = 0; name && *name && i < v->nf; i++)
+		if (!strcmp(v->f[i].name, name))
+			return &v->f[i];
+	return NULL;
+}
+
+static void text_fields(struct ctx *c)
+{
+	struct view *v = c->v;
+	const struct vfield *fo = field_named(v, v->tm_name);
+	if (v->tm == 2)
+		for (int i = 0; i < v->nf; i++)
+			if (v->f[i].k == F_ENTRY && &v->f[i] != fo)
+				tfield(c, &v->f[i], text_of(c, &v->f[i]), -1, false);
+	if (fo)
+		tfield(c, fo, v->tm_text ? v->tm_text : text_of(c, fo), v->tm_cur, true);
+}
+
+static const char *kind_word(enum ekind k)
+{
+	return k == E_EVENT ? "event" : k == E_TODO ? "to-do" : k == E_NOTE ? "note" : k == E_PRIO ? "priority" : "habit";
+}
+
+static UiFont btn_font(const struct look *L); /* planner.css .pl-btn (with the editor's buttons) */
+
+/* a switch (planner.css .pl-tog) at x, cy */
+static void tog(struct ctx *c, double x, double cy, bool on)
+{
+	const struct look *L = c->L;
+	double r = L->voice == V_EDITORIAL ? 0 : 11;
+	box(c, x, cy - 11, 40, 22, r, 1.5, L->ink, on ? L->ink : 0);
+	box(c, x + (on ? 22 : 4), cy - 7, 14, 14, L->voice == V_EDITORIAL ? 0 : 7, 0, 0, on ? L->paper : L->soft);
+}
+
+/* the bar above the keyboard (.pl-tbar): what is being edited, the field's two switches and
+ * the way out; at the foot of what the keyboard leaves */
+static void tbar(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	double W = v->W, y = vis_of(v) - TBAR, cy = y + TBAR / 2.0;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, y, W, TBAR);
+		lk_fill(c->cr, L->paper);
+		lk_rule(c->cr, 0, y, W, L->row_w, L->row_c, L->row_dash);
+	}
+	UiFont bf = btn_font(L), qf = bf;
+	char lbl[96];
+	const struct vfield *fo = field_named(v, v->tm_name);
+	double x = W - 10;
+	if (v->tm == 2) {
+		snprintf(lbl, sizeof lbl, "Text mode for the whole view: every field shows its text");
+		double w = tw(c, &bf, "Back to ink") + 28;
+		x -= w;
+		box(c, x, cy - 20, w, 40, L->ui_r, L->edge, L->ink, L->ink);
+		tc(c, &bf, "Back to ink", x + w / 2, cy, 1, 0, L->paper);
+		hitf(c, x, cy - 20, w, 40, A_TM_DONE, 0);
+	} else {
+		struct entry *e = fo && fo->k == F_ENTRY ? store_get(c->s, fo->entry) : NULL;
+		snprintf(lbl, sizeof lbl, "Text mode for this %s", kind_word(e ? e->kind : fo ? fo->ekind : E_NOTE));
+		double w = tw(c, &bf, "Done") + 28;
+		x -= w;
+		box(c, x, cy - 20, w, 40, L->ui_r, L->edge, L->ink, L->ink);
+		tc(c, &bf, "Done", x + w / 2, cy, 1, 0, L->paper);
+		hitf(c, x, cy - 20, w, 40, A_TM_DONE, 0);
+		static const char *const NAME[] = { "Set in Autograph", "Neaten" };
+		for (int i = 0; i < 2; i++) {
+			bool on = i == 0 ? v->tm_autograph : v->tm_neaten;
+			double tw_ = tw(c, &qf, NAME[i]), bw = 6 + 40 + 8 + tw_ + 6;
+			x -= 8 + bw;
+			tog(c, x + 6, cy, on);
+			tc(c, &qf, NAME[i], x + 6 + 40 + 8, cy, 0, 0, L->ink);
+			if (c->paint)
+				lk_rule(c->cr, x + 6 + 40 + 8, cy + 9, tw_, 1, L->ink, 0);
+			hitf(c, x, cy - 20, bw, 40, i == 0 ? A_TM_AUTOGRAPH : A_TM_NEATEN, 0);
+		}
+	}
+	UiFont lf = fam(L->mono, 400, 0, 12);
+	if (L->voice != V_WHITE)
+		lf = fam(L->text, 400, 1, 14);
+	tc(c, &lf, lbl, 10, cy, 0, fmax(40, x - 18), L->soft);
+	hitf(c, 0, y, W, TBAR, A_NONE, 0); /* the bar takes its taps: after its own targets */
+}
+
+/* ---- the settings (board cog.settings) ---- */
+
+static const char *strength_name(float s)
+{
+	return s < 0.5f ? "Light" : s < 0.85f ? "Medium" : "Strong";
+}
+
+static void settings(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	double sh = v->H - BAR - 20, y = v->H - sh, W = v->W;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, y, W, sh);
+		lk_fill(c->cr, L->paper);
+		if (L->voice == V_EDITORIAL) {
+			lk_rule(c->cr, 0, y, W, 1, L->ink, 0);
+			lk_rule(c->cr, 0, y + 2, W, 1, L->ink, 0);
+		} else
+			lk_rule(c->cr, 0, y, W, 1.5, L->ink, 0);
+	}
+	UiFont h2 = fpx(L->h1, 21);
+	tc(c, &h2, "Planner settings", 16, y + 14 + 20, 0, W - 140, L->ink);
+	UiFont bf = btn_font(L);
+	double bw = tw(c, &bf, "Close") + 28;
+	box(c, W - 16 - bw, y + 14, bw, 40, L->ui_r, L->edge, L->ink, L->paper);
+	tc(c, &bf, "Close", W - 16 - bw / 2, y + 34, 1, 0, L->ink);
+	hit(c, W - 16 - bw, y + 14, bw, 40, A_CLOSE, 0, 0);
+	UiFont lf = fam(L->text, 400, 0, 14);
+	tc(c, &lf, "Ink is always kept as written; these change only how it is shown.", 16, y + 64 + 9, 0, W - 32, L->soft);
+	double yy = y + 64 + 28;
+	/* the agenda's hours: of this template's first agenda */
+	char hours[64] = "", hend[16] = "";
+	for (int i = 0; i < v->g.n && !hours[0]; i++)
+		if (v->g.p[i].n->wg == W_AGENDA || v->g.p[i].n->wg == W_CAGENDA) {
+			snprintf(hours, sizeof hours, "per template; this one: %02d:00–%02d:00", v->g.p[i].n->from, v->g.p[i].n->to);
+			snprintf(hend, sizeof hend, "%02d–%02d", v->g.p[i].n->from, v->g.p[i].n->to);
+		}
+	if (!hours[0])
+		snprintf(hours, sizeof hours, "per template; this one has no agenda");
+	char nsub[96];
+	snprintf(nsub, sizeof nsub, "straighter lines, a steady slant, even sizes · %s", strength_name(c->s->strength));
+	struct {
+		const char *head, *t, *sub, *end;
+		int tog; /* 1 Neaten, 2 Set in Autograph */
+		enum act a;
+	} it[] = {
+		{ "Ink in every field", "Neaten", nsub, "", 1, A_SET_NEATEN },
+		{ NULL, "Set in Autograph", "each word that was read, in your font", "", 2, A_SET_AUTOGRAPH },
+		{ NULL, "One field’s own choice wins", "set it in that field’s text mode", "", 0, A_NONE },
+		{ "Agenda", "Hours shown", hours, hend, 0, A_NONE },
+		{ NULL, "Steps", "moving and stretching an event", "30 min", 0, A_NONE },
+		{ "From the system", "First day of the week, date and time", "follow Settings › Language and region", "Monday", 0, A_NONE },
+	};
+	UiFont kf = L->label, tf = fam(L->text, 400, 0, L->voice == V_STATIONERY ? 18 : 16), sf = fam(L->text, 400, 0, 12.5f),
+	       ef = fam(L->mono, 400, 0, 12);
+	if (L->voice == V_WHITE)
+		kf = fam(L->mono, 600, 0, 11), kf.tcase = UI_CASE_UPPER, kf.ls = 0.08f;
+	for (size_t i = 0; i < sizeof it / sizeof *it; i++) {
+		if (it[i].head) {
+			double kh;
+			ui_text_w(&c->g, &kf, it[i].head, &kh);
+			if (c->paint)
+				ui_text(&c->g, &kf, it[i].head, 16, yy + 10, 0, W - 32, L->ink, &kh);
+			yy += 10 + kh + 2;
+		} else
+			rule(c, 16, yy, W - 32);
+		double h1, h2, ew = *it[i].end ? tw(c, &ef, it[i].end) + 12 : 0;
+		double tw_ = W - 32 - (it[i].tog ? 52 : 0) - ew;
+		ui_text_w(&c->g, &tf, it[i].t, &h1);
+		UiGc mg = c->g;
+		mg.paint = 0;
+		h2 = ui_text_wrap(&mg, &sf, it[i].sub, 0, 0, tw_, 2, 0, L->soft);
+		double ih = fmax(48, 6 + h1 + 2 + h2 + 6), ty = yy + (ih - h1 - 2 - h2) / 2;
+		if (c->paint) {
+			ui_text(&c->g, &tf, it[i].t, 16, ty, 0, tw_, L->ink, &h1);
+			ui_text_wrap(&c->g, &sf, it[i].sub, 16, ty + h1 + 2, tw_, 2, 0, L->soft);
+		}
+		if (it[i].tog) {
+			tog(c, W - 16 - 40, yy + ih / 2, it[i].tog == 1 ? c->s->neaten : c->s->autograph);
+			hit(c, W - 16 - 56, yy, 56, ih, it[i].a, 0, 0);
+			if (it[i].tog == 1) /* the row's text: the strength, Light, Medium, Strong */
+				hit(c, 16, yy, W - 32 - 56, ih, A_SET_STRENGTH, 0, 0);
+		}
+		if (*it[i].end)
+			tc(c, &ef, it[i].end, W - 16, yy + ih / 2, 2, 0, L->soft);
+		yy += ih;
+	}
+	hit(c, 0, y, W, sh, A_NONE, 0, 0); /* the sheet takes its taps: after its own targets */
+}
+
+/* ---- a cut title, whole (FR-018): a card over its block ---- */
+
+static void title_card(struct ctx *c)
+{
+	struct view *v = c->v;
+	struct entry *e = store_get(c->s, v->title);
+	const struct vfield *f = e ? view_field_of(v, e->id) : NULL;
+	if (f) {
+		double r, b;
+		field_extent(&e->f, &r, &b);
+		double w = fmin(v->W - 16, fmax(f->w, r + 20)), h = b + 16, x = fmin(f->x, v->W - 8 - w), y = fmin(f->y, v->H - 8 - h);
+		pop_frame(c, x, y, w, h);
+		if (c->paint) {
+			cairo_save(c->cr);
+			cairo_rectangle(c->cr, x, y, w, h);
+			cairo_clip(c->cr);
+			ink(c, &e->f, x + 8, y + 8, 1);
+			cairo_restore(c->cr);
+		}
+	}
+	hit(c, 0, 0, v->W, v->H, A_CLOSE, 0, 0); /* a tap anywhere closes it */
+}
+
 /* ---- the template picker (board templates.picker) ---- */
 
 static void thumb(struct ctx *c, const struct tmpl *t, double x, double y, double w, double h, bool use)
@@ -1552,20 +2055,37 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 	}
 	if (!paint) {
 		/* the overlays' targets first: they lie on top */
+		if (v->tm)
+			tbar(&c);
+		if (v->ov == OV_TITLE)
+			title_card(&c);
 		if (v->ov == OV_INFO || v->ov == OV_MENU)
 			popover(&c);
 		if (v->ov == OV_HIDDEN)
 			sheet_hidden(&c);
+		if (v->ov == OV_SETTINGS)
+			settings(&c);
 		bar(&c);
 		page(&c);
 		return;
 	}
+	cairo_save(cr);
+	cairo_translate(cr, 0, -v->scroll);
 	page(&c);
 	bar(&c);
 	if (v->ov == OV_INFO || v->ov == OV_MENU)
 		popover(&c);
 	if (v->ov == OV_HIDDEN)
 		sheet_hidden(&c);
+	if (v->ov == OV_SETTINGS)
+		settings(&c);
+	if (v->ov == OV_TITLE)
+		title_card(&c);
+	if (v->tm)
+		text_fields(&c);
+	cairo_restore(cr);
+	if (v->tm)
+		tbar(&c);
 }
 
 void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t *measure)
@@ -1584,10 +2104,41 @@ const struct vhit *view_hit(const struct view *v, double x, double y)
 {
 	for (int i = 0; i < v->nh; i++) {
 		const struct vhit *h = &v->hit[i];
-		if (x >= h->x && x < h->x + h->w && y >= h->y && y < h->y + h->h)
+		double yy = h->fixed ? y : y + v->scroll;
+		if (x >= h->x && x < h->x + h->w && yy >= h->y && yy < h->y + h->h)
 			return h;
 	}
 	return NULL;
+}
+
+const struct vfield *view_field_at(const struct view *v, double x, double y)
+{
+	if (v->ov != OV_NONE)
+		return NULL;
+	if (v->tm && y >= vis_of(v) - TBAR)
+		return NULL;
+	y += v->scroll;
+	if (y < BAR)
+		return NULL;
+	const struct vfield *best = NULL;
+	for (int i = 0; i < v->nf; i++) {
+		const struct vfield *f = &v->f[i];
+		if (f->k == F_FREE || x < f->x || x >= f->x + f->w || y < f->y || y >= f->y + f->h)
+			continue;
+		if (!best || f->layer >= best->layer)
+			best = f;
+	}
+	return best;
+}
+
+double view_scroll_to(const struct view *v, const struct vfield *f)
+{
+	double vis = vis_of(v) - TBAR, sc = v->scroll, bottom = f->y + fmin(f->h, 40) + 6;
+	if (bottom - sc > vis)
+		sc = ceil((bottom - vis) / PL_ROW) * PL_ROW;
+	if (f->y - 4 - sc < BAR)
+		sc = fmax(0, floor((f->y - 4 - BAR) / PL_ROW) * PL_ROW);
+	return fmax(0, fmin(sc, v->H - TBAR));
 }
 
 const struct vfield *view_field_of(const struct view *v, uint32_t entry)
