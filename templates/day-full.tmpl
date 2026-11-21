@@ -1,0 +1,13 @@
+# A day with everything: the agenda beside the lists, notes underneath (in landscape,
+# the root column becomes a row: the notes take a third column).
+name  Day · agenda and lists
+kind  day
+
+column landscape=row
+  row weight=3
+    agenda grow weight=3 from=7 to=21
+    column weight=2
+      minimonth
+      todo period=day title=Today
+      todo period=week title="This week"
+  notes period=day grow title=Notes
