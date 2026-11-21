@@ -21,7 +21,7 @@
 #define PL_INK_EXP 1.0
 double pl_ink_width(double pressure);
 
-enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE };
+enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE, OV_MOVE };
 
 /* a handwriting field: one writing region */
 enum fkind {
@@ -51,6 +51,8 @@ enum act {
 	A_SETTINGS, A_SET_NEATEN, A_SET_STRENGTH, A_SET_AUTOGRAPH, /* the settings sheet */
 	A_TM_NEATEN, A_TM_AUTOGRAPH, A_TM_DONE,                   /* the bar above the keyboard */
 	A_SEARCH, A_RESULT,                                         /* search in the (i) popover */
+	A_OPEN, A_MOVE, A_MOVE_NAV, A_MOVE_TO,  /* the hidden list's Open and Move; Move's calendar: arg -1/+1, a day */
+	A_YEAR, A_CELL, A_RANGE_CHANGE, A_RANGE_REMOVE, /* the year planned ahead: Plan ahead, a period (arg its day), a choice (arg its index) */
 	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
 	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
 };
@@ -102,7 +104,17 @@ struct view {
 	bool search;
 	const char *q;      /* the words searched for; owned by the caller */
 	int q_cur;
-	uint32_t title;     /* OV_TITLE: the event whose cut title shows whole */
+	uint32_t title;     /* OV_TITLE: the event whose cut title shows whole, or an entry opened */
+	enum overlay back;  /* OV_TITLE, OV_MOVE: where Close goes back to */
+	uint32_t move;      /* OV_MOVE: the entry being moved */
+	int move_at;        /* OV_MOVE: a day of the month (the year, for a month's entry) shown */
+	/* OV_PICKER's year planned ahead (board templates.year) and a range being chosen: rg_n
+	 * periods tapped (rg0 first, rg1 last), for the template rg_tmpl ("" none yet) */
+	bool year;
+	int rg_n, rg0, rg1;
+	char rg_tmpl[40];
+	bool from_set;      /* "From … on" of another date than the view's (a choice changed) */
+	int from_day;
 	struct editor *ed;  /* the template editor, when open: it takes the whole screen */
 	char ring[40];      /* the picker rings this template (a new one just saved), else the one in use */
 };
