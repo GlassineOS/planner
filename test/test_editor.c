@@ -61,6 +61,71 @@ static void select_kind(struct editor *e, struct view *v, enum wkind k, int nth)
 	editor_act(e, ED_SELECT, 0, NULL);
 }
 
+/* dark at device pixel x, y of an RGB24 surface */
+static bool dark_at(cairo_surface_t *sf, double x, double y)
+{
+	int w = cairo_image_surface_get_width(sf), h = cairo_image_surface_get_height(sf);
+	int ix = (int)x, iy = (int)y;
+	if (ix < 0 || iy < 0 || ix >= w || iy >= h)
+		return false;
+	cairo_surface_flush(sf);
+	const uint32_t px = *(const uint32_t *)(cairo_image_surface_get_data(sf) + (size_t)iy * cairo_image_surface_get_stride(sf) + ix * 4);
+	int r = px >> 16 & 255, g = px >> 8 & 255, b = px & 255;
+	return r * 3 + g * 6 + b < 128 * 10;
+}
+
+/* The editor's dialogs on a scaled output (the device's is 2): laid out with view_layout_at
+ * at the scale they are painted at, each button's target lies on the button painted.
+ * Measured unscaled, the dialog's text wrapped otherwise than painted and the buttons'
+ * targets lay a line above them: a tap on a painted button reached only the modal cover,
+ * and the editor took no tap at all. */
+static void dialogs_scaled(struct store *s, struct view *v0)
+{
+	static const char *const voices[] = { "white", "editorial", "stationery" };
+	static const enum ed_overlay dlg[] = { EO_USED, EO_DISCARD, EO_RESTORE };
+	static const enum ed_op primary[] = { ED_EDIT_ALL, ED_DISCARD, ED_RESTORE_YES };
+	static const double sizes[][2] = { { 702, 884 }, { 702, 896 }, { 936, 662 }, { 600, 800 } };
+	for (int vi = 0; vi < 3; vi++)
+		for (int si = 0; si < 4; si++)
+			for (int scale = 1; scale <= 3; scale++)
+				for (int di = 0; di < 3; di++) {
+					struct look L;
+					look_init(&L, voices[vi]);
+					struct view v = { .per = period_of(P_MONTH, v0->today), .today = v0->today, .W = sizes[si][0],
+						.H = sizes[si][1], .hidden_kind = -1 };
+					view_layout_at(&v, s, &L, scale);
+					struct editor e = { 0 };
+					e.data = s;
+					editor_open_edit(&e, v.t);
+					e.ov = dlg[di];
+					v.ed = &e;
+					view_layout_at(&v, s, &L, scale);
+					cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, (int)v.W * scale, (int)v.H * scale);
+					cairo_t *cr = cairo_create(sf);
+					cairo_scale(cr, scale, scale);
+					view_paint(&v, s, &L, cr);
+					/* the primary button is filled with ink: its target's ends are ink */
+					const struct vhit *h = find(&v, A_ED, primary[di]);
+					CHECK(h != NULL);
+					if (h) {
+						bool ok = dark_at(sf, (h->x + 6) * scale, (h->y + 6) * scale) &&
+							  dark_at(sf, (h->x + h->w - 6) * scale, (h->y + h->h - 6) * scale) &&
+							  dark_at(sf, (h->x + 6) * scale, (h->y + h->h - 6) * scale);
+						if (!ok)
+							fprintf(stderr, "dialog %d, %s, %gx%g at %d: target %.0f,%.0f %.0fx%.0f off its button\n", di,
+								voices[vi], v.W, v.H, scale, h->x, h->y, h->w, h->h);
+						CHECK(ok);
+						/* a tap at its painted centre is the button's, not the cover's */
+						const struct vhit *t = view_hit(&v, h->x + h->w / 2, h->y + h->h / 2);
+						CHECK(t && t->a == A_ED && t->arg == (int)primary[di]);
+					}
+					cairo_destroy(cr);
+					cairo_surface_destroy(sf);
+					v.ed = NULL;
+					editor_close(&e);
+				}
+}
+
 int main(void)
 {
 	setenv("GLASSINE_PLANNER_TODAY", SAMPLE_TODAY, 1);
@@ -550,6 +615,8 @@ int main(void)
 	CHECK_STR(disk1, disk0); /* the editor never wrote the entries' file */
 	CHECK_STR(conf1, conf0); /* nor the choices */
 	free(ics0), free(ics1), free(disk0), free(disk1), free(conf0), free(conf1);
+
+	dialogs_scaled(&s, &v);
 
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
