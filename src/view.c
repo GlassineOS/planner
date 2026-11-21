@@ -1478,23 +1478,28 @@ static void picker(struct ctx *c)
 	const struct tmpl *ts[64];
 	int nts = tmpl_list(v->per.kind, ts, 64);
 	const struct tmpl *ring = v->ring[0] && tmpl_find(v->ring) ? tmpl_find(v->ring) : ct;
-	for (int i = 0; i < nts; i++) {
+	/* every template gets a row: rows shrink to fit, and past that the list starts so that the
+	 * ringed one shows (a template just saved is listed last) */
+	double avail = v->H - 64 - y, rh = fmax(64, fmin(112, avail / (nts ? nts : 1) - 12));
+	int rows = (int)(avail / (rh + 12)), first = 0;
+	for (int i = 0; i < nts; i++)
+		if (ts[i] == ring && i >= rows)
+			first = i - rows + 1;
+	int lines = rh < 96 ? 1 : 2;
+	for (int i = first; i < nts && i < first + rows; i++) {
 		const struct tmpl *tp = ts[i];
-		if (y + 112 > v->H - 70)
-			break;
 		bool use = tp == ct;
-		double rh = 112;
-		thumb(c, tp, 16, y, 84, rh - 2, tp == ring);
+		thumb(c, tp, 16, y, fmin(84, (rh - 2) * 0.76), rh - 2, tp == ring);
 		UiFont nf = fam(L->head, 600, 0, 17), df = fam(L->text, 400, 0, 13);
 		double h1, h2;
 		ui_text_w(&c->g, &nf, tp->name, &h1);
 		UiGc mg = c->g;
 		mg.paint = 0;
-		h2 = ui_text_wrap(&mg, &df, tp->note, 0, 0, W - 16 - 114 - 90, 2, 0, L->soft);
+		h2 = ui_text_wrap(&mg, &df, tp->note, 0, 0, W - 16 - 114 - 90, lines, 0, L->soft);
 		double ty = y + (rh - h1 - 3 - h2 - 18) / 2;
 		if (c->paint) {
 			ui_text(&c->g, &nf, tp->name, 114, ty, 0, W - 220, L->ink, &h1);
-			ui_text_wrap(&c->g, &df, tp->note, 114, ty + h1 + 3, W - 16 - 114 - 90, 2, 0, L->soft);
+			ui_text_wrap(&c->g, &df, tp->note, 114, ty + h1 + 3, W - 16 - 114 - 90, lines, 0, L->soft);
 		}
 		if (tp == tmpl_default(v->per.kind) && !c->s->def[v->per.kind][0])
 			tb(c, &(UiFont){ L->mono, 400, 0, 11, 0, 0, UI_CASE_NONE }, "the default", 114, ty + h1 + 3 + h2 + 16, 0, 0, L->soft);
