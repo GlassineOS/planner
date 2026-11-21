@@ -480,10 +480,42 @@ int main(void)
 	editor_act(&e, ED_ADD, 0, NULL); /* the next action: the notice goes */
 	CHECK(!e.notice[0]);
 	editor_act(&e, ED_ADD_W, W_NOTES, NULL);
-	/* a second widget for the slot: removing one says nothing */
+	/* a second widget for the slot: removing one says nothing, also when one names the
+	 * template's own period and the other leaves it to the template */
+	struct tnode *n1 = e.sel;
 	editor_act(&e, ED_ADD_W, W_NOTES, NULL);
+	n1->period = -1;
+	e.sel->period = P_DAY;
 	editor_act(&e, ED_REMOVE, 0, NULL);
 	CHECK(!e.notice[0]);
+	/* a slot of several words, with an umlaut: read, saved in the template file, read back */
+	editor_act(&e, ED_SELECT, 0, NULL);
+	e.sel = n1;
+	editor_act(&e, ED_SLOTS, 0, NULL);
+	editor_ink(&e, 1, 11, pts, 3);
+	editor_ink_value(&e, 1, "Für später, ok", NULL, 0, NULL, 0);
+	CHECK_STR(n1->slot, "für später ok");
+	CHECK_STR(n1->title, "Für später ok");
+	{
+		char *txt = tmpl_to_text(e.t);
+		struct tmpl *back = tmpl_from_text(txt);
+		CHECK(back && same_tree(back->root, e.t->root));
+		tmpl_free(back);
+		free(txt);
+		/* a reading too long for a slot is cut on a whole character */
+		editor_ink_value(&e, 1, "äääääääääääääääääääääääää", NULL, 0, NULL, 0);
+		CHECK(strlen(n1->slot) <= 31 && strlen(n1->slot) % 2 == 0);
+	}
+	editor_act(&e, ED_KEEP, 0, NULL);
+	editor_act(&e, ED_KEEP, 0, NULL);
+	/* the editor over the cog's text mode for the whole view: still no entry field */
+	v.tm = 2;
+	view_layout(&v, &s, &L, cr);
+	for (int i = 0; i < v.nf; i++)
+		CHECK(v.f[i].k != F_ENTRY && v.f[i].k != F_NEW && v.f[i].k != F_FREE);
+	for (int i = 0; i < v.nh; i++)
+		CHECK(v.hit[i].a == A_ED || v.hit[i].a == A_NONE);
+	v.tm = 0;
 	CHECK(!editor_edited_shipped(&e)); /* a new one has no shipped version */
 	view_layout(&v, &s, &L, cr);
 	CHECK_INT(editor_act(&e, ED_SAVE, 0, dir), ER_SAVED);

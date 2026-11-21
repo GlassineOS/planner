@@ -246,10 +246,11 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 {
 	struct region *rg = region_of(r);
 	if (rg && (rg->f.k == F_NAME || rg->f.k == F_SLOT)) {
-		const char *was = P.ed.sel && P.ed.sel->slot ? P.ed.sel->slot : NULL;
+		char was[32];
+		snprintf(was, sizeof was, "%s", P.ed.sel && P.ed.sel->slot ? P.ed.sel->slot : "");
 		editor_ink_value(&P.ed, rg->f.k == F_SLOT, text, gone, (int)ngone, state, len);
 		/* a new slot's name read: the page behind shows it (the field keeps its place) */
-		if (rg->f.k == F_SLOT && P.ed.sel && P.ed.sel->slot != was)
+		if (rg->f.k == F_SLOT && P.ed.sel && strcmp(P.ed.sel->slot ? P.ed.sel->slot : "", was))
 			relayout_later();
 		P.dirty = true;
 		return;
@@ -809,6 +810,9 @@ static void editor_relayout(void)
 static void editor_enter(int how)
 {
 	struct view *v = &P.v;
+	if (v->tm)
+		tm_close(); /* the editor's page has no entry to type into, and doesn't scroll */
+	v->scroll = 0;
 	bool picker = v->ov == OV_PICKER;
 	const struct tmpl *t = v->t;
 	if (picker && v->ring[0] && tmpl_find(v->ring))

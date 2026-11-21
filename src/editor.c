@@ -317,12 +317,13 @@ static void set_slot(struct editor *e, struct tnode *s, const char *name)
 
 /* FR-027 and the edge case "a template edit removes the only widget showing a slot that has
  * entries": the edit goes ahead, and says what stays stored */
-static bool shows_slot(const struct tnode *n, const struct tnode *skip, const char *slot, int period)
+static bool shows_slot(const struct tnode *n, const struct tnode *skip, const char *slot, int period, int kind)
 {
-	if (n != skip && n->k == N_WIDGET && n->wg == W_NOTES && n->period == period && !strcmp(n->slot ? n->slot : "notes", slot))
+	if (n != skip && n->k == N_WIDGET && n->wg == W_NOTES && (n->period < 0 ? kind : n->period) == period &&
+	    !strcmp(n->slot ? n->slot : "notes", slot))
 		return true;
 	for (int i = 0; i < n->nc; i++)
-		if (shows_slot(n->c[i], skip, slot, period))
+		if (shows_slot(n->c[i], skip, slot, period, kind))
 			return true;
 	return false;
 }
@@ -333,7 +334,7 @@ static void removal_notice(struct editor *e, const struct tnode *s)
 		return;
 	const char *slot = s->slot ? s->slot : "notes";
 	int per = s->period < 0 ? (int)e->t->kind : s->period;
-	if (shows_slot(e->t->root, s, slot, s->period))
+	if (shows_slot(e->t->root, s, slot, per, (int)e->t->kind))
 		return;
 	int n = editor_slot_days(e->data, slot, per);
 	if (!n)
