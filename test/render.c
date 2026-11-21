@@ -140,6 +140,42 @@ int main(void)
 		}
 		struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_HIDDEN, .hidden_kind = 0 };
 		shot(&s, VOICES[vi], &v, "hidden.list");
+		/* an entry of the hidden list opened, and moved (no boards: Open and Move) */
+		{
+			struct hidden_group g[16];
+			struct view w = v;
+			shot(&s, VOICES[vi], &w, "tmp");
+			int ng = view_hidden(&s, w.t, w.per, g, 16);
+			struct entry *he[8];
+			int nh = ng ? store_list(&s, g[0].kind, w.per, g[0].kind == E_NOTE ? g[0].slot : NULL, he, 8) : 0;
+			if (nh) {
+				w.ov = OV_TITLE, w.back = OV_HIDDEN, w.title = he[0]->id;
+				shot(&s, VOICES[vi], &w, "hidden.open");
+				w.ov = OV_MOVE, w.move = he[0]->id, w.move_at = he[0]->per.start;
+				shot(&s, VOICES[vi], &w, "hidden.move");
+				n += 2;
+			}
+		}
+		/* the week's picker with where each template is used, and the year planned ahead
+		 * (boards templates.picker, templates.year): a range, from a date on, a single week */
+		{
+			int yr, m, dd;
+			day_to_ymd(today, &yr, &m, &dd);
+			int nc0 = s.nc;
+			store_choose(&s, period_of(P_WEEK, day_from_ymd(yr, 1, 4)), period_end(period_of(P_WEEK, day_from_ymd(yr, 3, 29))),
+				     "week-columns");
+			store_choose(&s, period_of(P_WEEK, day_from_ymd(yr, 4, 5)), -1, "week-spread");
+			struct period w20 = period_of(P_WEEK, day_from_ymd(yr, 5, 17));
+			store_choose(&s, w20, w20.start, "week-lists");
+			struct period wk = period_of(P_WEEK, today);
+			struct view w = { .per = wk, .today = today, .W = 702, .H = 896, .ov = OV_PICKER };
+			shot(&s, VOICES[vi], &w, "templates.picker.week");
+			w.year = true, w.scope = 1;
+			shot(&s, VOICES[vi], &w, "templates.year");
+			while (s.nc > nc0)
+				store_unchoose(&s, s.nc - 1);
+			n += 2;
+		}
 		struct look L;
 		look_init(&L, VOICES[vi]);
 		cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 702, 896);
