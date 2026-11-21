@@ -962,10 +962,11 @@ static void tap_(double x, double y, bool finger)
 	case A_HIDDEN: v->ov = OV_HIDDEN; v->hidden_kind = h->arg; relayout_later(); break;
 	case A_PICKER:
 		v->ov = OV_PICKER, v->scope = 0, v->ring[0] = 0;
-		v->year = false, v->rg_n = 0, v->rg_tmpl[0] = 0, v->from_set = false;
+		v->year = false, v->year_off = 0, v->rg_n = 0, v->rg_tmpl[0] = 0, v->from_set = false;
 		relayout_later();
 		break;
-	case A_YEAR: v->year = true, v->scope = 1, v->rg_n = 0, v->rg_tmpl[0] = 0; relayout_later(); break;
+	case A_YEAR: v->year = true, v->year_off = 0, v->scope = 1, v->rg_n = 0, v->rg_tmpl[0] = 0; relayout_later(); break;
+	case A_YEAR_NAV: v->year_off += h->arg; relayout_later(); break; /* the year's arrows: the cells picked stay */
 	case A_CELL: { /* a period of the year: the first, then the last of a range */
 		enum pkind k = v->per.kind;
 		if (v->rg_n != 1) {

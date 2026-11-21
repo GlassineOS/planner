@@ -315,6 +315,72 @@ int main(void)
 			store_unchoose(&s, s.nc - 1);
 		CHECK_INT(s.nc, nc0);
 	}
+	/* the names of choices (the picker's rows, the year's list): week ranges by number and month */
+	{
+		char b[96];
+		int y0 = 2027;
+		view_choice_name(P_WEEK, day_from_ymd(y0, 1, 4), day_from_ymd(y0, 4, 4), y0, b, sizeof b);
+		CHECK_STR(b, "weeks 1–13 · Jan–Mar");
+		view_choice_name(P_WEEK, day_from_ymd(y0, 3, 8), day_from_ymd(y0, 3, 21), y0, b, sizeof b);
+		CHECK_STR(b, "weeks 10–11 · Mar");
+		view_choice_name(P_WEEK, day_from_ymd(y0, 4, 5), -1, y0, b, sizeof b);
+		CHECK_STR(b, "from week 14 on · from Apr");
+		view_choice_name(P_WEEK, day_from_ymd(y0, 4, 5), -1, y0 + 1, b, sizeof b);
+		CHECK_STR(b, "from week 14 on · from Apr 2027");
+		view_choice_name(P_WEEK, day_from_ymd(y0, 5, 17), day_from_ymd(y0, 5, 17), y0, b, sizeof b);
+		CHECK_STR(b, "week 20");
+		view_choice_name(P_DAY, day_from_ymd(y0, 4, 12), day_from_ymd(y0, 4, 23), y0, b, sizeof b);
+		CHECK_STR(b, "12 Apr to 23 Apr");
+		view_choice_name(P_MONTH, day_from_ymd(y0, 4, 1), -1, y0 + 1, b, sizeof b);
+		CHECK_STR(b, "from April 2027 on");
+	}
+	/* the year's arrows; the next year lists only the choices that reach into it */
+	{
+		struct period wk = period_of(P_WEEK, today);
+		int nc0 = s.nc, y0 = 2027;
+		store_choose(&s, period_of(P_WEEK, day_from_ymd(y0, 1, 4)), day_from_ymd(y0, 4, 4), "week-columns");
+		store_choose(&s, period_of(P_WEEK, day_from_ymd(y0, 4, 5)), -1, "week-spread");
+		struct view w = { .per = wk, .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_PICKER, .year = true };
+		view_layout(&w, &s, &L, cr);
+		const struct vhit *pv = find(&w, A_YEAR_NAV, -1), *nx = find(&w, A_YEAR_NAV, 1);
+		CHECK(pv && nx && pv->x < nx->x && view_hit(&w, nx->x + 4, nx->y + 4) == nx);
+		int changes = 0;
+		for (int i = 0; i < w.nh; i++)
+			changes += w.hit[i].a == A_RANGE_CHANGE;
+		CHECK_INT(changes, 2);
+		w.year_off = 1;
+		view_layout(&w, &s, &L, cr);
+		int cells = 0, ch = -1;
+		changes = 0;
+		for (int i = 0; i < w.nh; i++) {
+			cells += w.hit[i].a == A_CELL;
+			if (w.hit[i].a == A_RANGE_CHANGE)
+				changes++, ch = w.hit[i].arg;
+		}
+		CHECK(cells >= 52 && cells <= 53);
+		CHECK_INT(changes, 1);
+		CHECK(ch >= 0 && s.c[ch].to < 0);
+		CHECK(find(&w, A_CELL, wk.start) == NULL);
+		while (s.nc > nc0)
+			store_unchoose(&s, s.nc - 1);
+	}
+	/* the days of a year: a wall calendar, every day its own target */
+	{
+		struct period d = period_of(P_DAY, today);
+		struct view w = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_PICKER, .year = true };
+		view_layout(&w, &s, &L, cr);
+		int cells = 0, own = 0;
+		for (int i = 0; i < w.nh; i++)
+			if (w.hit[i].a == A_CELL) {
+				cells++;
+				const struct vhit *h = &w.hit[i];
+				own += view_hit(&w, h->x + h->w / 2, h->y + h->h / 2) == h;
+			}
+		CHECK_INT(cells, 365);
+		CHECK_INT(own, 365);
+		CHECK(find(&w, A_CELL, day_from_ymd(2027, 12, 31)) != NULL);
+		CHECK(find(&w, A_NONE, -1) != NULL); /* the catch-all still fits */
+	}
 	/* the hidden list: Open, Move and Delete per entry; Move shows the month's days */
 	{
 		struct period d = period_of(P_DAY, today);

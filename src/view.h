@@ -54,6 +54,7 @@ enum act {
 	A_SEARCH, A_RESULT,                                         /* search in the (i) popover */
 	A_OPEN, A_MOVE, A_MOVE_NAV, A_MOVE_TO,  /* the hidden list's Open and Move; Move's calendar: arg -1/+1, a day */
 	A_YEAR, A_CELL, A_RANGE_CHANGE, A_RANGE_REMOVE, /* the year planned ahead: Plan ahead, a period (arg its day), a choice (arg its index) */
+	A_YEAR_NAV, /* the year's arrows: arg -1/+1 */
 	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
 	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
 };
@@ -67,7 +68,7 @@ struct vhit {
 
 #define V_FIELDS 160
 #define V_BAR 60 /* the header bar's height (logical px) */
-#define V_HITS 200
+#define V_HITS 600 /* the days of a year: a target per day */
 struct view {
 	/* what is shown */
 	struct period per;
@@ -113,6 +114,7 @@ struct view {
 	/* OV_PICKER's year planned ahead (board templates.year) and a range being chosen: rg_n
 	 * periods tapped (rg0 first, rg1 last), for the template rg_tmpl ("" none yet) */
 	bool year;
+	int year_off;       /* the year shown: the view's year plus this (the arrows) */
 	int rg_n, rg0, rg1;
 	char rg_tmpl[40];
 	bool from_set;      /* "From … on" of another date than the view's (a choice changed) */
@@ -140,5 +142,10 @@ const struct vfield *view_field_at(const struct view *v, double x, double y);
 /* the page's scroll that brings field f above the bar over the keyboard (whole rows) */
 double view_scroll_to(const struct view *v, const struct vfield *f);
 const struct vfield *view_field_of(const struct view *v, uint32_t entry);
+/* a choice of template as the picker and the year list name it: from the period of kind k at
+ * day from to the one at day to (to < 0: on from there, to == from: that period only), its year
+ * added where it isn't shown_year: "weeks 1–13 · Jan–Mar", "from week 14 on · from Apr",
+ * "week 20", "12 Apr to 23 Apr", "from April 2027 on" */
+void view_choice_name(enum pkind k, int from, int to, int shown_year, char *o, size_t n);
 
 #endif
