@@ -10,8 +10,8 @@ any time without losing what was written.
 the day, week and month views with the boards' templates and widgets (GlassineOS/ui
 `designs/planner`), handwriting fields as writing regions of the pen interface (each
 reading stored with its ink), events drawn into the agenda's free time and dragged in
-30-minute steps by finger, the (i) popover, the cog's menu and the template picker. Not yet:
-text mode, search, editing templates, planning ahead, reminders.
+30-minute steps by finger, the (i) popover, the cog's menu, the template picker and the
+template editor (New, Copy, Edit). Not yet: text mode, search, planning ahead, reminders.
 
 ## Building
 
@@ -24,7 +24,9 @@ it; `UI_SYSTEM=1` uses an installed glassine-ui) and libglassine-handwriting (in
 the planner shows why and doesn't start (FR-001).
 
 Its entries are kept in `$XDG_DATA_HOME/glassine-planner/planner.ics` (iCalendar), the
-template choices in `templates.conf` beside it; `GLASSINE_PLANNER_DATA` sets another directory.
+template choices in `templates.conf` beside it, and templates made or edited on the device in
+`templates/ID.tmpl` (one file each; the format is described in `src/tfile.h`; a file with a
+shipped template's id replaces that template). `GLASSINE_PLANNER_DATA` sets another directory.
 
 `test/device/` holds two tools for a device check: `region-smoke.c`, a window with one
 writing region that prints what reaches it, and `pen-inject.c`, a virtual screen tablet

@@ -1220,7 +1220,7 @@ static double pop_content(struct ctx *c, double x, double y, double w)
 		} it[] = {
 			{ IC_KEYBOARD, "Text mode for this view", "every field as text, with the keyboard", 1, A_TEXTMODE },
 			{ IC_LAYOUT, "Template", NULL, 0, A_PICKER },
-			{ IC_EDIT, "Edit this template", "add, move and resize widgets", 0, A_NONE },
+			{ IC_EDIT, "Edit this template", "add, move and resize widgets", 0, A_EDIT },
 			{ IC_SLIDERS, "Settings", "how ink is shown, the agenda’s hours", 0, A_NONE },
 		};
 		char tsub[96];
@@ -1408,6 +1408,29 @@ static void thumb(struct ctx *c, const struct tmpl *t, double x, double y, doubl
 	}
 }
 
+/* the picker's New, Copy and Edit (board templates.picker): they open the template editor on
+ * the ringed template (FR-049) */
+static double ed_btn(struct ctx *c, double x, double y, const char *label, const char *ic, int style, ui_col fg, ui_col bg,
+		     enum ed_op op, int arg, int align);
+static const char *const IC_PLUS = "M12 5v14 M5 12h14";
+static const char *const IC_COPY = "M8 8h12v12H8z M4 16V4h12";
+
+static void picker_edit_acts(struct ctx *c, double y)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	int nh = v->nh;
+	double x = 16;
+	static const struct { const char *t; int arg; } A[] = { { "New", 1 }, { "Copy", 2 }, { "Edit", 0 } };
+	const char *ic[] = { IC_PLUS, IC_COPY, IC_EDIT };
+	for (int i = 0; i < 3; i++) {
+		x += ed_btn(c, x, y, A[i].t, ic[i], 0, L->ink, L->paper, ED_SELECT, 0, 0) + 8;
+		if (!c->paint && v->nh > nh) /* the button's target opens the editor */
+			v->hit[v->nh - 1].a = A_EDIT, v->hit[v->nh - 1].arg = A[i].arg, v->hit[v->nh - 1].id = 0;
+		nh = v->nh;
+	}
+}
+
 static void picker(struct ctx *c)
 {
 	const struct look *L = c->L;
@@ -1452,13 +1475,16 @@ static void picker(struct ctx *c)
 	y += 38 + 22;
 	const char *cur = store_template(c->s, v->per, NULL);
 	const struct tmpl *ct = tmpl_find(cur) ? tmpl_find(cur) : tmpl_default(v->per.kind);
-	for (int i = 0; i < pl_ntemplates; i++) {
-		const struct tmpl *tp = pl_templates[i];
-		if (tp->kind != v->per.kind)
-			continue;
+	const struct tmpl *ts[64];
+	int nts = tmpl_list(v->per.kind, ts, 64);
+	const struct tmpl *ring = v->ring[0] && tmpl_find(v->ring) ? tmpl_find(v->ring) : ct;
+	for (int i = 0; i < nts; i++) {
+		const struct tmpl *tp = ts[i];
+		if (y + 112 > v->H - 70)
+			break;
 		bool use = tp == ct;
 		double rh = 112;
-		thumb(c, tp, 16, y, 84, rh - 2, use);
+		thumb(c, tp, 16, y, 84, rh - 2, tp == ring);
 		UiFont nf = fam(L->head, 600, 0, 17), df = fam(L->text, 400, 0, 13);
 		double h1, h2;
 		ui_text_w(&c->g, &nf, tp->name, &h1);
@@ -1486,10 +1512,13 @@ static void picker(struct ctx *c)
 			lk_rule(c->cr, 16, y - 6, W - 32, 1.5, L->ink, 2);
 		y += 2;
 	}
+	picker_edit_acts(c, y + 4);
 	hit(c, 0, 0, W, v->H, A_NONE, 0, 0); /* it covers the page: after its own targets */
 }
 
 /* ---- the whole screen ---- */
+
+static void ed_run(struct ctx *c);
 
 static void run(struct view *v, struct store *s, const struct look *L, cairo_t *cr, int paint)
 {
@@ -1507,6 +1536,10 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 		v->how = how;
 		v->hidden_count = count_hidden(s, v->t, v->per);
 		v->land = v->W > v->H;
+	}
+	if (v->ed && v->ed->t) {
+		ed_run(&c);
+		return;
 	}
 	if (v->ov == OV_PICKER) {
 		picker(&c);
@@ -1591,4 +1624,486 @@ void view_paint_refused(const struct look *L, cairo_t *cr, double W, double H, s
 	ui_text(&g, &bf, "Close", x + bw / 2, y + 20 - hb / 2, 1, 0, L->ink, &hb);
 	if (close)
 		*close = (struct vhit){ x, y, bw, 40, A_CLOSE, 0, 0 };
+}
+
+/* ---- the template editor (boards templates.editor, templates.new, templates.used) ----
+ * The page shows the template with the period's real entries, but no field and no control of
+ * the page reaches the editor's screen: its taps select widgets, and no entry can be written,
+ * ticked or moved here (FR-045). */
+
+#define ED_BAR 57 /* the editor's bar at the foot */
+
+static const char *const IC_TRASH = "M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13";
+static const char *const IC_ROTATE = "M4 9h11v11H4z M14 3a7 7 0 0 1 6 6 M20 5v4h-4";
+static const char *const IC_W[W_NWIDGETS] = {
+	"M4 5h16v15H4z M8 3v4 M16 3v4 M8 11h5 M8 15h8", "M4 5h16v15H4z M8 3v4 M16 3v4 M8 11h5 M8 15h8",
+	"M4 6h3v3H4z M10 7.5h10 M4 14h3v3H4z M10 15.5h10", "M5 4h14v16H5z M8 9h8 M8 13h8 M8 17h5",
+	"M5 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M11 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M17 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M5 14a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M11 14a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z",
+	"M4 6h16v14H4z M4 10h16 M8 14h.01 M12 14h.01 M16 14h.01 M8 17h.01 M12 17h.01", "M3 5h18v14H3z M3 9h18 M3 13h18 M3 17h18",
+	"M5 6h2 M10 6h9 M5 12h2 M10 12h9 M5 18h2 M10 18h9" };
+static const char *const W_NAME[W_NWIDGETS] = { "Day agenda", "Day agenda (compact)", "To-do list", "Notes", "Habit tracker",
+	"Mini month", "Week overview", "Priorities" };
+static const char *const W_SUB[W_NWIDGETS] = { "compresses · min 200 w", "compresses · min 84 w", "truncates · min 180 w",
+	"a named slot · min 200 w", "truncates · min 240 w", "compresses · min 170 w", "truncates · min 260 w", "ranked · min 180 w" };
+
+static void ed_hit(struct ctx *c, double x, double y, double w, double h, enum ed_op op, int arg)
+{
+	hit(c, x, y, w, h, A_ED, op, (uint32_t)(arg + 100));
+}
+
+static UiFont btn_font(const struct look *L)
+{
+	UiFont bf = L->voice == V_WHITE ? fam(L->mono, 600, 0, 11.5f) : L->label;
+	if (L->voice == V_WHITE)
+		bf.tcase = UI_CASE_UPPER, bf.ls = 0.08f;
+	return bf;
+}
+
+/* a button (planner.css .pl-btn): 0 plain, 1 primary, 2 off, 3 quiet; its width */
+static double ed_btn(struct ctx *c, double x, double y, const char *label, const char *ic, int style, ui_col fg, ui_col bg,
+		     enum ed_op op, int arg, int align)
+{
+	const struct look *L = c->L;
+	UiFont bf = btn_font(L);
+	double w = tw(c, &bf, label) + (ic ? 50 : 28);
+	if (align == 2)
+		x -= w;
+	if (style == 1)
+		box(c, x, y, w, 40, L->ui_r, 0, 0, fg);
+	else if (style == 2) {
+		if (c->paint) {
+			lk_rect(c->cr, x + 0.75, y + 0.75, w - 1.5, 38.5, L->ui_r);
+			cairo_set_dash(c->cr, (double[]){ 4, 3 }, 2, 0);
+			cairo_set_line_width(c->cr, 1.5);
+			col(c->cr, L->soft);
+			cairo_stroke(c->cr);
+			cairo_set_dash(c->cr, NULL, 0, 0);
+		}
+	} else if (style == 0)
+		box(c, x, y, w, 40, L->ui_r, L->edge, fg, bg);
+	ui_col tc_ = style == 1 ? bg : style == 2 ? L->soft : fg;
+	double tx = x + w / 2;
+	if (ic) {
+		icon(c, ic, x + 14 + 9, y + 20, 18, tc_);
+		tx += 11;
+	}
+	tc(c, &bf, label, tx, y + 20, 1, 0, tc_);
+	if (style == 3 && c->paint)
+		lk_rule(c->cr, x + 14, y + 28, w - 28, 1, tc_, 0);
+	if (style != 2)
+		ed_hit(c, x, y, w, 40, op, arg);
+	return w;
+}
+
+static const char *w_title(const struct tnode *n)
+{
+	return n->title ? n->title : n->wg == W_AGENDA || n->wg == W_CAGENDA ? "Agenda" : W_NAME[n->wg];
+}
+
+static void ed_head(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	double W = v->W, cy = BAR / 2.0;
+	ui_col fg = L->bar_fg, bg = L->bar_bg;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, 0, W, BAR);
+		lk_fill(c->cr, bg);
+		if (L->bar_rule > 0)
+			lk_rule(c->cr, 0, BAR - fmin(L->bar_rule, 1.5), W, fmin(L->bar_rule, 1.5), L->ink, 0);
+		else
+			lk_rule(c->cr, 0, BAR - 1.5, W, 1.5, L->gilt, 0);
+	}
+	double x = W - 12;
+	x -= ed_btn(c, x, cy - 20, "Save", NULL, e->short_ ? 2 : 1, fg, bg, ED_SAVE, 0, 2) + 8;
+	x -= ed_btn(c, x, cy - 20, "Cancel", NULL, 3, fg, bg, ED_CANCEL, 0, 2) + 12;
+	char sub[160];
+	const char *k = pkind_name(v->per.kind);
+	snprintf(sub, sizeof sub, "A %s template · shown with this %s’s entries · %s", k, k,
+		 e->naming ? "its name, written with the pen" : e->fresh ? "used by no period yet" : "applies wherever it is used");
+	UiFont f1 = L->h1, f2 = L->sub;
+	double h1, h2, maxw = x - 16;
+	ui_text_w(&c->g, &f1, "Ag", &h1);
+	ui_text_w(&c->g, &f2, sub, &h2);
+	double top = cy - (h1 + 1 + h2) / 2;
+	if (e->naming) {
+		double fh = 34, fy = top - 4;
+		box(c, 16, fy, maxw, fh, L->ui_r, 2, fg, bg);
+		struct vfield *f = field(c, F_NAME, 16, fy, maxw, fh);
+		if (f)
+			snprintf(f->name, sizeof f->name, "tmpl-name:%s", e->t->id ? e->t->id : "");
+		ink(c, &e->name, 16, fy, 1);
+		if (!e->name.ns)
+			tc(c, &f1, e->t->name, 24, fy + fh / 2, 0, maxw - 16, L->soft);
+		top = fy + fh + 2 - h1 - 1;
+	} else {
+		double w = 0;
+		if (c->paint)
+			ui_text(&c->g, &f1, e->t->name, 16, top, 0, maxw, fg, &h1);
+		w = fmin(maxw, tw(c, &f1, e->t->name));
+		if (c->paint)
+			lk_rule(c->cr, 16, top + h1 + 1, w, 1.5, fg, 2);
+		ed_hit(c, 16, 0, fmax(w, 120), cy + 6, ED_NAME, 0);
+	}
+	if (c->paint) {
+		cairo_push_group(c->cr);
+		ui_text(&c->g, &f2, sub, 16, top + h1 + 1, 0, maxw, fg, &h2);
+		cairo_pop_group_to_source(c->cr);
+		cairo_paint_with_alpha(c->cr, 0.85);
+	}
+}
+
+static void ed_footbar(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	double y = v->H - ED_BAR;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, y, v->W, ED_BAR);
+		lk_fill(c->cr, L->paper);
+		lk_rule(c->cr, 0, y, v->W, 1.5, L->ink, 0);
+	}
+	double x = 12;
+	x += ed_btn(c, x, y + 8.5, "Add widget", IC_PLUS, 0, L->ink, L->paper, ED_ADD, 0, 0) + 8;
+	x += ed_btn(c, x, y + 8.5, "Remove", IC_TRASH, e->sel ? 0 : 2, L->ink, L->paper, ED_REMOVE, 0, 0) + 8;
+	x += ed_btn(c, x, y + 8.5, e->turned ? "Upright" : "Turned", IC_ROTATE, 0, L->ink, L->paper, ED_TURN, 0, 0) + 12;
+	UiFont nf = fam(L->mono, 400, 0, 12);
+	const char *note = e->turned ? "previewing turned" : !editor_widgets(e->t->root) ? "empty: Add widget puts the first one in"
+								  : "tap a widget to select it · drag it, or its edge";
+	if (c->paint)
+		ui_text_wrap(&c->g, &nf, note, x, y + 14, v->W - x - 12, 2, 1.3, L->soft);
+}
+
+/* the selected widget's tag (planner.css .pl-ed-tag) */
+static void ed_tag(struct ctx *c, const struct placed *p, double ox, double oy)
+{
+	const struct look *L = c->L;
+	const struct tnode *n = p->n;
+	char t[96];
+	snprintf(t, sizeof t, "%s · weight %g", w_title(n), n->w > 0 ? n->w : 1);
+	UiFont tf = fam(L->mono, 500, 0, 12);
+	static const char *lb[] = { "‹", "›", "−", "+", "⋯" };
+	static const enum ed_op op[] = { ED_BEFORE, ED_AFTER, ED_LESS, ED_MORE, ED_SETTINGS };
+	double x = ox + p->x + 10, y = oy + p->y + 42, tww = tw(c, &tf, t), w = 10 + tww + 6 + 5 * 36 + 2;
+	if (x + w > c->v->W - 4)
+		x = c->v->W - 4 - w;
+	box(c, x, y, w, 38, 19, 0, 0, L->ink);
+	tc(c, &tf, t, x + 10, y + 19, 0, 0, L->paper);
+	double bx = x + 10 + tww + 6;
+	UiFont bf = fam(L->text, 500, 0, 16);
+	for (int i = 0; i < 5; i++) {
+		if (c->paint)
+			lk_stroke_box(c->cr, bx, y + 4, 30, 30, 15, 1.5, L->paper);
+		tc(c, &bf, lb[i], bx + 15, y + 19, 1, 0, L->paper);
+		ed_hit(c, bx - 3, y, 36, 38, op[i], 0);
+		bx += 36;
+	}
+}
+
+static void ed_marks(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	double ox = PAD, oy = BAR + PAD;
+	const struct placed *sel = NULL;
+	for (int i = 0; i < v->g.n; i++) {
+		const struct placed *p = &v->g.p[i];
+		if (p->n == e->sel) {
+			sel = p;
+			continue;
+		}
+		if (c->paint) {
+			lk_rect(c->cr, ox + p->x + 1, oy + p->y + 1, p->w - 2, p->h - 2, L->wg_r);
+			cairo_set_dash(c->cr, (double[]){ 4, 3 }, 2, 0);
+			cairo_set_line_width(c->cr, 1.5);
+			col(c->cr, L->soft);
+			cairo_stroke(c->cr);
+			cairo_set_dash(c->cr, NULL, 0, 0);
+		}
+	}
+	if (sel && c->paint) {
+		double x = ox + sel->x, y = oy + sel->y;
+		lk_stroke_box(c->cr, x + 1.75, y + 1.75, sel->w - 3.5, sel->h - 3.5, L->wg_r, 3.5, L->ink);
+		lk_rect(c->cr, x + sel->w / 2 - 22, y + sel->h - 6, 44, 12, 6);
+		lk_fill(c->cr, L->ink);
+		lk_rect(c->cr, x - 6, y + sel->h / 2 - 22, 12, 44, 6);
+		lk_fill(c->cr, L->ink);
+		lk_rect(c->cr, x + sel->w - 6, y + sel->h / 2 - 22, 12, 44, 6);
+		lk_fill(c->cr, L->ink);
+	}
+	if (sel)
+		ed_tag(c, sel, ox, oy);
+	if (!v->g.n) {
+		double w = v->W - 2 * PAD;
+		if (c->paint) {
+			lk_rect(c->cr, ox, oy, w, 220, 0);
+			cairo_set_dash(c->cr, (double[]){ 6, 4 }, 2, 0);
+			cairo_set_line_width(c->cr, 2);
+			col(c->cr, L->ink);
+			cairo_stroke(c->cr);
+			cairo_set_dash(c->cr, NULL, 0, 0);
+		}
+		UiFont nf = fam(L->text, 400, 0, 15);
+		tc(c, &nf, "A new template starts empty: Add widget puts the first one here.", ox + w / 2, oy + 110, 1, w - 40, L->soft);
+		ed_hit(c, ox, oy, w, 220, ED_ADD, 0);
+	}
+	if (e->short_) {
+		char t[160], sub[200];
+		snprintf(t, sizeof t, "These widgets need %.0f px more than the page has%s.", e->deficit,
+			 e->short_turned ? " when the screen is turned" : "");
+		snprintf(sub, sizeof sub, "Every widget keeps its minimum, so the template can’t be saved like this: remove a widget or put two side by side.");
+		double x = PAD, y = BAR + PAD, w = v->W - 2 * PAD;
+		UiFont bf = fam(L->text, 600, 0, 14), sf = fam(L->text, 400, 0, 14);
+		UiGc mg = c->g;
+		mg.paint = 0;
+		double h = 10 + ui_text_wrap(&mg, &bf, t, 0, 0, w - 54, 2, 1.35, L->ink) + ui_text_wrap(&mg, &sf, sub, 0, 0, w - 54, 3, 1.35, L->ink) + 10;
+		box(c, x, y, w, h, L->ui_r, 2.5, L->ink, L->paper);
+		icon(c, IC_INFO, x + 22, y + 20, 20, L->ink);
+		if (c->paint) {
+			double hh = ui_text_wrap(&c->g, &bf, t, x + 42, y + 10, w - 54, 2, 1.35, L->ink);
+			ui_text_wrap(&c->g, &sf, sub, x + 42, y + 10 + hh, w - 54, 3, 1.35, L->ink);
+		}
+	}
+}
+
+/* a bottom sheet's frame and head (planner.css .pl-sheet); its top */
+static double ed_sheet(struct ctx *c, double sh, const char *title, const char *lead)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	double y = v->H - ED_BAR - sh, W = v->W;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, y, W, sh);
+		lk_fill(c->cr, L->paper);
+		lk_rule(c->cr, 0, y, W, 1.5, L->ink, 0);
+	}
+	UiFont h2 = fpx(L->h1, 21);
+	tc(c, &h2, title, 16, y + 14 + 20, 0, W - 140, L->ink);
+	ed_btn(c, W - 16, y + 14, "Close", NULL, 0, L->ink, L->paper, ED_KEEP, 0, 2);
+	UiFont lf = fam(L->text, 400, 0, 14);
+	double lh = ui_text_wrap(&c->g, &lf, lead, 16, y + 66, W - 32, 3, 1.4, L->soft);
+	return y + 66 + lh + 12;
+}
+
+static void ed_add_sheet(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	double sh = round((v->H - BAR - ED_BAR) * 0.6);
+	double y = ed_sheet(c, sh, "Add a widget",
+			    "It goes after the selected widget; move it elsewhere afterwards. Each one takes its minimum, then grows with its content and its weight.");
+	static const int order[] = { W_AGENDA, W_TODO, W_NOTES, W_HABITS, W_MINIMONTH, W_WEEKOV, W_PRIO, W_CAGENDA };
+	double cw = (v->W - 32 - 10) / 2, chh = 56;
+	UiFont nf = fam(L->text, 600, 0, 15), sf = fam(L->mono, 400, 0, 11);
+	for (int i = 0; i < 8; i++) {
+		double x = 16 + (i % 2) * (cw + 10), yy = y + (i / 2) * (chh + 10);
+		if (yy + chh > v->H - ED_BAR - 4)
+			break;
+		box(c, x, yy, cw, chh, L->ui_r, L->voice == V_EDITORIAL ? 1 : 1.5, L->ink, L->paper);
+		icon(c, IC_W[order[i]], x + 12 + 11, yy + 21, 22, L->ink);
+		tc(c, &nf, W_NAME[order[i]], x + 44, yy + 20, 0, cw - 52, L->ink);
+		tc(c, &sf, W_SUB[order[i]], x + 44, yy + 39, 0, cw - 52, L->soft);
+		ed_hit(c, x, yy, cw, chh, ED_ADD_W, order[i]);
+	}
+	hit(c, 0, v->H - ED_BAR - sh, v->W, sh, A_NONE, 0, 0); /* the sheet takes its taps */
+}
+
+/* a settings row: mode 0 a stepper (a less, b more), 1 a switch (a), 2 a value a tap changes (a) */
+static void ed_row(struct ctx *c, double y, const char *t, const char *sub, const char *val, int mode, enum ed_op a,
+		   enum ed_op b, bool on)
+{
+	const struct look *L = c->L;
+	double W = c->v->W;
+	UiFont tf = fam(L->text, 400, 0, 16), sf = fam(L->text, 400, 0, 12.5f), vf = fam(L->mono, 500, 0, 13);
+	tc(c, &tf, t, 16, y + (sub ? 18 : 26), 0, W - 200, L->ink);
+	if (sub)
+		tc(c, &sf, sub, 16, y + 38, 0, W - 200, L->soft);
+	if (mode == 1) {
+		double x = W - 16 - 40;
+		box(c, x, y + 15, 40, 22, 11, 1.5, L->ink, on ? L->ink : 0);
+		box(c, on ? x + 22 : x + 4, y + 19, 14, 14, 7, 0, 0, on ? L->paper : L->soft);
+		ed_hit(c, 0, y, W, 52, a, 0);
+	} else if (mode == 0) {
+		double x = W - 16, vw = fmax(24, tw(c, &vf, val));
+		box(c, x - 40, y + 6, 40, 40, L->ui_r, L->edge, L->ink, 0);
+		tc(c, &vf, "+", x - 20, y + 26, 1, 0, L->ink);
+		ed_hit(c, x - 40, y, 40, 52, b, 1);
+		tc(c, &vf, val, x - 40 - 8 - vw / 2, y + 26, 1, 0, L->ink);
+		double lx = x - 40 - 16 - vw - 40;
+		box(c, lx, y + 6, 40, 40, L->ui_r, L->edge, L->ink, 0);
+		tc(c, &vf, "−", lx + 20, y + 26, 1, 0, L->ink);
+		ed_hit(c, lx, y, 40, 52, a, -1);
+	} else {
+		tc(c, &vf, val, W - 16, y + 26, 2, 0, L->ink);
+		ed_hit(c, 0, y, W, 52, a, 0);
+	}
+	rule(c, 16, y + 52, W - 32);
+}
+
+static void ed_wset_sheet(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	struct tnode *n = e->sel;
+	if (!n)
+		return;
+	double sh = round((v->H - BAR - ED_BAR) * 0.8);
+	char title[96];
+	snprintf(title, sizeof title, "%s in this template", w_title(n));
+	double y = ed_sheet(c, sh, title, "These change what the widget shows in this template only; no entry changes.");
+	char b[32];
+	UiFont kf = btn_font(L);
+	if (n->wg == W_AGENDA || n->wg == W_CAGENDA) {
+		tc(c, &kf, "Hours", 16, y + 8, 0, 0, L->soft);
+		y += 18;
+		snprintf(b, sizeof b, "%02d", n->from);
+		ed_row(c, y, "First hour", "− and + in whole hours", b, 0, ED_FROM, ED_FROM, false);
+		y += 54;
+		snprintf(b, sizeof b, "%02d", n->to);
+		ed_row(c, y, "Last hour", "events outside show as a count at the edge", b, 0, ED_TO, ED_TO, false);
+		y += 62;
+	}
+	tc(c, &kf, "Size", 16, y + 8, 0, 0, L->soft);
+	y += 18;
+	snprintf(b, sizeof b, "%g", n->w > 0 ? n->w : 1);
+	ed_row(c, y, "Weight", "its share of what is left after every minimum", b, 0, ED_LESS, ED_MORE, false);
+	y += 54;
+	ed_row(c, y, "Takes leftover space", NULL, NULL, 1, ED_GROW, ED_GROW, n->grow);
+	y += 62;
+	struct tnode *p = editor_parent(e->t->root, n, NULL);
+	if (p) {
+		enum nkind lk = p->land == N_WIDGET ? p->k : p->land;
+		tc(c, &kf, "Turned", 16, y + 8, 0, 0, L->soft);
+		y += 18;
+		ed_row(c, y, p->k == N_ROW ? "Its row, when the screen is turned" : "Its column, when the screen is turned",
+		       "stays as it is, or becomes the other kind", lk == N_ROW ? "Row" : "Column", 2, ED_LAND, ED_LAND, false);
+		y += 62;
+	}
+	if (n->wg == W_TODO || n->wg == W_PRIO || n->wg == W_HABITS || n->wg == W_NOTES) {
+		tc(c, &kf, n->wg == W_NOTES ? "For notes" : "For lists", 16, y + 8, 0, 0, L->soft);
+		y += 18;
+		int per = n->period < 0 ? (int)e->t->kind : n->period;
+		static const char *pn[] = { "Day", "Week", "Month" };
+		ed_row(c, y, "Period", "of the day, the week or the month", pn[per], 2, ED_PERIOD, ED_PERIOD, false);
+		y += 54;
+		if (n->wg == W_NOTES && y + 54 < v->H - ED_BAR) {
+			snprintf(b, sizeof b, "%s ›", n->slot ? n->slot : "notes");
+			ed_row(c, y, "Slot", "the slot’s name, shared by every template that uses it", b, 2, ED_SLOT, ED_SLOT, false);
+		}
+	}
+	hit(c, 0, v->H - ED_BAR - sh, v->W, sh, A_NONE, 0, 0);
+}
+
+static void ed_dialog(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	const char *k = pkind_name(v->per.kind);
+	char title[200], body[240], soft[300], all[64];
+	if (e->ov == EO_USED) {
+		snprintf(title, sizeof title, "Edit “%s” for every %s?", e->t->name, k);
+		snprintf(body, sizeof body, "An edit changes every %s that uses this template, past %ss included.", k, k);
+		snprintf(soft, sizeof soft, "Copy it first to keep the old arrangement for some %ss; give those %ss the copy. Nothing written on any %s changes either way.", k, k, k);
+		snprintf(all, sizeof all, "Edit for every %s", k);
+	} else {
+		snprintf(title, sizeof title, "Leave without saving?");
+		snprintf(body, sizeof body, "The changes to “%s” are dropped; the template stays as it was.", e->t->name);
+		snprintf(soft, sizeof soft, "Nothing written on any %s changes either way: the editor never touches an entry.", k);
+	}
+	double x = 40, w = v->W - 80, y = BAR + 110;
+	UiFont hf = fpx(L->h1, 21), bf = fam(L->text, 400, 0, 15), sf = fam(L->text, 400, 0, 13.5f);
+	UiGc mg = c->g;
+	mg.paint = 0;
+	double hh = ui_text_wrap(&mg, &hf, title, 0, 0, w - 40, 2, 1.2, L->ink), bh = ui_text_wrap(&mg, &bf, body, 0, 0, w - 40, 3, 1.45, L->ink),
+	       sfh = ui_text_wrap(&mg, &sf, soft, 0, 0, w - 40, 4, 1.45, L->soft);
+	double h = 18 + hh + 8 + bh + 8 + sfh + 16 + 40 + 18;
+	if (!c->paint)
+		v->pop_x = x, v->pop_y = y, v->pop_w = w, v->pop_h = h;
+	pop_frame(c, x, y, w, h);
+	if (c->paint) {
+		ui_text_wrap(&c->g, &hf, title, x + 20, y + 18, w - 40, 2, 1.2, L->ink);
+		ui_text_wrap(&c->g, &bf, body, x + 20, y + 18 + hh + 8, w - 40, 3, 1.45, L->ink);
+		ui_text_wrap(&c->g, &sf, soft, x + 20, y + 18 + hh + 8 + bh + 8, w - 40, 4, 1.45, L->soft);
+	}
+	double by = y + h - 18 - 40, bx = x + w - 20;
+	if (e->ov == EO_USED) {
+		bx -= ed_btn(c, bx, by, all, NULL, 1, L->ink, L->paper, ED_EDIT_ALL, 0, 2) + 10;
+		bx -= ed_btn(c, bx, by, "Copy first", IC_COPY, 0, L->ink, L->paper, ED_COPY_FIRST, 0, 2) + 10;
+		ed_btn(c, bx, by, "Cancel", NULL, 3, L->ink, L->paper, ED_KEEP, 0, 2);
+	} else {
+		bx -= ed_btn(c, bx, by, "Discard changes", NULL, 1, L->ink, L->paper, ED_DISCARD, 0, 2) + 10;
+		ed_btn(c, bx, by, "Keep editing", NULL, 0, L->ink, L->paper, ED_KEEP, 0, 2);
+	}
+	hit(c, 0, 0, v->W, v->H, A_NONE, 0, 0); /* modal: the rest takes no tap */
+}
+
+/* FR-044: the template in the view's page, upright and turned */
+static void ed_fit(struct ctx *c)
+{
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	bool land = v->W > v->H;
+	struct grid g;
+	grid_solve(e->t, v->W - 2 * PAD, v->H - BAR - 2 * PAD, land, need_of, c, &g);
+	e->short_ = g.short_;
+	e->deficit = g.deficit;
+	e->short_turned = false;
+	grid_solve(e->t, v->H - 2 * PAD, v->W - BAR - 2 * PAD, !land, need_of, c, &g);
+	if (g.short_ && !e->short_) {
+		e->short_ = true;
+		e->deficit = g.deficit;
+		e->short_turned = true;
+	}
+}
+
+static void ed_run(struct ctx *c)
+{
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	v->t = e->t;
+	bool land = (v->W > v->H) ^ e->turned;
+	double H = v->H;
+	if (!c->paint) {
+		v->land = land;
+		ed_fit(c);
+		/* the page lays out as in the view, less the foot bar; its own fields and controls go */
+		v->H = H - ED_BAR;
+		page(c);
+		v->H = H;
+		v->nf = 0;
+		v->nh = 0;
+		v->hidden_count = 0;
+		v->pop_w = 0;
+		if (e->ov == EO_USED || e->ov == EO_DISCARD)
+			ed_dialog(c);
+		else if (e->ov == EO_ADD)
+			ed_add_sheet(c);
+		else if (e->ov == EO_WSET)
+			ed_wset_sheet(c);
+		ed_head(c);
+		ed_footbar(c);
+		ed_marks(c);
+		double ox = PAD, oy = BAR + PAD;
+		for (int i = 0; i < v->g.n; i++)
+			ed_hit(c, ox + v->g.p[i].x, oy + v->g.p[i].y, v->g.p[i].w, v->g.p[i].h, ED_SELECT, i);
+		ed_hit(c, 0, BAR, v->W, v->H - BAR - ED_BAR, ED_SELECT, -1);
+		return;
+	}
+	v->H = H - ED_BAR;
+	page(c);
+	v->H = H;
+	ed_marks(c);
+	ed_head(c);
+	ed_footbar(c);
+	if (e->ov == EO_ADD)
+		ed_add_sheet(c);
+	else if (e->ov == EO_WSET)
+		ed_wset_sheet(c);
+	else if (e->ov == EO_USED || e->ov == EO_DISCARD)
+		ed_dialog(c);
 }

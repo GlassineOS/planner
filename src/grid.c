@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "grid.h"
+#include "tfile.h"
 
 #define W(...) &(struct tnode){ .k = N_WIDGET, .land = N_WIDGET, .period = -1, __VA_ARGS__ }
 #define ROW(LAND, ...) .k = N_ROW, .land = LAND, .c = { __VA_ARGS__ }, .nc = sizeof((struct tnode *[]){ __VA_ARGS__ }) / sizeof(struct tnode *)
@@ -71,6 +72,9 @@ const int pl_ntemplates = sizeof pl_templates / sizeof *pl_templates;
 
 const struct tmpl *tmpl_find(const char *id)
 {
+	const struct tmpl *u = tmpl_user_find(id); /* the person's edit of it, or their own */
+	if (u)
+		return u;
 	for (int i = 0; id && i < pl_ntemplates; i++)
 		if (!strcmp(pl_templates[i]->id, id))
 			return pl_templates[i];
@@ -79,7 +83,9 @@ const struct tmpl *tmpl_find(const char *id)
 
 const struct tmpl *tmpl_default(enum pkind k)
 {
-	return k == P_DAY ? &day_lists : k == P_WEEK ? &week_columns : &month_grid;
+	const struct tmpl *d = k == P_DAY ? &day_lists : k == P_WEEK ? &week_columns : &month_grid;
+	const struct tmpl *u = tmpl_user_find(d->id);
+	return u && u->kind == k ? u : d;
 }
 
 /* ---- the widgets' declarations (FR-041) ---- */
@@ -242,5 +248,17 @@ static void place(const struct tnode *n, double x, double y, double w, double h,
 void grid_solve(const struct tmpl *t, double w, double h, bool land, need_fn need, void *ud, struct grid *out)
 {
 	memset(out, 0, sizeof *out);
+	if (!t->root)
+		return;
 	place(t->root, 0, 0, w, h, land, need, ud, out);
+	/* FR-044 across both axes: a column narrower than its widest child's minimum, or a row
+	 * lower than its highest child's, shows at the root */
+	struct mm a = measure(t->root, true, land, need, ud), b = measure(t->root, false, land, need, ud);
+	double dw = a.min - w, dh = b.min - h;
+	if (dw > 0.5 || dh > 0.5) {
+		out->short_ = true;
+		double d = round(dw > dh ? dw : dh);
+		if (d > out->deficit)
+			out->deficit = d;
+	}
 }
