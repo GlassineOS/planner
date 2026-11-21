@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "trace.h"
 #include "regions.h"
 #include "glassine-ink-v1-client-protocol.h"
 #include "tablet-v2-client-protocol.h"
@@ -425,6 +426,8 @@ static void sync_regions(void)
 
 static void layout(void)
 {
+	double t0 = pl_trace ? pl_tr_now() : 0;
+	pl_tr_text_ms = 0, pl_tr_text_n = 0;
 	cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
 	cairo_t *cr = cairo_create(s);
 	P.v.today = day_today();
@@ -432,7 +435,10 @@ static void layout(void)
 	view_layout(&P.v, &P.s, &P.L, cr);
 	cairo_destroy(cr);
 	cairo_surface_destroy(s);
+	double t1 = pl_trace ? pl_tr_now() : 0;
 	sync_regions();
+	PL_TR("layout %.1f ms (text %.1f ms, %d), regions %.1f ms, %d fields", t1 - t0, pl_tr_text_ms, pl_tr_text_n,
+	      pl_tr_now() - t1, P.v.nf);
 }
 
 static void paint_page(void *ud, cairo_t *cr)
@@ -458,7 +464,10 @@ static void draw(void)
 	struct frect clip = { P.part.x * S, P.part.y * S, P.part.w * S, P.part.h * S };
 	const struct frect *cp = P.dirty || P.part.w <= 0 ? NULL : &clip;
 	struct frect runs[128], box;
+	double t0 = pl_trace ? pl_tr_now() : 0;
+	pl_tr_text_ms = 0, pl_tr_text_n = 0, pl_tr_ink_ms = 0, pl_tr_ink_n = 0;
 	int n = frame_update(&P.fr, bw, bh, cp, paint_page, NULL, runs, 128, &box);
+	double t1 = pl_trace ? pl_tr_now() : 0;
 	if (n < 0)
 		return;
 	for (int i = 0; i < 2; i++)
@@ -469,6 +478,10 @@ static void draw(void)
 	for (int y = b->need.y; y < b->need.y + b->need.h; y++)
 		memcpy(px + (size_t)y * bw + b->need.x, P.fr.cur + (size_t)y * bw + b->need.x, (size_t)b->need.w * 4);
 	b->need = (struct frect){ 0 };
+	PL_TR("frame %s%s: paint %.1f ms (text %.1f ms, %d; ink %.1f ms, %d), diff %.1f ms, copy %.1f ms; %d runs, box %dx%d+%d+%d",
+	      cp ? "part" : "whole", P.relayout ? " (relayout pending)" : "", pl_tr_paint_ms, pl_tr_text_ms, pl_tr_text_n,
+	      pl_tr_ink_ms, pl_tr_ink_n, pl_tr_diff_ms, pl_trace ? pl_tr_now() - t1 : 0, n, box.w, box.h, box.x, box.y);
+	(void)t0;
 	wl_surface_set_buffer_scale(P.surf, S);
 	wl_surface_attach(P.surf, b->b, 0, 0);
 	if (b->fresh) {
@@ -829,9 +842,13 @@ static void editor_tap(int op, int arg)
 	}
 }
 
-static void tap(double x, double y, bool finger)
+static void tap_(double x, double y, bool finger)
 {
 	struct view *v = &P.v;
+	if (pl_trace) {
+		const struct vhit *th = view_hit(v, x, y);
+		PL_TR("tap %s %.0f,%.0f action %d", finger ? "finger" : "pen", x, y, th ? (int)th->a : -1);
+	}
 	if (P.refused) {
 		struct vhit *h = &P.refused_close;
 		if (x >= h->x && x < h->x + h->w && y >= h->y && y < h->y + h->h)
@@ -1094,6 +1111,24 @@ static void tap(double x, double y, bool finger)
 	(void)finger;
 }
 
+/* what a tap changed is laid out at once, not after the pen's pause (FR-046 holds the
+ * layout while the person writes; a tap on a control is no writing). Without this a pen tap
+ * on the bar waited PAUSE_MS, and the page was painted once in the old layout before. A
+ * relayout the writing asked for before the tap still waits for the pause, unless the tap
+ * asks for one too (it then lays out everything) */
+static void tap(double x, double y, bool finger)
+{
+	bool held = P.relayout; /* a relayout the writing asked for keeps its pause */
+	P.relayout = false;
+	tap_(x, y, finger);
+	if (P.relayout && P.configured && !P.refused) {
+		P.relayout = false;
+		layout();
+		P.dirty = true;
+	}
+	P.relayout = P.relayout || held;
+}
+
 /* the free time field of the agenda an event is in: its minutes per px */
 static double mpp_of(uint32_t id)
 {
@@ -1323,6 +1358,7 @@ static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 	P.tool_down = false;
 	P.pen_down = false;
 	P.pen_up_ms = now_ms();
+	PL_TR("pen up %.0f,%.0f", P.tool_x, P.tool_y);
 	if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
 		tap(down_x, down_y, false);
 }
@@ -1608,6 +1644,7 @@ static void reload_voice(void)
 
 int main(int argc, char **argv)
 {
+	pl_trace = getenv("GLASSINE_PLANNER_TRACE") && *getenv("GLASSINE_PLANNER_TRACE") == '1';
 	for (int i = 1; i < argc; i++)
 		if (!strcmp(argv[i], "--help")) {
 			printf("usage: glassine-planner\n  the pen-first planner; its entries are kept in "
@@ -1681,6 +1718,7 @@ int main(int argc, char **argv)
 	while (P.running && !stop) {
 		if (P.relayout && !(P.pen_down || now_ms() - P.pen_up_ms < PAUSE_MS) && P.configured) {
 			P.relayout = false;
+			PL_TR("relayout after the pen's pause");
 			if (!P.refused)
 				layout();
 			P.dirty = true;
