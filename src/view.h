@@ -67,7 +67,10 @@ struct vhit {
 };
 
 #define V_FIELDS 160
-#define V_BAR 60 /* the header bar's height (logical px) */
+/* the header bar's height (logical px): 60, and taller by as much as its title and its
+ * subtitle grow with the text size (GlassineOS/shell spec 012), as the last layout found */
+double view_bar_h(void);
+#define V_BAR view_bar_h()
 #define V_HITS 600 /* the days of a year: a target per day */
 struct view {
 	/* what is shown */

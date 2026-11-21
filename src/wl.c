@@ -29,6 +29,8 @@
 #include "regions.h"
 #include "glassine-ink-v1-client-protocol.h"
 #include "tablet-v2-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
 #include "view.h"
 #include "xdg-shell-client-protocol.h"
@@ -61,7 +63,13 @@ static struct {
 	struct xdg_toplevel *top;
 	struct ghw_pen *pen;
 	int out_scale;
-	int W, H;          /* logical */
+	/* the surface's preferred scale in 120ths (0: none said): device pixels per design pixel
+	 * (shell spec 012), a buffer of that many pixels shown at the logical size */
+	struct wp_fractional_scale_manager_v1 *fsman;
+	struct wp_viewporter *vpr;
+	struct wp_viewport *vp;
+	uint32_t frac;
+	int W, H;          /* logical: design pixels */
 	bool configured, running, dirty;
 	struct settle st; /* the relayout asked for, and when it runs (FR-046) */
 	struct content said; /* what the next commit is said to be (FR-062) */
@@ -444,6 +452,7 @@ static void sync_regions(void)
 
 /* ---- drawing ---- */
 
+static double scale_now(void);
 static void layout(void)
 {
 	double t0 = pl_trace ? pl_tr_now() : 0;
@@ -452,16 +461,23 @@ static void layout(void)
 	P.v.W = P.W, P.v.H = P.lay_h ? P.lay_h : P.H;
 	/* measured at the output's scale, as paint_page draws: else a wrapped text is taller
 	 * or shorter when painted, and a dialog's buttons are painted off their targets */
-	view_layout_at(&P.v, &P.s, &P.L, P.out_scale < 1 ? 1 : P.out_scale);
+	view_layout_at(&P.v, &P.s, &P.L, scale_now());
 	double t1 = pl_trace ? pl_tr_now() : 0;
 	sync_regions();
 	PL_TR("layout %.1f ms (text %.1f ms, %d), regions %.1f ms, %d fields", t1 - t0, pl_tr_text_ms, pl_tr_text_n,
 	      pl_tr_now() - t1, P.v.nf);
 }
 
+/* device pixels per design pixel: the surface's preferred fractional scale, else the
+ * outputs' whole one */
+static double scale_now(void)
+{
+	return P.frac && P.vp ? P.frac / 120.0 : P.out_scale < 1 ? 1 : P.out_scale;
+}
+
 static void paint_page(void *ud, cairo_t *cr)
 {
-	int S = P.out_scale < 1 ? 1 : P.out_scale;
+	double S = scale_now();
 	cairo_scale(cr, S, S);
 	if (P.refused)
 		view_paint_refused(&P.L, cr, P.W, P.H, &P.refused_close);
@@ -475,11 +491,14 @@ static void draw(void)
 {
 	if (!P.configured)
 		return;
-	int S = P.out_scale < 1 ? 1 : P.out_scale, bw = P.W * S, bh = P.H * S;
+	double S = scale_now();
+	int bw = ui_device_px(P.W, S), bh = ui_device_px(P.H, S);
 	struct buffer *b = get_buffer(bw, bh);
 	if (!b)
 		return; /* both are on screen: the next release draws */
-	struct frect clip = { P.part.x * S, P.part.y * S, P.part.w * S, P.part.h * S };
+	/* the part in device pixels: every pixel it touches */
+	struct frect clip = { (int)floor(P.part.x * S), (int)floor(P.part.y * S), 0, 0 };
+	clip.w = (int)ceil((P.part.x + P.part.w) * S) - clip.x, clip.h = (int)ceil((P.part.y + P.part.h) * S) - clip.y;
 	const struct frect *cp = P.dirty || P.part.w <= 0 ? NULL : &clip;
 	struct frect runs[128], box;
 	double t0 = pl_trace ? pl_tr_now() : 0;
@@ -505,7 +524,11 @@ static void draw(void)
 	      pl_tr_ink_ms, pl_tr_ink_n, pl_tr_diff_ms, pl_trace ? pl_tr_now() - t1 : 0, n, box.w, box.h, box.x, box.y,
 	      said == CONTENT_PAGE ? ", said page" : said == CONTENT_MOTION ? ", said motion" : "");
 	(void)t0;
-	wl_surface_set_buffer_scale(P.surf, S);
+	if (P.frac && P.vp) {
+		wl_surface_set_buffer_scale(P.surf, 1);
+		wp_viewport_set_destination(P.vp, P.W, P.H);
+	} else
+		wl_surface_set_buffer_scale(P.surf, (int)S);
 	wl_surface_attach(P.surf, b->b, 0, 0);
 	if (b->fresh) {
 		wl_surface_damage_buffer(P.surf, 0, 0, bw, bh);
@@ -1565,15 +1588,27 @@ static void o_geometry(void *d, struct wl_output *o, int32_t x, int32_t y, int32
 		       const char *mk, const char *md, int32_t t) {}
 static void o_mode(void *d, struct wl_output *o, uint32_t f, int32_t w, int32_t h, int32_t r) {}
 static void o_done(void *d, struct wl_output *o) {}
+static void load_metrics(void);
 static void o_scale(void *d, struct wl_output *o, int32_t f)
 {
 	if (f > P.out_scale) {
 		P.out_scale = f;
+		load_metrics();
 		relayout_later(); /* the page is measured at the scale it is painted at */
 	}
 	P.dirty = true;
 }
 static const struct wl_output_listener output_listener = { o_geometry, o_mode, o_done, o_scale };
+
+static void fs_scale(void *d, struct wp_fractional_scale_v1 *f, uint32_t scale)
+{
+	if (scale == P.frac)
+		return;
+	P.frac = scale;
+	load_metrics(); /* the minimums are millimetres at this scale */
+	relayout_later();
+}
+static const struct wp_fractional_scale_v1_listener fs_listener = { fs_scale };
 
 static void wm_ping(void *d, struct xdg_wm_base *wm, uint32_t serial)
 {
@@ -1649,6 +1684,10 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *if
 	}
 	else if (!strcmp(iface, zwp_text_input_manager_v3_interface.name))
 		P.tim = wl_registry_bind(r, name, &zwp_text_input_manager_v3_interface, 1);
+	else if (!strcmp(iface, wp_fractional_scale_manager_v1_interface.name))
+		P.fsman = wl_registry_bind(r, name, &wp_fractional_scale_manager_v1_interface, 1);
+	else if (!strcmp(iface, wp_viewporter_interface.name))
+		P.vpr = wl_registry_bind(r, name, &wp_viewporter_interface, 1);
 }
 static void global_remove(void *d, struct wl_registry *r, uint32_t name) {}
 static const struct wl_registry_listener reg_listener = { global, global_remove };
@@ -1688,6 +1727,36 @@ static void watch_voice(void)
 	else
 		snprintf(d, sizeof d, "%s/.config/glassine-shell", h ? h : "");
 	P.inowd = inotify_add_watch(P.ino, d, IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+	/* the text size and the outputs' scales (shell spec 012): their directories, as the
+	 * files are replaced whole */
+	char f[1100];
+	for (int i = 0; i < 2; i++)
+		if ((i ? ui_output_scale_file(f, sizeof f) : ui_text_size_file(f, sizeof f)) && strrchr(f, '/')) {
+			*strrchr(f, '/') = 0;
+			inotify_add_watch(P.ino, f, IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+		}
+}
+/* the text size (shell spec 012 FR-024) and the length of a design pixel on the output the
+ * window is on, for the minimums (FR-022): the published line of the surface's scale (0:
+ * not known, no minimums) */
+static void load_metrics(void)
+{
+	UiOutputScale os[16];
+	int n = ui_output_scale_read(NULL, os, 16), best = -1;
+	double S = scale_now();
+	for (int i = 0; i < n && i < 16; i++)
+		if (fabs(os[i].factor - S) < 0.005 && (best < 0 || fabs(os[i].factor - S) < fabs(os[best].factor - S)))
+			best = i;
+	ui_metrics_voice(P.L.uv, best < 0 ? 0 : ui_mm_per_px(os[best].factor, os[best].density), ui_text_size_read(NULL) / 100.0);
+}
+/* true: they changed */
+static bool reload_metrics(void)
+{
+	double a[4], b[4];
+	ui_metrics_get(&a[0], &a[1], &a[2], &a[3]);
+	load_metrics();
+	ui_metrics_get(&b[0], &b[1], &b[2], &b[3]);
+	return memcmp(a, b, sizeof a) != 0;
 }
 
 static void reload_voice(void)
@@ -1699,6 +1768,8 @@ static void reload_voice(void)
 		look_init(&P.L, v);
 		relayout_later(); /* FR-060: the voice changes with the system's */
 	}
+	if (reload_metrics())
+		relayout_later();
 }
 
 int main(int argc, char **argv)
@@ -1724,6 +1795,7 @@ int main(int argc, char **argv)
 	tmpl_user_load(dir);
 	look_voice_name(P.voice, sizeof P.voice);
 	look_init(&P.L, P.voice);
+	load_metrics();
 	P.v.today = day_today();
 	P.v.per = period_of(P_DAY, P.v.today);
 	P.v.hidden_kind = -1;
@@ -1750,6 +1822,11 @@ int main(int argc, char **argv)
 	}
 	wl_display_roundtrip(P.dpy);
 	P.surf = wl_compositor_create_surface(P.comp);
+	if (P.fsman && P.vpr) {
+		P.vp = wp_viewporter_get_viewport(P.vpr, P.surf);
+		wp_fractional_scale_v1_add_listener(wp_fractional_scale_manager_v1_get_fractional_scale(P.fsman, P.surf),
+						    &fs_listener, NULL);
+	}
 	P.pen = ghw_pen_new(P.dpy, P.surf, &pen_listener, NULL);
 	if (P.inkman) {
 		/* the panel previews a stroke in the fields with the pen the planner draws with, so
