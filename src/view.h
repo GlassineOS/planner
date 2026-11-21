@@ -8,6 +8,7 @@
 #define PL_VIEW_H
 #include <cairo.h>
 #include <stdbool.h>
+#include "editor.h"
 #include "grid.h"
 #include "look.h"
 #include "store.h"
@@ -19,6 +20,7 @@ enum fkind {
 	F_ENTRY,  /* an entry's field (its title, its text) */
 	F_NEW,    /* an empty row: the first stroke makes the entry */
 	F_FREE,   /* an agenda's free time: reading off, a drawn block makes an event */
+	F_NAME,   /* the template editor's name, written with the pen (no entry) */
 };
 struct vfield {
 	enum fkind k;
@@ -38,6 +40,8 @@ struct vfield {
 enum act {
 	A_NONE, A_VIEW, A_PREV, A_NEXT, A_TODAY, A_INFO, A_COG, A_BACK, A_CLOSE, A_TICK, A_DAY, A_HIDDEN, A_TEXTMODE,
 	A_PICKER, A_PICK, A_SCOPE, A_HABIT, A_EVENT, A_MORE,
+	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
+	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
 };
 struct vhit {
 	double x, y, w, h;
@@ -70,6 +74,8 @@ struct view {
 	int hidden_count;
 	double pop_x, pop_y, pop_w, pop_h; /* the open popover's rectangle */
 	uint32_t drag; int drag_s0, drag_e0; /* an event being dragged: where it was (dashed outline, gutter readout) */
+	struct editor *ed;  /* the template editor, when open: it takes the whole screen */
+	char ring[40];      /* the picker rings this template (a new one just saved), else the one in use */
 };
 
 struct hidden_group {
