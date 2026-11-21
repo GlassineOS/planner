@@ -132,6 +132,11 @@ struct hidden_group {
 int view_hidden(struct store *s, const struct tmpl *t, struct period per, struct hidden_group *out, int max);
 
 void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t *measure);
+/* view_layout measured as view_paint will draw at scale (device px per logical px): text is
+ * measured at the size it is painted, so what is laid out (targets, fields, a dialog's
+ * buttons) lies where it is painted. A measure at another scale wraps and fits text
+ * differently, and a target can land off its painted control */
+void view_layout_at(struct view *v, struct store *s, const struct look *L, double scale);
 void view_paint(struct view *v, struct store *s, const struct look *L, cairo_t *cr);
 /* keep painted ink per field (on by default); off drops what is kept */
 void view_ink_cache(bool on);
