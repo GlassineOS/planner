@@ -43,20 +43,24 @@ What was learned:
 - **No relayout while the pen writes.** Layout requests are held while the pen is down and
   for a pause after it lifts; the page settles once. Between strokes nothing repaints; ink
   is drawn straight onto the shown frame and only its box is committed.
-- **Rows give way in a fixed order.** When a list is full, done rows hide first, then the
-  oldest open ones; the empty row and the row just written never move into "more".
+- **Rows must give way in some order.** Without one, a to-do written into the last free
+  row vanished into "more" at the settle. The spike hides done rows first, then the oldest
+  open ones, and keeps the empty row; that order is a proposal for the spec, not a finding.
 - **Templates are separate from data.** Entries belong to dates; template choices live in
   another file. Switching templates leaves the entries file byte-identical, and the view
   counts the entries it does not show.
-- **Drags step locally.** Moving or stretching an event redraws only its column, once per
-  30-minute step and once on release.
+- **Drags step locally.** Moving or stretching an event redraws one small area (about
+  3 % of the panel) per 30-minute step, plus once on release, when the block's
+  "being dragged" look goes away; a drag without that look would save the last refresh.
 - **Text mode** uses text-input-v3; the input method is activated, typed keys edit the
   reading, and leaving the field deactivates it.
 - **Event titles overflow.** A title field bounded by its time block clips ink in short
   events; the spec must say whether fields may grow past their block.
 
-Unverified: the tablet-v2 pen path on hardware, ink latency on e-ink, and the on-screen
-keyboard actually appearing (only the input method's activation is checked).
+Untested: the tablet-v2 pen and eraser code and the wl_touch code are compiled but never
+driven; the smoke run uses only a virtual pointer (left button = pen, right = finger).
+Also untested: ink latency on e-ink, the on-screen keyboard actually appearing (only the
+input method's activation is checked), and the per-view text mode beyond its toggle.
 
 ## License
 
