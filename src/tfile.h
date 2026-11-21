@@ -47,6 +47,8 @@ const struct tmpl *tmpl_user_find(const char *id);
 /* keep t (taken over) as the person's template of its id, written to its file; false when
  * the file couldn't be written (the template is kept in memory all the same) */
 bool tmpl_user_put(const char *dir, struct tmpl *t);
+/* the person's version of id goes (its file too): a shipped template is as shipped again */
+bool tmpl_user_remove(const char *dir, const char *id);
 /* a fresh id for a new template or a copy */
 void tmpl_new_id(char *out, int len);
 /* every template of kind k, shipped ones first (replaced by the person's edit), then the
