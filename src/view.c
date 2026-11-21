@@ -2621,6 +2621,7 @@ void view_paint_refused(const struct look *L, cairo_t *cr, double W, double H, s
 
 static const char *const IC_TRASH = "M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13";
 static const char *const IC_ROTATE = "M4 9h11v11H4z M14 3a7 7 0 0 1 6 6 M20 5v4h-4";
+static const char *const IC_UNDO = "M9 14L4 9l5-5 M4 9h10a6 6 0 0 1 0 12h-3";
 static const char *const IC_W[W_NWIDGETS] = {
 	"M4 5h16v15H4z M8 3v4 M16 3v4 M8 11h5 M8 15h8", "M4 5h16v15H4z M8 3v4 M16 3v4 M8 11h5 M8 15h8",
 	"M4 6h3v3H4z M10 7.5h10 M4 14h3v3H4z M10 15.5h10", "M5 4h14v16H5z M8 9h8 M8 13h8 M8 17h5",
@@ -2686,6 +2687,24 @@ static const char *w_title(const struct tnode *n)
 	return n->title ? n->title : n->wg == W_AGENDA || n->wg == W_CAGENDA ? "Agenda" : W_NAME[n->wg];
 }
 
+/* FR-032: how many periods use the template (those holding entries; the default one also every
+ * period without a choice) */
+static void ed_used(struct editor *e, const char *k, char *o, size_t len)
+{
+	if (e->fresh) {
+		snprintf(o, len, "used by no %s yet", k);
+		return;
+	}
+	if (e->uses < 0)
+		e->uses = editor_uses(e->data, e->t, &e->is_default);
+	if (e->is_default)
+		snprintf(o, len, "the default · used by %d %s%s", e->uses, k, e->uses == 1 ? "" : "s");
+	else if (e->uses)
+		snprintf(o, len, "used by %d %s%s", e->uses, k, e->uses == 1 ? "" : "s");
+	else
+		snprintf(o, len, "used by no %s with entries", k);
+}
+
 static void ed_head(struct ctx *c)
 {
 	const struct look *L = c->L;
@@ -2704,10 +2723,10 @@ static void ed_head(struct ctx *c)
 	double x = W - 12;
 	x -= ed_btn(c, x, cy - 20, "Save", NULL, e->short_ ? 2 : 1, fg, bg, ED_SAVE, 0, 2) + 8;
 	x -= ed_btn(c, x, cy - 20, "Cancel", NULL, 3, fg, bg, ED_CANCEL, 0, 2) + 12;
-	char sub[160];
+	char sub[200], used[80];
 	const char *k = pkind_name(v->per.kind);
-	snprintf(sub, sizeof sub, "A %s template · shown with this %s’s entries · %s", k, k,
-		 e->naming ? "its name, written with the pen" : e->fresh ? "used by no period yet" : "applies wherever it is used");
+	ed_used(e, k, used, sizeof used);
+	snprintf(sub, sizeof sub, "A %s template · shown with this %s’s entries · %s", k, k, e->naming ? "its name, written with the pen" : used);
 	UiFont f1 = L->h1, f2 = L->sub;
 	double h1, h2, maxw = x - 16;
 	ui_text_w(&c->g, &f1, "Ag", &h1);
@@ -2754,10 +2773,16 @@ static void ed_footbar(struct ctx *c)
 	double x = 12;
 	x += ed_btn(c, x, y + 8.5, "Add widget", IC_PLUS, 0, L->ink, L->paper, ED_ADD, 0, 0) + 8;
 	x += ed_btn(c, x, y + 8.5, "Remove", IC_TRASH, e->sel ? 0 : 2, L->ink, L->paper, ED_REMOVE, 0, 0) + 8;
-	x += ed_btn(c, x, y + 8.5, e->turned ? "Upright" : "Turned", IC_ROTATE, 0, L->ink, L->paper, ED_TURN, 0, 0) + 12;
+	x += ed_btn(c, x, y + 8.5, e->turned ? "Upright" : "Turned", IC_ROTATE, 0, L->ink, L->paper, ED_TURN, 0, 0) + 8;
+	if (editor_edited_shipped(e))
+		x += ed_btn(c, x, y + 8.5, "Shipped", IC_UNDO, 0, L->ink, L->paper, ED_RESTORE, 0, 0) + 8;
+	x += 4;
 	UiFont nf = fam(L->mono, 400, 0, 12);
-	const char *note = e->turned ? "previewing turned" : !editor_widgets(e->t->root) ? "empty: Add widget puts the first one in"
-								  : "tap a widget to select it · drag it, or its edge";
+	const char *note = e->notice[0] ? e->notice : e->drop_target ? "release over a widget’s edge to put it there" : e->turned ? "previewing turned"
+			   : !editor_widgets(e->t->root) ? "empty: Add widget puts the first one in"
+							  : "tap a widget to select it · drag it, or its edge";
+	if (e->notice[0])
+		nf = fam(L->mono, 600, 0, 12);
 	if (c->paint)
 		ui_text_wrap(&c->g, &nf, note, x, y + 14, v->W - x - 12, 2, 1.3, L->soft);
 }
@@ -2820,8 +2845,22 @@ static void ed_marks(struct ctx *c)
 		lk_rect(c->cr, x + sel->w - 6, y + sel->h / 2 - 22, 12, 44, 6);
 		lk_fill(c->cr, L->ink);
 	}
-	if (sel)
+	if (sel && !e->drop_target)
 		ed_tag(c, sel, ox, oy);
+	for (int i = 0; e->drop_target && i < v->g.n; i++) { /* board event.drag move: where it lands */
+		const struct placed *p = &v->g.p[i];
+		if (p->n != e->drop_target)
+			continue;
+		double x = ox + p->x, y = oy + p->y, mw = 8;
+		double r[4][4] = { { x - mw / 2 - 2, y, mw, p->h }, { x + p->w - mw / 2 + 2, y, mw, p->h },
+				   { x, y - mw / 2 - 2, p->w, mw }, { x, y + p->h - mw / 2 + 2, p->w, mw } };
+		double *q = r[e->drop_side & 3];
+		if (c->paint) {
+			lk_stroke_box(c->cr, x + 1.75, y + 1.75, p->w - 3.5, p->h - 3.5, L->wg_r, 2, L->ink);
+			cairo_rectangle(c->cr, q[0], q[1], q[2], q[3]);
+			lk_fill(c->cr, L->ink);
+		}
+	}
 	if (!v->g.n) {
 		double w = v->W - 2 * PAD;
 		if (c->paint) {
@@ -2978,9 +3017,61 @@ static void ed_wset_sheet(struct ctx *c)
 		y += 54;
 		if (n->wg == W_NOTES && y + 54 < v->H - ED_BAR) {
 			snprintf(b, sizeof b, "%s ›", n->slot ? n->slot : "notes");
-			ed_row(c, y, "Slot", "the slot’s name, shared by every template that uses it", b, 2, ED_SLOT, ED_SLOT, false);
+			ed_row(c, y, "Slot", "the slot’s name, shared by every template that uses it", b, 2, ED_SLOTS, ED_SLOTS, false);
 		}
 	}
+	hit(c, 0, v->H - ED_BAR - sh, v->W, sh, A_NONE, 0, 0);
+}
+
+/* board templates.editor slot: the slots in use, and a new one written with the pen */
+static void ed_slot_sheet(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct editor *e = v->ed;
+	struct tnode *n = e->sel;
+	if (!n)
+		return;
+	double sh = round((v->H - BAR - ED_BAR) * 0.7), bottom = v->H - ED_BAR;
+	double y = ed_sheet(c, sh, "Slot for these notes",
+			    "Notes are kept per slot. Every template that names a slot shows the same entries; a slot no widget shows keeps its entries, named in the (i).");
+	UiFont kf = btn_font(L), tf = fam(L->text, 500, 0, 16), sf = fam(L->text, 400, 0, 12.5f);
+	const char *sl[32];
+	int ns = editor_slots(e->data, sl, 32);
+	int per = n->period < 0 ? (int)e->t->kind : n->period;
+	static const char *pn[] = { "day", "week", "month" };
+	/* the new slot's field below the list: room kept for it */
+	double room = 18 + 6 + 40 + 40;
+	tc(c, &kf, "Slots in use", 16, y + 8, 0, 0, L->soft);
+	y += 18;
+	for (int i = 0; i < ns && y + 52 <= bottom - room; i++) {
+		int d = editor_slot_days(e->data, sl[i], per);
+		char sub[80];
+		if (d)
+			snprintf(sub, sizeof sub, "%d %s%s", d, pn[per], d == 1 ? " holds entries" : "s hold entries");
+		else
+			snprintf(sub, sizeof sub, "no %s holds entries", pn[per]);
+		tc(c, &tf, sl[i], 16, y + 18, 0, v->W - 80, L->ink);
+		tc(c, &sf, sub, 16, y + 38, 0, v->W - 80, L->soft);
+		if (!strcmp(sl[i], n->slot ? n->slot : "notes"))
+			tc(c, &tf, "✓", v->W - 16, y + 26, 2, 0, L->ink);
+		ed_hit(c, 0, y, v->W, 52, ED_SLOT_PICK, i);
+		rule(c, 16, y + 52, v->W - 32);
+		y += 54;
+	}
+	tc(c, &kf, "A new slot", 16, y + 14, 0, 0, L->soft);
+	y += 24;
+	double fh = 40, fw = v->W - 32;
+	box(c, 16, y, fw, fh, L->ui_r, 2, L->ink, L->paper);
+	struct vfield *f = field(c, F_SLOT, 16, y, fw, fh);
+	if (f)
+		snprintf(f->name, sizeof f->name, "tmpl-slot:%s", e->t->id ? e->t->id : "");
+	ink(c, &e->slot, 16, y, 1);
+	if (!e->slot.ns)
+		tc(c, &sf, "write its name with the pen", 26, y + fh / 2, 0, fw - 20, L->soft);
+	if (y + fh + 36 <= bottom)
+		ui_text_wrap(&c->g, &sf, "Read as you write; the widget shows that slot as soon as the name is read.", 16, y + fh + 8, v->W - 32, 2,
+			     1.35, L->soft);
 	hit(c, 0, v->H - ED_BAR - sh, v->W, sh, A_NONE, 0, 0);
 }
 
@@ -2996,6 +3087,10 @@ static void ed_dialog(struct ctx *c)
 		snprintf(body, sizeof body, "An edit changes every %s that uses this template, past %ss included.", k, k);
 		snprintf(soft, sizeof soft, "Copy it first to keep the old arrangement for some %ss; give those %ss the copy. Nothing written on any %s changes either way.", k, k, k);
 		snprintf(all, sizeof all, "Edit for every %s", k);
+	} else if (e->ov == EO_RESTORE) {
+		snprintf(title, sizeof title, "Back to the shipped “%s”?", e->t->name);
+		snprintf(body, sizeof body, "Your arrangement is replaced by the one the planner came with, wherever the template is used, past %ss included.", k);
+		snprintf(soft, sizeof soft, "Nothing written on any %s changes; what the shipped arrangement doesn’t show is named in the (i). Copy it first to keep your arrangement as a template of its own.", k);
 	} else {
 		snprintf(title, sizeof title, "Leave without saving?");
 		snprintf(body, sizeof body, "The changes to “%s” are dropped; the template stays as it was.", e->t->name);
@@ -3021,6 +3116,9 @@ static void ed_dialog(struct ctx *c)
 		bx -= ed_btn(c, bx, by, all, NULL, 1, L->ink, L->paper, ED_EDIT_ALL, 0, 2) + 10;
 		bx -= ed_btn(c, bx, by, "Copy first", IC_COPY, 0, L->ink, L->paper, ED_COPY_FIRST, 0, 2) + 10;
 		ed_btn(c, bx, by, "Cancel", NULL, 3, L->ink, L->paper, ED_KEEP, 0, 2);
+	} else if (e->ov == EO_RESTORE) {
+		bx -= ed_btn(c, bx, by, "Back to the shipped one", NULL, 1, L->ink, L->paper, ED_RESTORE_YES, 0, 2) + 10;
+		ed_btn(c, bx, by, "Keep mine", NULL, 0, L->ink, L->paper, ED_KEEP, 0, 2);
 	} else {
 		bx -= ed_btn(c, bx, by, "Discard changes", NULL, 1, L->ink, L->paper, ED_DISCARD, 0, 2) + 10;
 		ed_btn(c, bx, by, "Keep editing", NULL, 0, L->ink, L->paper, ED_KEEP, 0, 2);
@@ -3039,7 +3137,9 @@ static void ed_fit(struct ctx *c)
 	e->short_ = g.short_;
 	e->deficit = g.deficit;
 	e->short_turned = false;
-	grid_solve(e->t, v->H - 2 * PAD, v->W - BAR - 2 * PAD, !land, need_of, c, &g);
+	double tw, th;
+	editor_turned_size(v->W, v->H, &tw, &th);
+	grid_solve(e->t, tw - 2 * PAD, th - BAR - 2 * PAD, !land, need_of, c, &g);
 	if (g.short_ && !e->short_) {
 		e->short_ = true;
 		e->deficit = g.deficit;
@@ -3065,12 +3165,14 @@ static void ed_run(struct ctx *c)
 		v->nh = 0;
 		v->hidden_count = 0;
 		v->pop_w = 0;
-		if (e->ov == EO_USED || e->ov == EO_DISCARD)
+		if (e->ov == EO_USED || e->ov == EO_DISCARD || e->ov == EO_RESTORE)
 			ed_dialog(c);
 		else if (e->ov == EO_ADD)
 			ed_add_sheet(c);
 		else if (e->ov == EO_WSET)
 			ed_wset_sheet(c);
+		else if (e->ov == EO_SLOT)
+			ed_slot_sheet(c);
 		ed_head(c);
 		ed_footbar(c);
 		ed_marks(c);
@@ -3090,6 +3192,8 @@ static void ed_run(struct ctx *c)
 		ed_add_sheet(c);
 	else if (e->ov == EO_WSET)
 		ed_wset_sheet(c);
-	else if (e->ov == EO_USED || e->ov == EO_DISCARD)
+	else if (e->ov == EO_SLOT)
+		ed_slot_sheet(c);
+	else if (e->ov == EO_USED || e->ov == EO_DISCARD || e->ov == EO_RESTORE)
 		ed_dialog(c);
 }

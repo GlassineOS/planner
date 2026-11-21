@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <strings.h>
 #include <ctype.h>
 
@@ -10,14 +11,20 @@
 
 static void reset(struct editor *e)
 {
+	const struct store *data = e->data;
 	tmpl_free(e->t);
 	field_free(&e->name);
+	field_free(&e->slot);
 	memset(e, 0, sizeof *e);
+	e->data = data;
+	e->uses = -1;
+	e->drop_side = -1;
 }
 
 void editor_close(struct editor *e)
 {
 	reset(e);
+	e->data = NULL;
 }
 
 void editor_open_edit(struct editor *e, const struct tmpl *t)
@@ -291,6 +298,200 @@ void editor_name_value(struct editor *e, const char *text)
 	}
 }
 
+static bool is_widget(const struct editor *e, const struct tnode *n);
+
+/* a notes widget shows slot `name`; a title that named the old slot follows */
+static void set_slot(struct editor *e, struct tnode *s, const char *name)
+{
+	const char *old = s->slot ? s->slot : "notes";
+	bool titled = !s->title || !strcasecmp(s->title, old) || !strcmp(s->title, "Notes");
+	tmpl_set_str(&s->slot, name);
+	if (titled) {
+		char t[32];
+		snprintf(t, sizeof t, "%s", name);
+		t[0] = (char)toupper((unsigned char)t[0]);
+		tmpl_set_str(&s->title, t);
+	}
+	e->dirty = true;
+}
+
+/* FR-027 and the edge case "a template edit removes the only widget showing a slot that has
+ * entries": the edit goes ahead, and says what stays stored */
+static bool shows_slot(const struct tnode *n, const struct tnode *skip, const char *slot, int period, int kind)
+{
+	if (n != skip && n->k == N_WIDGET && n->wg == W_NOTES && (n->period < 0 ? kind : n->period) == period &&
+	    !strcmp(n->slot ? n->slot : "notes", slot))
+		return true;
+	for (int i = 0; i < n->nc; i++)
+		if (shows_slot(n->c[i], skip, slot, period, kind))
+			return true;
+	return false;
+}
+
+static void removal_notice(struct editor *e, const struct tnode *s)
+{
+	if (s->wg != W_NOTES)
+		return;
+	const char *slot = s->slot ? s->slot : "notes";
+	int per = s->period < 0 ? (int)e->t->kind : s->period;
+	if (shows_slot(e->t->root, s, slot, per, (int)e->t->kind))
+		return;
+	int n = editor_slot_days(e->data, slot, per);
+	if (!n)
+		return;
+	static const char *pn[] = { "day", "week", "month" };
+	snprintf(e->notice, sizeof e->notice, "Notes on %d %s%s stay stored, unchanged.", n, pn[per], n == 1 ? "" : "s");
+}
+
+void editor_turned_size(double W, double H, double *tw, double *th)
+{
+	*tw = H + SYS_BAR;
+	*th = W - SYS_BAR;
+}
+
+bool editor_edited_shipped(const struct editor *e)
+{
+	return e->t && !e->fresh && e->t->id && tmpl_is_shipped(e->t->id) && tmpl_user_find(e->t->id);
+}
+
+int editor_slot_days(const struct store *s, const char *slot, int k)
+{
+	int n = 0;
+	for (int i = 0; s && i < s->n; i++) {
+		const struct entry *x = s->e[i];
+		if (x->kind != E_NOTE || (int)x->per.kind != k || strcmp(x->slot[0] ? x->slot : "notes", slot) || field_empty(&x->f))
+			continue;
+		bool seen = false;
+		for (int j = 0; j < i && !seen; j++) {
+			const struct entry *y = s->e[j];
+			seen = y->kind == E_NOTE && y->per.kind == x->per.kind && y->per.start == x->per.start &&
+			       !strcmp(y->slot[0] ? y->slot : "notes", slot) && !field_empty(&y->f);
+		}
+		n += !seen;
+	}
+	return n;
+}
+
+/* the periods of kind k anything is known about: those holding entries, and those chosen one by one */
+static int known_periods(const struct store *s, int k, int **out)
+{
+	int cap = s->n + s->nc + 1, n = 0;
+	int *o = malloc(cap * sizeof *o);
+	if (!o)
+		return 0;
+	for (int i = 0; i < s->n + s->nc; i++) {
+		int st;
+		if (i < s->n) {
+			if ((int)s->e[i]->per.kind > k) /* a week's entry doesn't make its days used */
+				continue;
+			st = period_of(k, s->e[i]->per.start).start;
+		} else {
+			const struct choice *c = &s->c[i - s->n];
+			if ((int)c->from.kind != k || c->to != c->from.start)
+				continue;
+			st = c->from.start;
+		}
+		bool dup = false;
+		for (int j = 0; j < n && !dup; j++)
+			dup = o[j] == st;
+		if (!dup)
+			o[n++] = st;
+	}
+	*out = o;
+	return n;
+}
+
+int editor_uses(const struct store *s, const struct tmpl *t, bool *def)
+{
+	if (def)
+		*def = false;
+	if (!s || !t || !t->id)
+		return 0;
+	int k = t->kind, n = 0;
+	const char *d = s->def[k][0] ? s->def[k] : tmpl_default(k)->id;
+	if (def)
+		*def = !strcmp(d, t->id);
+	int *ps = NULL, np = known_periods(s, k, &ps);
+	for (int i = 0; i < np; i++) {
+		const char *id = store_template(s, (struct period){ k, ps[i] }, NULL);
+		const struct tmpl *u = id && *id ? tmpl_find(id) : NULL;
+		if (!u || (int)u->kind != k)
+			u = tmpl_default(k);
+		n += !strcmp(u->id, t->id);
+	}
+	free(ps);
+	return n;
+}
+
+int editor_drop_at(const struct grid *g, const struct tnode *sel, double x, double y, const struct tnode **target)
+{
+	for (int i = 0; i < g->n; i++) {
+		const struct placed *p = &g->p[i];
+		if (p->n == sel || x < p->x || x >= p->x + p->w || y < p->y || y >= p->y + p->h)
+			continue;
+		double d[4] = { x - p->x, p->x + p->w - x, y - p->y, p->y + p->h - y };
+		int side = 0;
+		for (int k = 1; k < 4; k++)
+			if (d[k] < d[side])
+				side = k;
+		if (target)
+			*target = p->n;
+		return side;
+	}
+	if (target)
+		*target = NULL;
+	return -1;
+}
+
+int editor_edge_steps(double dx, double dy)
+{
+	return (int)lround((fabs(dx) > fabs(dy) ? dx : dy) / 60);
+}
+
+void editor_ink(struct editor *e, int which, uint32_t k, const struct pl_point *p, int n)
+{
+	field_add_stroke(which ? &e->slot : &e->name, k, p, n);
+}
+
+/* a slot's name as read: lower case, letters, digits, spaces and dashes, at most 31 bytes */
+static void slot_clean(char *o, int len, const char *t)
+{
+	int j = 0;
+	for (; *t == ' '; t++)
+		;
+	for (; *t && j < len - 1; t++) {
+		unsigned char c = (unsigned char)*t;
+		if (c >= 0x80 || isalnum(c) || c == ' ' || c == '-')
+			o[j++] = c < 0x80 ? (char)tolower(c) : (char)c;
+	}
+	while (j && o[j - 1] == ' ')
+		j--;
+	/* a cut UTF-8 sequence goes */
+	while (j && ((unsigned char)o[j - 1] & 0xC0) == 0x80)
+		j--;
+	if (j && (unsigned char)o[j - 1] >= 0xC0)
+		j--;
+	o[j] = 0;
+}
+
+void editor_ink_value(struct editor *e, int which, const char *text, const uint32_t *gone, int ngone, const void *state,
+		      size_t len)
+{
+	struct field *f = which ? &e->slot : &e->name;
+	for (int i = 0; i < ngone; i++)
+		field_remove_stroke(f, gone[i]);
+	field_set_value(f, text, state, len);
+	if (!which) {
+		editor_name_value(e, text);
+		return;
+	}
+	struct tnode *s = is_widget(e, e->sel) ? e->sel : NULL;
+	char name[32];
+	slot_clean(name, sizeof name, text ? text : "");
+	if (s && s->wg == W_NOTES && *name && strcmp(s->slot ? s->slot : "notes", name))
+		set_slot(e, s, name);
+}
+
 static bool is_widget(const struct editor *e, const struct tnode *n)
 {
 	return n && n->k == N_WIDGET && editor_parent(e->t->root, n, NULL);
@@ -303,6 +504,7 @@ enum ed_result editor_act(struct editor *e, enum ed_op op, int arg, const char *
 	struct tnode *s = is_widget(e, e->sel) ? e->sel : NULL;
 	if (op != ED_NAME)
 		e->naming = false;
+	e->notice[0] = 0;
 	switch (op) {
 	case ED_SELECT:
 		e->sel = is_widget(e, e->target) ? e->target : NULL;
@@ -340,6 +542,7 @@ enum ed_result editor_act(struct editor *e, enum ed_op op, int arg, const char *
 	case ED_REMOVE:
 		if (!s)
 			return ER_NONE;
+		removal_notice(e, s);
 		detach(e->t, s);
 		tnode_free(s);
 		e->sel = NULL;
@@ -383,8 +586,18 @@ enum ed_result editor_act(struct editor *e, enum ed_op op, int arg, const char *
 	case ED_KEEP:
 		if (e->ov == EO_USED)
 			return ER_CLOSED; /* the in-use dialog's Cancel: nothing was changed */
-		e->ov = EO_NONE;
+		e->ov = e->ov == EO_SLOT ? EO_WSET : EO_NONE;
 		return ER_CHANGED;
+	case ED_RESTORE:
+		if (!editor_edited_shipped(e))
+			return ER_NONE;
+		e->ov = EO_RESTORE;
+		return ER_CHANGED;
+	case ED_RESTORE_YES:
+		if (e->ov != EO_RESTORE || !editor_edited_shipped(e))
+			return ER_NONE;
+		tmpl_user_remove(dir, e->t->id);
+		return ER_SAVED;
 	case ED_COPY_FIRST:
 		make_copy(e);
 		e->ov = EO_NONE;
@@ -414,25 +627,21 @@ enum ed_result editor_act(struct editor *e, enum ed_op op, int arg, const char *
 		e->dirty = true;
 		return ER_CHANGED;
 	}
-	case ED_SLOT: {
+	case ED_SLOTS:
 		if (!s || s->wg != W_NOTES)
 			return ER_NONE;
+		field_free(&e->slot);
+		e->ov = EO_SLOT;
+		return ER_CHANGED;
+	case ED_SLOT_PICK: {
 		const char *sl[32];
-		int n = editor_slots(e->data, sl, 32), cur = -1;
-		for (int i = 0; i < n; i++)
-			if (!strcmp(sl[i], s->slot ? s->slot : "notes"))
-				cur = i;
-		if (n < 2)
+		int n = editor_slots(e->data, sl, 32);
+		if (!s || s->wg != W_NOTES || arg < 0 || arg >= n)
 			return ER_NONE;
-		char next[32];
-		snprintf(next, sizeof next, "%s", sl[(cur + 1) % n]);
-		bool titled = !s->title || !strcasecmp(s->title, s->slot ? s->slot : "notes") || !strcmp(s->title, "Notes");
-		tmpl_set_str(&s->slot, next);
-		if (titled) {
-			next[0] = (char)toupper((unsigned char)next[0]);
-			tmpl_set_str(&s->title, !strcmp(next, "Notes") ? "Notes" : next);
-		}
-		e->dirty = true;
+		char name[32];
+		snprintf(name, sizeof name, "%s", sl[arg]);
+		set_slot(e, s, name);
+		e->ov = EO_WSET;
 		return ER_CHANGED;
 	}
 	case ED_GROW:

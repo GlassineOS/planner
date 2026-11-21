@@ -87,34 +87,63 @@ int main(void)
 			shot(&s, VOICES[vi], &w, "info.search");
 			n += 2;
 		}
-		/* the template editor: a widget selected, the list to add one, the in-use question, a new one */
-		static const char *ED[] = { "templates.editor", "templates.editor.add", "templates.used", "templates.new" };
-		for (int k = 0; k < 4; k++) {
+		/* the template editor: a widget selected, the list to add one, the in-use question, a new one,
+		 * a notes widget's slot, a drag's drop marker, a removal's notice, back to the shipped one */
+		static const char *ED[] = { "templates.editor", "templates.editor.add", "templates.used", "templates.new",
+					    "templates.editor.slot", "templates.editor.move", "templates.editor.remove",
+					    "templates.editor.restore" };
+		for (int k = 0; k < 8; k++) {
 			struct editor e = { 0 };
 			if (k == 3)
 				editor_open_new(&e, P_DAY);
 			else
 				editor_open_edit(&e, tmpl_find("day-lists"));
 			e.data = &s;
-			if (k < 2)
+			if (k != 2 && k != 3)
 				editor_act(&e, ED_EDIT_ALL, 0, NULL);
 			struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ed = &e };
-			if (k < 2) {
+			if (k != 2 && k != 3) {
 				struct look L;
 				look_init(&L, VOICES[vi]);
 				cairo_surface_t *ms = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
 				cairo_t *mc = cairo_create(ms);
 				view_layout(&v, &s, &L, mc);
-				for (int i = 0; i < v.g.n; i++)
-					if (v.g.p[i].n->wg == W_AGENDA)
+				int want = k >= 4 && k <= 6 ? W_NOTES : W_AGENDA;
+				const struct tnode *ag = NULL;
+				for (int i = 0; i < v.g.n; i++) {
+					if (v.g.p[i].n->wg == want)
 						e.target = (struct tnode *)v.g.p[i].n;
+					if (v.g.p[i].n->wg == W_AGENDA)
+						ag = v.g.p[i].n;
+				}
 				editor_act(&e, ED_SELECT, 0, NULL);
 				if (k == 1)
 					editor_act(&e, ED_ADD, 0, NULL);
+				if (k == 4) {
+					editor_act(&e, ED_SETTINGS, 0, NULL);
+					editor_act(&e, ED_SLOTS, 0, NULL);
+				}
+				if (k == 5)
+					e.drop_target = ag, e.drop_side = 3;
+				if (k == 6)
+					editor_act(&e, ED_REMOVE, 0, NULL);
+				if (k == 7) {
+					/* an edited shipped template: its person's version, in memory only */
+					struct tmpl *c = tmpl_clone(tmpl_find("day-lists"));
+					c->root->c[0]->c[0]->w = 4;
+					tmpl_user_put(NULL, c);
+					editor_close(&e);
+					editor_open_edit(&e, tmpl_find("day-lists"));
+					e.data = &s;
+					editor_act(&e, ED_EDIT_ALL, 0, NULL);
+					editor_act(&e, ED_RESTORE, 0, NULL);
+				}
 				cairo_destroy(mc);
 				cairo_surface_destroy(ms);
 			}
 			shot(&s, VOICES[vi], &v, ED[k]);
+			if (k == 7)
+				tmpl_user_remove(NULL, "day-lists");
 			editor_close(&e);
 			n++;
 		}
