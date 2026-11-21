@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Planner
+GenericName=Planner
+Comment=Days, weeks and months, written with the pen
+Exec=glassine-planner
+Icon=x-office-calendar
+Terminal=false
+Categories=Office;Calendar;
+Keywords=calendar;agenda;diary;todo;planner;
+StartupWMClass=glassine-planner
