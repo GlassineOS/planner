@@ -54,6 +54,7 @@ WL_PROTO := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols 2>/dev
 WL_PKGS := wayland-client xkbcommon
 # protocols/: GlassineOS/protocols' (the panel's pen preview), as the compositor has them
 PROTOS := stable/xdg-shell/xdg-shell.xml stable/tablet/tablet-v2.xml unstable/text-input/text-input-unstable-v3.xml \
+	staging/fractional-scale/fractional-scale-v1.xml stable/viewporter/viewporter.xml \
 	protocols/glassine-ink-v1.xml
 PROTO_NAMES := $(basename $(notdir $(PROTOS)))
 PROTO_C := $(PROTO_NAMES:%=$(O)/proto/%-protocol.c)
@@ -115,10 +116,13 @@ $(O)/test_view: test/test_view.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.
 $(O)/test_editor: test/test_editor.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
+$(O)/test_scale: test/test_scale.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
+	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
+
 $(O)/render: test/render.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
-check: $(O)/test_store $(O)/test_settle $(O)/test_content $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test_regions $(O)/render all
+check: $(O)/test_store $(O)/test_settle $(O)/test_content $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test_regions $(O)/test_scale $(O)/render all
 	./$(O)/test_store
 	./$(O)/test_settle
 	./$(O)/test_content
@@ -126,7 +130,10 @@ check: $(O)/test_store $(O)/test_settle $(O)/test_content $(O)/test_view $(O)/te
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_regions
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_view
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_editor
+	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_scale
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render
+	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render 1.6
+	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render 2 150
 
 # bench: what a view change costs (test/bench.c); not part of check
 $(O)/bench: test/bench.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
