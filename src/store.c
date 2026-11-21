@@ -128,6 +128,13 @@ int pkind_parse(const char *s)
 
 /* ---- fields ---- */
 
+/* a new version of a field's ink: unique among all fields, so painted ink is kept by it alone */
+static uint32_t field_gen;
+static void field_changed(struct field *f)
+{
+	f->gen = ++field_gen ? field_gen : ++field_gen;
+}
+
 static void words_free(struct field *f)
 {
 	for (int i = 0; i < f->nw; i++) {
@@ -164,18 +171,26 @@ static void strokes_remove(struct pl_stroke *s, int *n, uint32_t k)
 		}
 }
 
-void field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n)
+bool field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n)
 {
+	const struct pl_stroke *was = field_neat(f, k);
+	bool same = was && was->n == n;
+	for (int i = 0; same && i < n; i++)
+		same = was->pt[i].x == p[i].x && was->pt[i].y == p[i].y && was->pt[i].p == p[i].p && was->pt[i].t == p[i].t;
+	if (same)
+		return false; /* the same again (the region tells what it restored) */
+	field_changed(f);
 	strokes_remove(f->neat, &f->nneat, k);
 	struct pl_stroke *s = realloc(f->neat, (f->nneat + 1) * sizeof *s);
 	if (!s)
-		return;
+		return true;
 	f->neat = s;
 	struct pl_point *c = malloc((n ? n : 1) * sizeof *c);
 	if (!c)
-		return;
+		return true;
 	memcpy(c, p, n * sizeof *c);
 	f->neat[f->nneat++] = (struct pl_stroke){ k, c, n };
+	return true;
 }
 
 const struct pl_stroke *field_neat(const struct field *f, uint32_t k)
@@ -188,6 +203,7 @@ const struct pl_stroke *field_neat(const struct field *f, uint32_t k)
 
 void field_set_words(struct field *f, const struct pl_word *w, int n)
 {
+	field_changed(f);
 	words_free(f);
 	if (n <= 0)
 		return;
@@ -231,6 +247,7 @@ bool field_autograph(const struct store *s, const struct field *f)
 
 void field_remove_stroke(struct field *f, uint32_t k)
 {
+	field_changed(f);
 	strokes_remove(f->neat, &f->nneat, k);
 	for (int i = 0; i < f->ns; i++)
 		if (f->s[i].k == k) {
@@ -243,6 +260,7 @@ void field_remove_stroke(struct field *f, uint32_t k)
 
 void field_add_stroke(struct field *f, uint32_t k, const struct pl_point *p, int n)
 {
+	field_changed(f);
 	field_remove_stroke(f, k);
 	struct pl_stroke *s = realloc(f->s, (f->ns + 1) * sizeof *s);
 	if (!s)
@@ -459,6 +477,33 @@ struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake 
 	}
 	field_add_stroke(&e->f, k, p, n);
 	return e;
+}
+
+static bool words_same(const struct field *f, const struct pl_word *w, int n)
+{
+	if (f->nw != n)
+		return false;
+	for (int i = 0; i < n; i++) {
+		const struct pl_word *a = &f->w[i], *b = &w[i];
+		if (a->start != b->start || a->len != b->len || a->set != b->set || a->nks != b->nks || a->dx != b->dx ||
+		    a->dy != b->dy || memcmp(a->box, b->box, sizeof a->box) || a->npath != b->npath ||
+		    (a->nks && memcmp(a->ks, b->ks, a->nks * sizeof *a->ks)) ||
+		    (a->npath && memcmp(a->path, b->path, a->npath * sizeof *a->path)))
+			return false;
+	}
+	return true;
+}
+
+bool field_value_same(struct store *s, uint32_t entry, const char *text, const struct pl_word *w, int nw, size_t ngone,
+		      const void *state, size_t len)
+{
+	struct entry *e = entry ? store_get(s, entry) : NULL;
+	if (!e || ngone)
+		return false;
+	const struct field *f = &e->f;
+	const char *was = f->value ? f->value : "", *now = text ? text : "";
+	return !strcmp(was, now) && f->state_len == (state ? len : 0) && (!f->state_len || !memcmp(f->state, state, len)) &&
+	       words_same(f, w, nw);
 }
 
 bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,

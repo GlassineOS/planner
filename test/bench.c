@@ -3,7 +3,8 @@
  * painted into the frame buffer (text, ink), and the comparison with the frame before, at a
  * screen's size and scale. Each action runs REPS times; the median is printed.
  *   bench [DATA_DIR]   a planner's data directory (read only), else the sample entries
- * Env: BENCH_W, BENCH_H (logical px, default 702 x 884), BENCH_SCALE (2), BENCH_REPS (9). */
+ * Env: BENCH_W, BENCH_H (logical px, default 702 x 884), BENCH_SCALE (2), BENCH_REPS (9),
+ * BENCH_NO_INK_CACHE=1 (every field's ink painted anew each time). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +91,7 @@ int main(int argc, char **argv)
 	}
 	const char *e;
 	int reps = (e = getenv("BENCH_REPS")) ? atoi(e) : 9;
+	view_ink_cache(!getenv("BENCH_NO_INK_CACHE")); /* painted ink kept (the planner keeps it) */
 	reps = reps < 1 ? 1 : reps > 64 ? 64 : reps;
 	SC = (e = getenv("BENCH_SCALE")) ? atoi(e) : 2;
 	char voice[64];
