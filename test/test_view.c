@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The day view: its fields (one writing region each), its controls and the hidden count. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -598,6 +599,35 @@ int main(void)
 		w.ov = OV_MENU;
 		view_layout(&w, &s, &L, cr);
 		CHECK(find(&w, A_SETTINGS, -1) != NULL);
+	}
+	/* a wrapped text's lines lh apart at every scale, as at scale 1 (pango alone spaced
+	 * them lh times the scale apart: an empty line in a dialog's paragraph at scale 2) */
+	{
+		static const char *const voices[] = { "white", "editorial", "stationery" };
+		static const double scales[] = { 1, 1.25, 1.6, 2, 3 };
+		static const double lhs[] = { 1.2, 1.35, 1.45 };
+		for (int vi = 0; vi < 3; vi++)
+			for (int si = 0; si < 5; si++)
+				for (int li = 0; li < 3; li++) {
+					struct look K;
+					look_init(&K, voices[vi]);
+					cairo_surface_t *ms = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
+					cairo_t *mc = cairo_create(ms);
+					cairo_scale(mc, scales[si], scales[si]);
+					UiGc g = { mc, 0, NULL };
+					const UiFont *fs[] = { &K.body, &K.sub, &K.h1 };
+					for (int fi = 0; fi < 3; fi++) {
+						double one = view_text_wrap(&g, fs[fi], "Ag", 0, 0, 1e4, 1, 0, 0);
+						double two = view_text_wrap(&g, fs[fi], "Ag\nAg", 0, 0, 1e4, 2, lhs[li], 0);
+						bool ok = fabs((two - one) - lhs[li] * one) < 1;
+						if (!ok)
+							fprintf(stderr, "%s at %g, lh %g: lines %.1f apart, want %.1f\n", voices[vi], scales[si],
+								lhs[li], two - one, lhs[li] * one);
+						CHECK(ok);
+					}
+					cairo_destroy(mc);
+					cairo_surface_destroy(ms);
+				}
 	}
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
