@@ -25,54 +25,6 @@ int pl_tr_text_n, pl_tr_ink_n;
 
 static const char *DOW[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
 static const char *DOW2[] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-/* A wrapped text's line spacing (lh, a factor of the line's height) as it is meant at any
- * scale. Pango spaces the lines of a layout on a scaled cairo context by the factor times
- * the line's height in device pixels, not in the context's units: at scale 2 a factor of
- * 1.45 put the next line 2.9 lines down, and a wrapped paragraph showed an empty line in
- * the middle. The spacing of two lines is measured once per font, factor and scale, and
- * pango is given the factor that spaces them as meant (the same factor where it does) */
-static double lh_at(UiGc *g, const UiFont *f, double lh)
-{
-	static struct {
-		double xx, yy, px, lh, out;
-		int weight, italic;
-		char family[48];
-	} memo[32];
-	static int nmemo, next;
-	cairo_matrix_t m;
-	cairo_get_matrix(g->cr, &m);
-	const char *fam = f->family ? f->family : "";
-	double px = ui_text_px(f);
-	for (int i = 0; i < nmemo; i++)
-		if (memo[i].xx == m.xx && memo[i].yy == m.yy && memo[i].px == px && memo[i].lh == lh &&
-		    memo[i].weight == f->weight && memo[i].italic == f->italic && !strcmp(memo[i].family, fam))
-			return memo[i].out;
-	UiGc mg = *g;
-	mg.paint = 0;
-	double one = ui_text_wrap(&mg, f, "Ag", 0, 0, 1e4, 1, 0, 0), two = ui_text_wrap(&mg, f, "Ag\nAg", 0, 0, 1e4, 2, lh, 0);
-	double step = two - one, want = lh * one, out = lh;
-	if (one > 0 && step > 0 && fabs(step / want - 1) > 0.02)
-		out = lh * want / step;
-	int i = nmemo < 32 ? nmemo++ : next++ % 32;
-	memo[i].xx = m.xx, memo[i].yy = m.yy, memo[i].px = px, memo[i].lh = lh, memo[i].out = out;
-	memo[i].weight = f->weight, memo[i].italic = f->italic;
-	snprintf(memo[i].family, sizeof memo[i].family, "%s", fam);
-	return out;
-}
-
-double view_text_wrap(UiGc *g, const UiFont *f, const char *s, double x, double y, double w, int maxlines, double lh,
-		      ui_col c)
-{
-	return ui_text_wrap(g, f, s, x, y, w, maxlines, lh > 0 ? lh_at(g, f, lh) : lh, c);
-}
-
-/* ui_text_wrap, its lines lh apart at any scale */
-static double text_wrap(UiGc *g, const UiFont *f, const char *s, double x, double y, double w, int maxlines, double lh,
-			ui_col c)
-{
-	return ui_text_wrap(g, f, s, x, y, w, maxlines, lh > 0 ? lh_at(g, f, lh) : lh, c);
-}
-
 static const char *DOW3[] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
 static const char *MON[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September",
 	"October", "November", "December" };
@@ -1655,7 +1607,7 @@ static double pop_content(struct ctx *c, double x, double y, double w)
 			char t[80];
 			snprintf(t, sizeof t, "Every entry of this %s has a place in this layout.", pkind_name(v->per.kind));
 			UiFont nf = fam(L->text, 400, 0, 14);
-			double th = text_wrap(&c->g, &nf, t, x + 16, y + 6, w - 32, 3, 0, c->paint ? L->soft : 0);
+			double th = ui_text_wrap(&c->g, &nf, t, x + 16, y + 6, w - 32, 3, 0, c->paint ? L->soft : 0);
 			if (!c->paint)
 				th = 40;
 			y += 6 + th + 8;
@@ -1683,13 +1635,13 @@ static double pop_content(struct ctx *c, double x, double y, double w)
 			double tw_ = w - 16 - 20 - 12 - 16 - (it[i].tog ? 52 : 20);
 			UiGc mg = c->g;
 			mg.paint = 0;
-			h2 = text_wrap(&mg, &sf, it[i].sub, 0, 0, tw_, 2, 0, L->soft);
+			h2 = ui_text_wrap(&mg, &sf, it[i].sub, 0, 0, tw_, 2, 0, L->soft);
 			double ih = fmax(48, 6 + h1 + 2 + h2 + 6);
 			icon(c, it[i].ic, x + 16 + 10, y + ih / 2, 20, L->ink);
 			double tx = x + 16 + 20 + 12, ty = y + (ih - h1 - 2 - h2) / 2;
 			if (c->paint) {
 				ui_text(&c->g, &tf, it[i].t, tx, ty, 0, tw_, L->ink, &h1);
-				text_wrap(&c->g, &sf, it[i].sub, tx, ty + h1 + 2, tw_, 2, 0, L->soft);
+				ui_text_wrap(&c->g, &sf, it[i].sub, tx, ty + h1 + 2, tw_, 2, 0, L->soft);
 			}
 			if (it[i].tog) {
 				double gx2 = x + w - 16 - 40, gy = y + ih / 2 - 11;
@@ -1755,10 +1707,10 @@ static void sheet_hidden(struct ctx *c)
 	snprintf(lead, sizeof lead, "Kept as written. They show again in any %s template that has a place for them; or delete one here.",
 		 pkind_name(v->per.kind));
 	UiFont lf = fam(L->text, 400, 0, 14);
-	double lh = c->paint ? text_wrap(&c->g, &lf, lead, 16, y + 64, W - 32, 3, 1.4, L->soft) : 40;
+	double lh = c->paint ? ui_text_wrap(&c->g, &lf, lead, 16, y + 64, W - 32, 3, 1.4, L->soft) : 40;
 	if (!c->paint) {
 		UiGc mg = c->g;
-		lh = text_wrap(&mg, &lf, lead, 16, y + 64, W - 32, 3, 1.4, L->soft);
+		lh = ui_text_wrap(&mg, &lf, lead, 16, y + 64, W - 32, 3, 1.4, L->soft);
 	}
 	double yy = y + 64 + lh + 16;
 	struct hidden_group g[16];
@@ -2103,7 +2055,7 @@ static void settings(struct ctx *c)
 		ui_text_w(&c->g, &tf, it[i].t, &h1);
 		UiGc mg = c->g;
 		mg.paint = 0;
-		h2 = text_wrap(&mg, &sf, it[i].sub, 0, 0, tw_, 2, 0, L->soft);
+		h2 = ui_text_wrap(&mg, &sf, it[i].sub, 0, 0, tw_, 2, 0, L->soft);
 		double ih = fmax(48, 6 + h1 + 2 + h2 + 6), ty = yy + (ih - h1 - 2 - h2) / 2;
 		if (c->paint) {
 			ui_text(&c->g, &tf, it[i].t, 16, ty, 0, tw_, L->ink, &h1);
@@ -2118,7 +2070,7 @@ static void settings(struct ctx *c)
 				ui_text(&c->g, &sf, sw, sx, sy, 0, 0, L->ink, &hs);
 				lk_rule(c->cr, sx, sy + hs, ww, 1, L->ink, 2);
 			} else
-				text_wrap(&c->g, &sf, it[i].sub, 16, ty + h1 + 2, tw_, 2, 0, L->soft);
+				ui_text_wrap(&c->g, &sf, it[i].sub, 16, ty + h1 + 2, tw_, 2, 0, L->soft);
 		}
 		if (it[i].tog) {
 			tog(c, W - 16 - 40, yy + ih / 2, it[i].tog == 1 ? c->s->neaten : c->s->autograph);
@@ -2556,9 +2508,9 @@ static void year(struct ctx *c)
 	UiFont lf = fam(L->text, 400, 0, 14);
 	UiGc mg = c->g;
 	mg.paint = 0;
-	double lh = text_wrap(&mg, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
+	double lh = ui_text_wrap(&mg, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
 	if (c->paint)
-		text_wrap(&c->g, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
+		ui_text_wrap(&c->g, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
 	double sx;
 	double y = scopes(c, 64 + lh + 12, &sx);
 	/* the year shown and its arrows (.pl-ynav): ‹ 2027 ›; turned, they go to the end of the
@@ -2771,11 +2723,11 @@ static void picker(struct ctx *c)
 		ui_text_w(&c->g, &nf, tp->name, &h1);
 		UiGc mg = c->g;
 		mg.paint = 0;
-		h2 = text_wrap(&mg, &df, tp->note, 0, 0, W - 16 - 114 - 90, lines, 0, L->soft);
+		h2 = ui_text_wrap(&mg, &df, tp->note, 0, 0, W - 16 - 114 - 90, lines, 0, L->soft);
 		double ty = y + (rh - h1 - 3 - h2 - 18) / 2;
 		if (c->paint) {
 			ui_text(&c->g, &nf, tp->name, 114, ty, 0, W - 220, L->ink, &h1);
-			text_wrap(&c->g, &df, tp->note, 114, ty + h1 + 3, W - 16 - 114 - 90, lines, 0, L->soft);
+			ui_text_wrap(&c->g, &df, tp->note, 114, ty + h1 + 3, W - 16 - 114 - 90, lines, 0, L->soft);
 		}
 		char us[200];
 		usage(c, tp, v->per.kind, us, sizeof us);
@@ -2955,15 +2907,15 @@ void view_paint_refused(const struct look *L, cairo_t *cr, double W, double H, s
 	lk_icon(cr, IC_HAND, x, y, 64, L->ink, 1.2);
 	y += 64 + 18;
 	UiFont h = fpx(L->h1, 30);
-	double hh = text_wrap(&g, &h, "The planner needs handwriting", x, y, W - 112, 3, 1.2, L->ink);
+	double hh = ui_text_wrap(&g, &h, "The planner needs handwriting", x, y, W - 112, 3, 1.2, L->ink);
 	y += hh + 18;
 	UiFont b = fam(L->text, 400, 0, L->voice == V_WHITE ? 17 : L->voice == V_EDITORIAL ? 18.5f : 20);
-	y += text_wrap(&g, &b,
+	y += ui_text_wrap(&g, &b,
 			  "This system has no handwriting service. Everything in the planner is written with the pen, and the "
 			  "planner can’t read what you write without it.",
 			  x, y, fmin(520, W - 112), 6, L->voice == V_WHITE ? 1.65 : 1.6, L->ink) + 18;
 	UiFont s = fam(L->text, 400, 0, 15);
-	y += text_wrap(&g, &s, "There is no keyboard-only planner. Install handwriting from Software, then open the planner again.",
+	y += ui_text_wrap(&g, &s, "There is no keyboard-only planner. Install handwriting from Software, then open the planner again.",
 			  x, y, fmin(520, W - 112), 4, 1.5, L->soft) + 24;
 	UiFont bf = L->voice == V_WHITE ? (UiFont){ L->mono, 600, 0, 11.5f, 0, 0.08f, UI_CASE_UPPER } : L->label;
 	double hb;
@@ -3148,7 +3100,7 @@ static void ed_footbar(struct ctx *c)
 	if (e->notice[0])
 		nf = fam(L->mono, 600, 0, 12);
 	if (c->paint)
-		text_wrap(&c->g, &nf, note, x, y + 14, v->W - x - 12, 2, 1.3, L->soft);
+		ui_text_wrap(&c->g, &nf, note, x, y + 14, v->W - x - 12, 2, 1.3, L->soft);
 }
 
 /* the selected widget's tag (planner.css .pl-ed-tag) */
@@ -3248,12 +3200,12 @@ static void ed_marks(struct ctx *c)
 		UiFont bf = fam(L->text, 600, 0, 14), sf = fam(L->text, 400, 0, 14);
 		UiGc mg = c->g;
 		mg.paint = 0;
-		double h = 10 + text_wrap(&mg, &bf, t, 0, 0, w - 54, 2, 1.35, L->ink) + text_wrap(&mg, &sf, sub, 0, 0, w - 54, 3, 1.35, L->ink) + 10;
+		double h = 10 + ui_text_wrap(&mg, &bf, t, 0, 0, w - 54, 2, 1.35, L->ink) + ui_text_wrap(&mg, &sf, sub, 0, 0, w - 54, 3, 1.35, L->ink) + 10;
 		box(c, x, y, w, h, L->ui_r, 2.5, L->ink, L->paper);
 		icon(c, IC_INFO, x + 22, y + 20, 20, L->ink);
 		if (c->paint) {
-			double hh = text_wrap(&c->g, &bf, t, x + 42, y + 10, w - 54, 2, 1.35, L->ink);
-			text_wrap(&c->g, &sf, sub, x + 42, y + 10 + hh, w - 54, 3, 1.35, L->ink);
+			double hh = ui_text_wrap(&c->g, &bf, t, x + 42, y + 10, w - 54, 2, 1.35, L->ink);
+			ui_text_wrap(&c->g, &sf, sub, x + 42, y + 10 + hh, w - 54, 3, 1.35, L->ink);
 		}
 	}
 }
@@ -3273,7 +3225,7 @@ static double ed_sheet(struct ctx *c, double sh, const char *title, const char *
 	tc(c, &h2, title, 16, y + 14 + 20, 0, W - 140, L->ink);
 	ed_btn(c, W - 16, y + 14, "Close", NULL, 0, L->ink, L->paper, ED_KEEP, 0, 2);
 	UiFont lf = fam(L->text, 400, 0, 14);
-	double lh = text_wrap(&c->g, &lf, lead, 16, y + 66, W - 32, 3, 1.4, L->soft);
+	double lh = ui_text_wrap(&c->g, &lf, lead, 16, y + 66, W - 32, 3, 1.4, L->soft);
 	return y + 66 + lh + 12;
 }
 
@@ -3434,7 +3386,7 @@ static void ed_slot_sheet(struct ctx *c)
 	if (!e->slot.ns)
 		tc(c, &sf, "write its name with the pen", 26, y + fh / 2, 0, fw - 20, L->soft);
 	if (y + fh + 36 <= bottom)
-		text_wrap(&c->g, &sf, "Read as you write; the widget shows that slot as soon as the name is read.", 16, y + fh + 8, v->W - 32, 2,
+		ui_text_wrap(&c->g, &sf, "Read as you write; the widget shows that slot as soon as the name is read.", 16, y + fh + 8, v->W - 32, 2,
 			     1.35, L->soft);
 	hit(c, 0, v->H - ED_BAR - sh, v->W, sh, A_NONE, 0, 0);
 }
@@ -3464,16 +3416,16 @@ static void ed_dialog(struct ctx *c)
 	UiFont hf = fpx(L->h1, 21), bf = fam(L->text, 400, 0, 15), sf = fam(L->text, 400, 0, 13.5f);
 	UiGc mg = c->g;
 	mg.paint = 0;
-	double hh = text_wrap(&mg, &hf, title, 0, 0, w - 40, 2, 1.2, L->ink), bh = text_wrap(&mg, &bf, body, 0, 0, w - 40, 3, 1.45, L->ink),
-	       sfh = text_wrap(&mg, &sf, soft, 0, 0, w - 40, 4, 1.45, L->soft);
+	double hh = ui_text_wrap(&mg, &hf, title, 0, 0, w - 40, 2, 1.2, L->ink), bh = ui_text_wrap(&mg, &bf, body, 0, 0, w - 40, 3, 1.45, L->ink),
+	       sfh = ui_text_wrap(&mg, &sf, soft, 0, 0, w - 40, 4, 1.45, L->soft);
 	double h = 18 + hh + 8 + bh + 8 + sfh + 16 + 40 + 18;
 	if (!c->paint)
 		v->pop_x = x, v->pop_y = y, v->pop_w = w, v->pop_h = h;
 	pop_frame(c, x, y, w, h);
 	if (c->paint) {
-		text_wrap(&c->g, &hf, title, x + 20, y + 18, w - 40, 2, 1.2, L->ink);
-		text_wrap(&c->g, &bf, body, x + 20, y + 18 + hh + 8, w - 40, 3, 1.45, L->ink);
-		text_wrap(&c->g, &sf, soft, x + 20, y + 18 + hh + 8 + bh + 8, w - 40, 4, 1.45, L->soft);
+		ui_text_wrap(&c->g, &hf, title, x + 20, y + 18, w - 40, 2, 1.2, L->ink);
+		ui_text_wrap(&c->g, &bf, body, x + 20, y + 18 + hh + 8, w - 40, 3, 1.45, L->ink);
+		ui_text_wrap(&c->g, &sf, soft, x + 20, y + 18 + hh + 8 + bh + 8, w - 40, 4, 1.45, L->soft);
 	}
 	double by = y + h - 18 - 40, bx = x + w - 20;
 	if (e->ov == EO_USED) {
