@@ -201,9 +201,50 @@ int main(void)
 			shot(&s, VOICES[vi], &w, "templates.picker.week");
 			w.year = true, w.scope = 1;
 			shot(&s, VOICES[vi], &w, "templates.year");
+			/* the next year (board templates.year.nav): the from-on choice runs on into it */
+			w.year_off = 1;
+			shot(&s, VOICES[vi], &w, "templates.year.next");
 			while (s.nc > nc0)
 				store_unchoose(&s, s.nc - 1);
-			n += 2;
+			/* the days of the year as a wall calendar (board templates.year.days): a range of
+			 * days, a single day's own choice; then a range being picked for Diary (today's own
+			 * choice set aside meanwhile, as on the board) */
+			char dt[40] = "";
+			for (int i = 0; i < s.nc; i++)
+				if (s.c[i].from.kind == P_DAY && s.c[i].from.start == d.start) {
+					snprintf(dt, sizeof dt, "%s", s.c[i].tmpl);
+					store_unchoose(&s, i);
+					nc0--;
+					break;
+				}
+			store_choose(&s, period_of(P_DAY, day_from_ymd(yr, 4, 12)), day_from_ymd(yr, 4, 23), "day-diary");
+			struct period d26 = period_of(P_DAY, day_from_ymd(yr, 3, 26));
+			store_choose(&s, d26, d26.start, "day-agenda");
+			struct view y = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_PICKER, .year = true, .scope = 1 };
+			shot(&s, VOICES[vi], &y, "templates.year.days");
+			y.rg_n = 1, y.rg0 = day_from_ymd(yr, 5, 3);
+			snprintf(y.rg_tmpl, sizeof y.rg_tmpl, "day-diary");
+			shot(&s, VOICES[vi], &y, "templates.year.days.picking");
+			while (s.nc > nc0)
+				store_unchoose(&s, s.nc - 1);
+			if (*dt)
+				store_choose(&s, d, d.start, dt);
+			n += 4;
+		}
+		/* Neaten's strength, the row's last word (board cog.strength) */
+		{
+			bool ne = s.neaten;
+			float st = s.strength;
+			static const struct { float v; const char *name; } ST[] = {
+				{ 0.35f, "cog.strength.light" }, { 0.65f, "cog.strength.medium" }, { 1.0f, "cog.strength.strong" } };
+			s.neaten = true;
+			for (int k = 0; k < 3; k++) {
+				s.strength = ST[k].v;
+				struct view w = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_SETTINGS };
+				shot(&s, VOICES[vi], &w, ST[k].name);
+				n++;
+			}
+			s.neaten = ne, s.strength = st;
 		}
 		struct look L;
 		look_init(&L, VOICES[vi]);

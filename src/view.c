@@ -1919,7 +1919,18 @@ static void settings(struct ctx *c)
 		double ih = fmax(48, 6 + h1 + 2 + h2 + 6), ty = yy + (ih - h1 - 2 - h2) / 2;
 		if (c->paint) {
 			ui_text(&c->g, &tf, it[i].t, 16, ty, 0, tw_, L->ink, &h1);
-			ui_text_wrap(&c->g, &sf, it[i].sub, 16, ty + h1 + 2, tw_, 2, 0, L->soft);
+			if (it[i].tog == 1 && c->s->neaten) {
+				/* the strength (.pl-str): the row's last word, in ink, dotted beneath */
+				const char *sw = strength_name(c->s->strength);
+				double hs, ww = ui_text_w(&c->g, &sf, sw, &hs), all = ui_text_w(&c->g, &sf, it[i].sub, &hs);
+				double sx = 16 + all - ww, sy = ty + h1 + 2;
+				char pre[96];
+				snprintf(pre, sizeof pre, "%.*s", (int)(strlen(it[i].sub) - strlen(sw)), it[i].sub);
+				ui_text(&c->g, &sf, pre, 16, sy, 0, 0, L->soft, &hs);
+				ui_text(&c->g, &sf, sw, sx, sy, 0, 0, L->ink, &hs);
+				lk_rule(c->cr, sx, sy + hs, ww, 1, L->ink, 2);
+			} else
+				ui_text_wrap(&c->g, &sf, it[i].sub, 16, ty + h1 + 2, tw_, 2, 0, L->soft);
 		}
 		if (it[i].tog) {
 			tog(c, W - 16 - 40, yy + ih / 2, it[i].tog == 1 ? c->s->neaten : c->s->autograph);
@@ -2121,6 +2132,50 @@ static void range_name(enum pkind k, int first, int last, char *o, size_t n)
 		snprintf(o, n, "%s to %s", MON[m - 1], MON[m2 - 1]);
 }
 
+/* the choice's name (view.h): the picker's rows and the year's list */
+void view_choice_name(enum pkind k, int from, int to, int shown_year, char *o, size_t n)
+{
+	int y, m, d, y2, m2, d2;
+	struct period a = period_of(k, from);
+	day_to_ymd(a.start, &y, &m, &d);
+	char yb[16] = "";
+	if (y != shown_year)
+		snprintf(yb, sizeof yb, " %d", y);
+	char one[48];
+	per_name(k, from, one, sizeof one);
+	if (to >= 0 && period_of(k, to).start == a.start) { /* that period only */
+		if (k == P_WEEK && *yb)
+			snprintf(o, n, "%s, %d", one, y);
+		else
+			snprintf(o, n, "%s%s", one, yb);
+		return;
+	}
+	if (to < 0) { /* on from there: a week by its number and its month */
+		if (k == P_WEEK)
+			snprintf(o, n, "from week %d on · from %.3s%s", week_number(a.start), MON[m - 1], yb);
+		else
+			snprintf(o, n, "from %s%s on", one, yb);
+		return;
+	}
+	struct period b = period_of(k, to);
+	day_to_ymd(b.start, &y2, &m2, &d2);
+	char yb2[16] = "";
+	if (y2 != shown_year)
+		snprintf(yb2, sizeof yb2, " %d", y2);
+	if (k == P_DAY)
+		snprintf(o, n, "%d %.3s%s to %d %.3s%s", d, MON[m - 1], yb, d2, MON[m2 - 1], yb2);
+	else if (k == P_WEEK) {
+		/* each week in the month it starts in, as the year's rows hold it */
+		char mo[40];
+		if (m == m2 && y == y2)
+			snprintf(mo, sizeof mo, "%.3s%s", MON[m - 1], yb);
+		else
+			snprintf(mo, sizeof mo, "%.3s%s–%.3s%s", MON[m - 1], yb, MON[m2 - 1], yb2);
+		snprintf(o, n, "weeks %d–%d · %s", week_number(a.start), week_number(b.start), mo);
+	} else
+		snprintf(o, n, "%s%s to %s%s", MON[m - 1], yb, MON[m2 - 1], yb2);
+}
+
 /* the template a period uses, by id (the kind's default when none valid is chosen) */
 static const char *uses_id(const struct store *s, struct period p)
 {
@@ -2132,14 +2187,15 @@ static const char *uses_id(const struct store *s, struct period p)
 }
 
 /* where a template is used (the picker's rows): "the default · 143 days", "28 days",
- * "weeks 1 to 13", "from week 14 on", "week 20 only", "not used yet". Days count the periods
+ * "weeks 1–13 · Jan–Mar", "from week 14 on · from Apr", "week 20 only", "not used yet". Days count the periods
  * with entries or a choice of their own that use it */
 static void usage(struct ctx *c, const struct tmpl *t, enum pkind k, char *o, size_t n)
 {
 	const struct store *s = c->s;
 	bool def = !strcmp(t->id, tmpl_default(k)->id);
-	char parts[160] = "", one[48] = "";
-	int singles = 0;
+	char parts[200] = "", one[48] = "";
+	int singles = 0, vy, vm, vd;
+	day_to_ymd(c->v->per.start, &vy, &vm, &vd);
 	for (int i = 0; i < s->nc; i++) {
 		const struct choice *ch = &s->c[i];
 		if (ch->from.kind != k || strcmp(ch->tmpl, t->id))
@@ -2147,15 +2203,10 @@ static void usage(struct ctx *c, const struct tmpl *t, enum pkind k, char *o, si
 		char b[64];
 		if (ch->to == ch->from.start) {
 			singles++;
-			per_name(k, ch->from.start, one, sizeof one);
+			view_choice_name(k, ch->from.start, ch->to, vy, one, sizeof one);
 			continue;
 		}
-		if (ch->to < 0) {
-			char f[32];
-			per_name(k, ch->from.start, f, sizeof f);
-			snprintf(b, sizeof b, "from %s on", f);
-		} else
-			range_name(k, ch->from.start, ch->to, b, sizeof b);
+		view_choice_name(k, ch->from.start, ch->to, vy, b, sizeof b);
 		snprintf(parts + strlen(parts), sizeof parts - strlen(parts), "%s%s", *parts ? " · " : "", b);
 	}
 	/* the periods that use it: those with entries, and those with a choice of their own */
@@ -2206,8 +2257,13 @@ static double scopes(struct ctx *c, double y)
 	char main[64], sub[96];
 	title_of(v, main, sizeof main, sub, sizeof sub);
 	const char *kn = v->per.kind == P_DAY ? "day" : v->per.kind == P_WEEK ? "week" : "month";
-	char only[80], range[80], from[96], f[48];
-	snprintf(only, sizeof only, "Only %s", v->per.kind == P_DAY ? main : v->per.kind == P_WEEK ? "this week" : "this month");
+	char only[80], range[80], from[96], f[48], pn[64];
+	/* the period by its name: "Thursday 11", "week 10", "March" */
+	if (v->per.kind == P_DAY)
+		snprintf(pn, sizeof pn, "%s", main);
+	else
+		per_name(v->per.kind, v->per.start, pn, sizeof pn);
+	snprintf(only, sizeof only, "Only %.60s", pn);
 	if (v->rg_n == 2) {
 		range_name(v->per.kind, v->rg0, v->rg1, range, sizeof range);
 		range[0] = (char)toupper((unsigned char)range[0]);
@@ -2217,7 +2273,7 @@ static double scopes(struct ctx *c, double y)
 		per_name(v->per.kind, v->from_day, f, sizeof f);
 		snprintf(from, sizeof from, "From %s on", f);
 	} else
-		snprintf(from, sizeof from, "From %s on", v->per.kind == P_DAY ? main : v->per.kind == P_WEEK ? "this week" : "this month");
+		snprintf(from, sizeof from, "From %s on", pn);
 	const char *sc[] = { only, range, from, "The default" };
 	UiFont lf = fam(L->text, 400, 0, 14);
 	double x = 16;
@@ -2248,6 +2304,34 @@ static int cells_of(enum pkind k, int yr, int m, int *out, int max)
 		if (k == P_DAY || period_of(P_WEEK, d).start == d)
 			out[n++] = d;
 	return n;
+}
+
+/* a cell of the year (.pl-ym .w, .pl-ydm .w): its template's letter and fill, the heavier
+ * edge for a period's own choice, today ringed, dotted beneath while it is being picked */
+static void year_cell(struct ctx *c, struct period p, double x, double y, double w, double h, double r, const UiFont *cf,
+		      const struct tmpl *const *ts, int nts, const char *letter, double gap)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	enum pkind k = p.kind;
+	int how = 3;
+	store_template(c->s, p, &how);
+	const char *id = uses_id(c->s, p);
+	int j = 0;
+	while (j < nts && strcmp(ts[j]->id, id))
+		j++;
+	char lt[2] = { j < nts && letter[j] ? letter[j] : '?', 0 };
+	int f = (lt[0] - 'A') % 3;
+	box(c, x, y, w, h, r, how == 0 ? 2.5 : 1, L->ink, f == 0 ? L->paper : f == 1 ? L->highlight : L->ink);
+	if (w >= 8)
+		tc(c, cf, lt, x + w / 2, y + h / 2, 1, 0, f == 2 ? L->paper : L->ink);
+	if (v->today >= p.start && v->today <= period_end(p) && c->paint) /* is-now: an outline outside */
+		lk_stroke_box(c->cr, x - 2, y - 2, w + 4, h + 4, r + 1, 2, L->ink);
+	bool sel = (v->rg_n == 1 && p.start == period_of(k, v->rg0).start) ||
+		   (v->rg_n == 2 && p.start >= period_of(k, v->rg0).start && p.start <= period_of(k, v->rg1).start);
+	if (sel && c->paint) /* being chosen: dotted beneath */
+		lk_rule(c->cr, x, y + h + (k == P_DAY ? 1 : 2), w, 2, L->ink, 2);
+	hit(c, x - gap / 2, y - gap / 2, w + gap, h + gap, A_CELL, p.start, 0);
 }
 
 static void year(struct ctx *c)
@@ -2286,12 +2370,37 @@ static void year(struct ctx *c)
 	if (c->paint)
 		ui_text_wrap(&c->g, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
 	double y = scopes(c, 64 + lh + 12);
-	/* the year's cells and the templates they use: a letter each, in the picker's order */
+	/* the year shown and its arrows (.pl-ynav): ‹ 2027 › */
 	int yr, m0, d0;
 	day_to_ymd(v->per.start, &yr, &m0, &d0);
+	yr += v->year_off;
+	int ys = day_from_ymd(yr, 1, 1), ye = day_from_ymd(yr, 12, 31);
+	char yt[8];
+	snprintf(yt, sizeof yt, "%d", yr);
+	box(c, 16, y, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
+	icon(c, IC_CHEV_L, 36, y + 20, 20, L->ink);
+	hit(c, 16, y, 40, 40, A_YEAR_NAV, -1, 0);
+	box(c, W - 56, y, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
+	icon(c, IC_CHEV_R, W - 36, y + 20, 20, L->ink);
+	hit(c, W - 56, y, 40, 40, A_YEAR_NAV, 1, 0);
+	tc(c, &(UiFont){ L->mono, 600, 0, 14, 0, 0, UI_CASE_NONE }, yt, W / 2, y + 20, 1, 0, L->ink);
+	y += 40 + 10;
+	/* the letters, in the picker's order, the same in every year: the default and every
+	 * template a choice of this kind names */
 	const struct tmpl *ts[64];
 	int nts = tmpl_list(k, ts, 64);
-	bool used[64] = { 0 };
+	bool named[64] = { 0 }, used[64] = { 0 };
+	const char *def = tmpl_default(k)->id;
+	for (int j = 0; j < nts; j++) {
+		named[j] = !strcmp(ts[j]->id, def);
+		for (int i = 0; i < c->s->nc && !named[j]; i++)
+			named[j] = c->s->c[i].from.kind == k && !strcmp(c->s->c[i].tmpl, ts[j]->id);
+	}
+	char letter[64];
+	int nl = 0;
+	for (int j = 0; j < nts; j++)
+		letter[j] = named[j] ? (char)('A' + nl++ % 26) : 0;
+	/* the key names the templates the shown year uses */
 	for (int m = 1; m <= 12; m++) {
 		int cl[32], nc = cells_of(k, yr, m, cl, 32);
 		for (int i = 0; i < nc; i++) {
@@ -2301,16 +2410,12 @@ static void year(struct ctx *c)
 					used[j] = true;
 		}
 	}
-	char letter[64];
-	int nl = 0;
-	for (int j = 0; j < nts; j++)
-		letter[j] = used[j] ? (char)('A' + nl++ % 26) : 0;
 	/* the key (.pl-ykey) */
 	UiFont kf = fam(L->text, 400, 0, 13), cf = fam(L->mono, 600, 0, 11), kl = fam(L->mono, 600, 0, 10);
 	double x = 16;
 	y += 6;
 	for (int j = 0; j < nts; j++) {
-		if (!letter[j])
+		if (!letter[j] || !used[j])
 			continue;
 		double w = 22 + 6 + tw(c, &kf, ts[j]->name);
 		if (x + w > W - 16 && x > 16)
@@ -2323,76 +2428,84 @@ static void year(struct ctx *c)
 		x += w + 14;
 	}
 	y += 16 + 10;
-	/* the months (.pl-year, .pl-ym): a row each, a cell per period */
-	int today = v->today;
-	for (int m = 1; m <= 12; m++) {
-		char mn[4];
-		snprintf(mn, sizeof mn, "%.3s", MON[m - 1]);
-		tc(c, &(UiFont){ L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, mn, 16, y + 17, 0, 34, L->soft);
-		int cl[32], nc = cells_of(k, yr, m, cl, 32);
-		double cx = 16 + 34 + 8, cw = (W - 16 - cx - 3 * (nc - 1)) / (nc ? nc : 1);
-		for (int i = 0; i < nc; i++) {
-			struct period p = period_of(k, cl[i]);
-			int how = 3;
-			store_template(c->s, p, &how);
-			const char *id = uses_id(c->s, p);
-			int j = 0;
-			while (j < nts && strcmp(ts[j]->id, id))
-				j++;
-			char lt[2] = { j < nts && letter[j] ? letter[j] : '?', 0 };
-			int f = (lt[0] - 'A') % 3;
-			double xx = cx + i * (cw + 3), yy = y + 4;
-			box(c, xx, yy, cw, 26, 3, how == 0 ? 2.5 : 1, L->ink, f == 0 ? L->paper : f == 1 ? L->highlight : L->ink);
-			if (cw >= 12)
-				tc(c, &cf, lt, xx + cw / 2, yy + 13, 1, 0, f == 2 ? L->paper : L->ink);
-			if (today >= p.start && today <= period_end(p) && c->paint) /* is-now: an outline outside */
-				lk_stroke_box(c->cr, xx - 2, yy - 2, cw + 4, 30, 4, 2, L->ink);
-			bool sel = (v->rg_n == 1 && p.start == period_of(k, v->rg0).start) ||
-				   (v->rg_n == 2 && p.start >= period_of(k, v->rg0).start && p.start <= period_of(k, v->rg1).start);
-			if (sel && c->paint) { /* being chosen: dotted beneath */
-				lk_rule(c->cr, xx, yy + 26 + 2, cw, 2, L->ink, 2);
+	if (k == P_DAY) {
+		/* the days (.pl-yd): a wall calendar, a month each, three to a row, Monday first */
+		UiFont mf = { L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, hf9 = fam(L->mono, 500, 0, 9), df = fam(L->mono, 600, 0, 9);
+		static const char *HD[] = { "M", "T", "W", "T", "F", "S", "S" };
+		double colw = (W - 32 - 2 * 14) / 3, dw = (colw - 6 * 3) / 7;
+		for (int r = 0; r < 4; r++) {
+			double rowh = 0;
+			for (int q = 0; q < 3; q++) {
+				int m = r * 3 + q + 1;
+				double mx = 16 + q * (colw + 14), my = y;
+				char mn[4];
+				snprintf(mn, sizeof mn, "%.3s", MON[m - 1]);
+				tc(c, &mf, mn, mx, my + 6, 0, 0, L->soft);
+				double gy = my + 12 + 2 + 2;
+				for (int i = 0; i < 7; i++)
+					tc(c, &hf9, HD[i], mx + i * (dw + 3) + dw / 2, gy + 5.5, 1, 0, L->soft);
+				int first = day_from_ymd(yr, m, 1), lead_ = day_weekday(first), nd = days_in_month(yr, m);
+				int rows = (lead_ + nd + 6) / 7;
+				for (int dd = 0; dd < nd; dd++) {
+					int cell = lead_ + dd;
+					double cx = mx + (cell % 7) * (dw + 3), cy = gy + 11 + 3 + (cell / 7) * (15 + 3);
+					year_cell(c, period_of(P_DAY, first + dd), cx, cy, dw, 15, 2, &df, ts, nts, letter, 3);
+				}
+				rowh = fmax(rowh, 12 + 2 + 2 + 11 + rows * (3 + 15));
 			}
-			hit(c, xx, y, cw + 3, 34, A_CELL, p.start, 0);
+			y += rowh + 8;
 		}
-		y += 34 + 4;
+		y -= 8;
+	} else {
+		/* the months (.pl-year, .pl-ym): a row each, a cell per period */
+		for (int m = 1; m <= 12; m++) {
+			char mn[4];
+			snprintf(mn, sizeof mn, "%.3s", MON[m - 1]);
+			tc(c, &(UiFont){ L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, mn, 16, y + 17, 0, 34, L->soft);
+			int cl[32], nc = cells_of(k, yr, m, cl, 32);
+			double cx = 16 + 34 + 8, cw = (W - 16 - cx - 3 * (nc - 1)) / (nc ? nc : 1);
+			for (int i = 0; i < nc; i++)
+				year_cell(c, period_of(k, cl[i]), cx + i * (cw + 3), y + 4, cw, 26, 3, &cf, ts, nts, letter, 3);
+			y += 34 + 4;
+		}
 	}
-	/* the choices (.pl-ranges): each with Change or Remove */
+	/* the choices that reach into the shown year (.pl-ranges): each with Change or Remove;
+	 * one that started in another year is named with its year */
 	y += 4;
 	rule(c, 16, y, W - 32);
-	UiFont rf = fam(L->text, 400, 0, 14), sf = fam(L->text, 400, 0, 12), af = fam(L->text, 400, 0, 14);
+	UiFont rf = fam(L->text, 400, 0, 14), sf = fam(L->text, 400, 0, 12);
 	for (int i = 0; i < c->s->nc && y + 44 <= v->H; i++) {
 		const struct choice *ch = &c->s->c[i];
 		if (ch->from.kind != k)
 			continue;
+		int to = ch->to < 0 ? ch->to : period_end(period_of(k, ch->to));
+		if (ch->from.start > ye || (to >= 0 && to < ys))
+			continue;
 		const struct tmpl *tp = tmpl_find(ch->tmpl);
-		char a[64], line[160], sub[96];
+		char a[96], line[200], sub[96];
 		bool single = ch->to == ch->from.start;
+		view_choice_name(k, ch->from.start, ch->to, yr, a, sizeof a);
 		if (single) {
-			per_name(k, ch->from.start, a, sizeof a);
 			/* inside a range: a single period's own choice wins over it */
 			bool in = false;
 			for (int j = 0; j < c->s->nc && !in; j++)
 				in = j != i && c->s->c[j].from.kind == k && c->s->c[j].to != c->s->c[j].from.start &&
 				     ch->from.start >= c->s->c[j].from.start && (c->s->c[j].to < 0 || ch->from.start <= c->s->c[j].to);
 			snprintf(sub, sizeof sub, "that %s only%s", kn, in ? " · wins over the range" : "");
-		} else if (ch->to < 0) {
-			char f[32];
-			per_name(k, ch->from.start, f, sizeof f);
-			snprintf(a, sizeof a, "From %s on", f);
+		} else if (ch->to < 0)
 			snprintf(sub, sizeof sub, "every %s from a date", kn);
-		} else {
-			range_name(k, ch->from.start, ch->to, a, sizeof a);
+		else
 			snprintf(sub, sizeof sub, "a range");
-		}
 		a[0] = (char)toupper((unsigned char)a[0]);
 		snprintf(line, sizeof line, "%s: %s", a, tp ? tp->name : ch->tmpl);
+		/* Change, Remove (.pl-btn.is-quiet): the button's type, underlined */
 		const char *act = single ? "Remove" : "Change";
-		double aw = tw(c, &af, act);
+		double aw = tw(c, &bf, act);
 		tc(c, &rf, line, 16, y + 15, 0, W - 32 - aw - 22, L->ink);
 		tc(c, &sf, sub, 16, y + 32, 0, W - 32 - aw - 22, L->soft);
-		tc(c, &af, act, W - 16 - 6 - aw, y + 22, 0, 0, L->ink);
+		tc(c, &bf, act, W - 16 - 6 - aw, y + 22, 0, 0, L->ink);
 		if (c->paint)
-			lk_rule(c->cr, W - 16 - 6 - aw, y + 22 + 9, aw, 1, L->ink, 0);
+			lk_rule(c->cr, W - 16 - 6 - aw, y + 22 + (L->voice == V_WHITE ? 8 : 10), aw, 1, L->ink, 0);
 		hit(c, W - 16 - aw - 12, y, aw + 12, 44, single ? A_RANGE_REMOVE : A_RANGE_CHANGE, i, 0);
 		y += 44;
 		rule(c, 16, y, W - 32);
