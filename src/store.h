@@ -41,17 +41,44 @@ struct pl_stroke {
 	struct pl_point *pt;
 	int n;
 };
+/* a word of the value, as the region laid it out: an ink word is its strokes moved by dx, dy;
+ * a set word (set in Autograph, the person's font: edited or added in text mode) is an outline,
+ * path (op codes 0 move, 1 line, 2 quad, 3 cubic, 4 close, each followed by its coordinates),
+ * in box. Field coordinates. */
+struct pl_word {
+	uint32_t start, len; /* bytes of the value */
+	bool set;
+	uint32_t *ks;
+	int nks;
+	float dx, dy;
+	float box[4];        /* x, y, width, height */
+	float *path;
+	int npath;
+};
+/* the person's display opt-ins (FR-011): a field's own choice, else the settings' */
+enum { SHOW_FOLLOW, SHOW_OFF, SHOW_ON };
 struct field {
 	struct pl_stroke *s;
 	int ns;
 	char *value;  /* the field's current text (the reading with edits): what search uses */
 	uint8_t *state; /* the region's saved state, opaque */
 	size_t state_len;
+	struct pl_word *w; /* the value's word layout (none: the strokes as written) */
+	int nw;
+	struct pl_stroke *neat; /* the neatened strokes, by the raw stroke's number */
+	int nneat;
+	uint8_t neaten, autograph; /* SHOW_* */
 };
 void field_free(struct field *f);
 void field_add_stroke(struct field *f, uint32_t k, const struct pl_point *p, int n);
 void field_remove_stroke(struct field *f, uint32_t k);
 void field_set_value(struct field *f, const char *text, const void *state, size_t len);
+/* the word layout (copied); n 0 clears it */
+void field_set_words(struct field *f, const struct pl_word *w, int n);
+void field_set_neat(struct field *f, uint32_t k, const struct pl_point *p, int n);
+const struct pl_stroke *field_neat(const struct field *f, uint32_t k);
+/* the word an ink stroke belongs to, or -1 (ink that is no word: a drawing) */
+int field_word_of(const struct field *f, uint32_t k);
 bool field_empty(const struct field *f);
 /* the ink's extent (right, bottom) in field coordinates; 0 when empty */
 void field_extent(const struct field *f, double *right, double *bottom);
@@ -88,6 +115,9 @@ struct store {
 	int nc;
 	char def[3][40];   /* each kind's default template ("" = the built-in default) */
 	char *dir;         /* NULL: in memory only (tests, renders) */
+	/* the settings (FR-053): the display opt-ins for every field (FR-011) */
+	bool neaten, autograph;
+	float strength;    /* neatening, 0..1 */
 	/* the entries' file as this store last read or wrote it: a save finds another writer's
 	 * entries (another instance) by a change of it, and keeps them */
 	bool seen;
@@ -122,8 +152,14 @@ struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake 
 			   const struct pl_point *p, int n);
 /* the region's value: strokes that left (gone), the text and the saved state. An entry other
  * than an event whose ink and text are all gone is deleted, *entry = 0 (true) */
-bool field_value(struct store *s, uint32_t *entry, const char *text, const uint32_t *gone, size_t ngone,
-		 const void *state, size_t len);
+bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,
+		 const uint32_t *gone, size_t ngone, const void *state, size_t len);
+/* text typed in text mode into a field with no entry yet (an empty row): its entry, made
+ * with the text as its value until the region's value comes. NULL when nothing is made */
+struct entry *field_typed(struct store *s, uint32_t *entry, const struct fmake *mk, const char *text);
+/* a field's opt-in, its own choice or else the settings' */
+bool field_neaten(const struct store *s, const struct field *f);
+bool field_autograph(const struct store *s, const struct field *f);
 
 /* the template a period uses, and how it got it: 0 its own, 1 a range, 2 onwards, 3 default */
 const char *store_template(const struct store *s, struct period p, int *how);
@@ -135,6 +171,7 @@ bool store_load(struct store *s);
  * file has (written by another instance) are taken in first, except those deleted here */
 bool store_save(struct store *s);
 bool store_save_choices(struct store *s);
+bool store_save_settings(struct store *s);
 /* the entries' file as text (tests: a template switch must leave it byte for byte) */
 char *store_ics(const struct store *s);
 bool store_parse_ics(struct store *s, const char *text);
