@@ -2822,6 +2822,17 @@ void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t 
 	run(v, s, L, measure, 0);
 }
 
+void view_layout_at(struct view *v, struct store *s, const struct look *L, double scale)
+{
+	/* the same kind of surface the page is painted into, and its scale */
+	cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
+	cairo_t *cr = cairo_create(sf);
+	cairo_scale(cr, scale > 0 ? scale : 1, scale > 0 ? scale : 1);
+	view_layout(v, s, L, cr);
+	cairo_destroy(cr);
+	cairo_surface_destroy(sf);
+}
+
 void view_paint(struct view *v, struct store *s, const struct look *L, cairo_t *cr)
 {
 	ui_draw_init();

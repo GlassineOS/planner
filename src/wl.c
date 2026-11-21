@@ -448,13 +448,11 @@ static void layout(void)
 {
 	double t0 = pl_trace ? pl_tr_now() : 0;
 	pl_tr_text_ms = 0, pl_tr_text_n = 0;
-	cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
-	cairo_t *cr = cairo_create(s);
 	P.v.today = day_today();
 	P.v.W = P.W, P.v.H = P.lay_h ? P.lay_h : P.H;
-	view_layout(&P.v, &P.s, &P.L, cr);
-	cairo_destroy(cr);
-	cairo_surface_destroy(s);
+	/* measured at the output's scale, as paint_page draws: else a wrapped text is taller
+	 * or shorter when painted, and a dialog's buttons are painted off their targets */
+	view_layout_at(&P.v, &P.s, &P.L, P.out_scale < 1 ? 1 : P.out_scale);
 	double t1 = pl_trace ? pl_tr_now() : 0;
 	sync_regions();
 	PL_TR("layout %.1f ms (text %.1f ms, %d), regions %.1f ms, %d fields", t1 - t0, pl_tr_text_ms, pl_tr_text_n,
@@ -1569,8 +1567,10 @@ static void o_mode(void *d, struct wl_output *o, uint32_t f, int32_t w, int32_t 
 static void o_done(void *d, struct wl_output *o) {}
 static void o_scale(void *d, struct wl_output *o, int32_t f)
 {
-	if (f > P.out_scale)
+	if (f > P.out_scale) {
 		P.out_scale = f;
+		relayout_later(); /* the page is measured at the scale it is painted at */
+	}
 	P.dirty = true;
 }
 static const struct wl_output_listener output_listener = { o_geometry, o_mode, o_done, o_scale };
