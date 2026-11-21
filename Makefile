@@ -22,7 +22,7 @@ DESTDIR ?=
 O := out
 CORE := store grid tfile editor
 CORE_OBJ := $(CORE:%=$(O)/%.o)
-SCREEN := look view frame
+SCREEN := look view frame regions
 SCREEN_OBJ := $(SCREEN:%=$(O)/%.o)
 
 ifeq ($(UI_SYSTEM),1)
@@ -100,6 +100,9 @@ $(O)/test_store: test/test_store.c $(O)/sample.o $(CORE_OBJ) test/t.h | $(O)
 $(O)/test_frame: test/test_frame.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
+$(O)/test_regions: test/test_regions.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
+	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
+
 $(O)/test_view: test/test_view.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
@@ -109,9 +112,10 @@ $(O)/test_editor: test/test_editor.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) tes
 $(O)/render: test/render.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
-check: $(O)/test_store $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/render all
+check: $(O)/test_store $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test_regions $(O)/render all
 	./$(O)/test_store
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_frame
+	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_regions
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_view
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_editor
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render

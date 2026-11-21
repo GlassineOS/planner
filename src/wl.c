@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "regions.h"
 #include "glassine-ink-v1-client-protocol.h"
 #include "tablet-v2-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
@@ -33,18 +34,6 @@
 #define KBD_GONE_MS 1500 /* text mode left with the keyboard still up: then the page fits what is left */
 #define TEXT_MAX 2048
 #define SAVE_IDLE_MS 4000 /* strokes are journalled at once; planner.ics written after this idle time */
-
-struct region {
-	struct ghw_region *r;
-	char name[96];
-	uint32_t entry;       /* 0 until its first stroke makes one (an empty row) */
-	struct vfield f;      /* the field it was made for (its kind, what to make) */
-	struct fmake mk;      /* what a stroke makes when it has no entry (an empty row, or its
-	                       * entry struck out and deleted before the page settles) */
-	bool live;            /* still a field of the view */
-	double x, y, w, h;    /* as last set */
-	struct region *next;
-};
 
 struct buffer {
 	struct wl_buffer *b;
@@ -397,94 +386,39 @@ static void restore(struct region *rg, struct entry *e)
 	free(st);
 }
 
+/* a new region for a field: what only a new one needs (the rest regions_sync sets) */
+static struct ghw_region *region_make(void *ud, struct region *rg)
+{
+	rg->r = ghw_region_new(P.pen, rg->name, &region_listener, rg);
+	if (!rg->r)
+		return NULL;
+	ghw_region_set_context(rg->r, GHW_NORMAL, 0, "");
+	if (rg->f.k != F_FREE) {
+		struct entry *ne = rg->entry ? store_get(&P.s, rg->entry) : NULL;
+		bool on = ne ? field_neaten(&P.s, &ne->f) : P.s.neaten;
+		ghw_region_set_neaten(rg->r, on, P.s.strength);
+	}
+	struct entry *e = rg->entry ? store_get(&P.s, rg->entry) : NULL;
+	if (e)
+		restore(rg, e);
+	return rg->r;
+}
+
 static void sync_regions(void)
 {
 	if (!P.pen)
 		return;
-	for (struct region *x = P.regions; x; x = x->next)
-		x->live = false;
-	for (int i = 0; i < P.v.nf; i++) {
-		const struct vfield *f = &P.v.f[i];
-		struct region *rg = NULL;
-		for (struct region *x = P.regions; x && !rg; x = x->next)
-			if (!x->live && ((f->k == F_ENTRY && x->entry == f->entry) || !strcmp(x->name, f->name)))
-				rg = x;
-		if (rg && f->k == F_NEW && rg->entry) /* an empty row that has become an entry */
-			rg = NULL;
-		if (!rg) {
-			rg = calloc(1, sizeof *rg);
-			if (!rg)
-				continue;
-			snprintf(rg->name, sizeof rg->name, "%s", f->name);
-			/* names are unique among live regions; an older one of the same name goes */
-			for (struct region **pp = &P.regions; *pp;)
-				if (!strcmp((*pp)->name, rg->name)) {
-					struct region *o = *pp;
-					*pp = o->next;
-					ghw_region_destroy(o->r);
-					free(o);
-				} else
-					pp = &(*pp)->next;
-			rg->r = ghw_region_new(P.pen, rg->name, &region_listener, rg);
-			if (!rg->r) {
-				free(rg);
-				continue;
-			}
-			rg->f = *f;
-			rg->entry = f->k == F_ENTRY ? f->entry : 0;
-			rg->mk = (struct fmake){ f->k == F_NEW ? f->ekind : E_NKINDS, f->per, "", f->rank };
-			snprintf(rg->mk.slot, sizeof rg->mk.slot, "%s", f->slot);
-			ghw_region_set_context(rg->r, GHW_NORMAL, 0, "");
-			ghw_region_set_reading(rg->r, f->k != F_FREE);
-			ghw_region_set_layer(rg->r, f->layer);
-			if (f->k != F_FREE) {
-				struct entry *ne = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
-				bool on = ne ? field_neaten(&P.s, &ne->f) : P.s.neaten;
-				ghw_region_set_neaten(rg->r, on, P.s.strength);
-			}
-			if (f->guide > 0)
-				ghw_region_set_guides(rg->r, f->guide, f->first);
-			rg->x = rg->y = rg->w = rg->h = -1;
-			rg->next = P.regions;
-			P.regions = rg;
-			struct entry *e = rg->entry ? store_get(&P.s, rg->entry) : NULL;
-			if (e)
-				restore(rg, e);
-		}
-		rg->live = true;
-		rg->f = *f;
-		struct entry *me = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
-		if (me) { /* struck out and deleted, its row makes the same entry again */
-			rg->mk = (struct fmake){ me->kind == E_EVENT ? E_NKINDS : me->kind, me->per, "", me->rank };
-			snprintf(rg->mk.slot, sizeof rg->mk.slot, "%s", me->slot);
-		}
-		if (rg->entry && f->k == F_NEW)
-			rg->f.k = F_ENTRY;
-		double x = f->x, y = f->y - P.v.scroll, w = f->w, h = f->h;
-		if (covered(f))
-			x = y = w = h = 0;
-		if (x != rg->x || y != rg->y || w != rg->w || h != rg->h) {
-			ghw_region_set_rect(rg->r, x, y, w, h);
-			/* the part the keyboard and the page's move leave visible */
-			double bot = P.v.vis_h > 0 ? P.v.vis_h - 46 : P.H;
-			double cy0 = fmax(y, 0), cy1 = fmin(y + h, bot);
-			if (P.v.scroll > 0 || P.v.vis_h > 0)
-				ghw_region_set_clip(rg->r, (int)x, (int)cy0, (int)w, cy1 > cy0 ? (int)(cy1 - cy0) : 1);
-			else
-				ghw_region_set_clip(rg->r, 0, 0, 0, 0);
-			rg->x = x, rg->y = y, rg->w = w, rg->h = h;
-		}
-	}
-	for (struct region **pp = &P.regions; *pp;) {
-		struct region *x = *pp;
-		/* a region still writing its first stroke into a new row is kept until the pause */
-		if (!x->live && !(x->entry && P.pen_down)) {
-			*pp = x->next;
-			ghw_region_destroy(x->r);
-			free(x);
-		} else
-			pp = &x->next;
-	}
+	static const struct region_ops ops = {
+		.make = region_make,
+		.destroy = ghw_region_destroy,
+		.rect = ghw_region_set_rect,
+		.clip = ghw_region_set_clip,
+		.layer = ghw_region_set_layer,
+		.guides = ghw_region_set_guides,
+		.reading = ghw_region_set_reading,
+	};
+	struct region_env env = { &P.v, &P.s, P.H, P.pen_down, covered };
+	regions_sync(&P.regions, &env, &ops);
 }
 
 /* ---- drawing ---- */
