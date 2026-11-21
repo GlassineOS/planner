@@ -87,6 +87,37 @@ int main(void)
 			shot(&s, VOICES[vi], &w, "info.search");
 			n += 2;
 		}
+		/* the template editor: a widget selected, the list to add one, the in-use question, a new one */
+		static const char *ED[] = { "templates.editor", "templates.editor.add", "templates.used", "templates.new" };
+		for (int k = 0; k < 4; k++) {
+			struct editor e = { 0 };
+			if (k == 3)
+				editor_open_new(&e, P_DAY);
+			else
+				editor_open_edit(&e, tmpl_find("day-lists"));
+			e.data = &s;
+			if (k < 2)
+				editor_act(&e, ED_EDIT_ALL, 0, NULL);
+			struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ed = &e };
+			if (k < 2) {
+				struct look L;
+				look_init(&L, VOICES[vi]);
+				cairo_surface_t *ms = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
+				cairo_t *mc = cairo_create(ms);
+				view_layout(&v, &s, &L, mc);
+				for (int i = 0; i < v.g.n; i++)
+					if (v.g.p[i].n->wg == W_AGENDA)
+						e.target = (struct tnode *)v.g.p[i].n;
+				editor_act(&e, ED_SELECT, 0, NULL);
+				if (k == 1)
+					editor_act(&e, ED_ADD, 0, NULL);
+				cairo_destroy(mc);
+				cairo_surface_destroy(ms);
+			}
+			shot(&s, VOICES[vi], &v, ED[k]);
+			editor_close(&e);
+			n++;
+		}
 		store_choose(&s, d, d.start, "day-agenda");
 		/* titles (board event.title): one grows into the free time below it, one shrinks, one
 		 * is cut at its block's edge */

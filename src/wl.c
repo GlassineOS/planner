@@ -88,6 +88,10 @@ static struct {
 	uint32_t drag;
 	int drag_s0, drag_e0, drag_mode; /* 1 move, 2 the lower edge */
 	double drag_y0, drag_mpp;
+	/* the template editor, and a widget or its edge dragged in it (1 the widget, 2 its edge) */
+	struct editor ed;
+	int ed_drag;
+	double ed_x0, ed_y0;
 	int ino, inowd;
 	int lay_h;         /* the height the page is laid out for; the keyboard covers, never relays */
 	/* text mode (FR-012, FR-013): the text being edited, its caret; edits of the whole view's
@@ -99,8 +103,8 @@ static struct {
 		uint32_t entry;
 		char *text;
 		uint8_t neaten, autograph; /* the field's own choice made in text mode, SHOW_* */
-	} *ed;
-	int ned;
+	} *tedits;
+	int nted;
 	long long tm_left_ms;
 	char q[256];       /* search */
 	uint32_t find;     /* a search result opened: shown in the hidden list when its view has no place for it */
@@ -193,6 +197,17 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 	if (!rg || !n)
 		return;
 	P.pen_up_ms = now_ms();
+	if (rg->f.k == F_NAME) { /* the template's name: kept with the editor, never an entry */
+		struct pl_point *q = malloc(n * sizeof *q);
+		if (q) {
+			for (size_t i = 0; i < n; i++)
+				q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
+			field_add_stroke(&P.ed.name, k, q, (int)n);
+			free(q);
+		}
+		P.dirty = true;
+		return;
+	}
 	if (rg->f.k == F_FREE) {
 		/* a block drawn in the free time: an event over that time, in 30-minute steps */
 		double y0 = p[0].y, y1 = p[0].y;
@@ -230,6 +245,14 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 		     const uint32_t *gone, size_t ngone, const void *state, size_t len)
 {
 	struct region *rg = region_of(r);
+	if (rg && rg->f.k == F_NAME) {
+		for (size_t i = 0; i < ngone; i++)
+			field_remove_stroke(&P.ed.name, gone[i]);
+		field_set_value(&P.ed.name, text, state, len);
+		editor_name_value(&P.ed, text);
+		P.dirty = true;
+		return;
+	}
 	if (!rg || !rg->entry || !store_get(&P.s, rg->entry))
 		return;
 	/* the word layout: unchanged words' ink moved along the line, edited words set in
@@ -285,6 +308,8 @@ static const struct ghw_region_listener region_listener = { .stroke = on_stroke,
 static bool covered(const struct vfield *f)
 {
 	struct view *v = &P.v;
+	if (v->ed)
+		return false; /* the editor's only field is its name */
 	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS)
 		return true;
 	if (v->ov == OV_INFO || v->ov == OV_MENU)
@@ -499,9 +524,9 @@ static struct region *region_for(const struct vfield *f)
 
 static struct tedit *edit_of(const char *name)
 {
-	for (int i = 0; i < P.ned; i++)
-		if (!strcmp(P.ed[i].name, name))
-			return &P.ed[i];
+	for (int i = 0; i < P.nted; i++)
+		if (!strcmp(P.tedits[i].name, name))
+			return &P.tedits[i];
 	return NULL;
 }
 
@@ -559,11 +584,11 @@ static void keep_edit(void)
 		return;
 	struct tedit *t = edit_of(f->name);
 	if (!t) {
-		struct tedit *n = realloc(P.ed, (P.ned + 1) * sizeof *n);
+		struct tedit *n = realloc(P.tedits, (P.nted + 1) * sizeof *n);
 		if (!n)
 			return;
-		P.ed = n;
-		t = &P.ed[P.ned++];
+		P.tedits = n;
+		t = &P.tedits[P.nted++];
 		memset(t, 0, sizeof *t);
 		snprintf(t->name, sizeof t->name, "%s", f->name);
 		t->entry = f->k == F_ENTRY ? f->entry : 0;
@@ -626,8 +651,8 @@ static void tm_close(void)
 		return;
 	keep_edit();
 	bool made = false;
-	for (int i = 0; i < P.ned; i++) {
-		struct tedit *t = &P.ed[i];
+	for (int i = 0; i < P.nted; i++) {
+		struct tedit *t = &P.tedits[i];
 		struct region *rg = NULL;
 		for (struct region *x = P.regions; x && !rg; x = x->next)
 			if ((t->entry && x->entry == t->entry) || !strcmp(x->name, t->name))
@@ -652,9 +677,9 @@ static void tm_close(void)
 			ghw_region_set_neaten(rg->r, field_neaten(&P.s, &e->f), P.s.strength);
 		free(t->text);
 	}
-	free(P.ed);
-	P.ed = NULL;
-	P.ned = 0;
+	free(P.tedits);
+	P.tedits = NULL;
+	P.nted = 0;
 	if (P.v.tm == 2 && P.pen)
 		ghw_pen_set_mode(P.pen, GHW_MODE_INK);
 	else
@@ -743,6 +768,66 @@ static void choose_period(struct period p)
 	relayout_later();
 }
 
+/* ---- the template editor (FR-045, FR-049): it only arranges, it is given no store to write ---- */
+
+/* laid out at once, even in the pause after the pen: the editor's tree (or the editor itself)
+ * may just have been freed, and the next frame must not paint the old layout */
+static void editor_relayout(void)
+{
+	if (P.configured)
+		layout();
+	else
+		P.relayout = true;
+	P.dirty = true;
+}
+
+static void editor_enter(int how)
+{
+	struct view *v = &P.v;
+	bool picker = v->ov == OV_PICKER;
+	const struct tmpl *t = v->t;
+	if (picker && v->ring[0] && tmpl_find(v->ring))
+		t = tmpl_find(v->ring);
+	if (how == 1)
+		editor_open_new(&P.ed, v->per.kind);
+	else if (how == 2 && t)
+		editor_open_copy(&P.ed, t);
+	else if (t)
+		editor_open_edit(&P.ed, t);
+	if (!P.ed.t)
+		return;
+	P.ed.from_picker = picker;
+	P.ed.data = &P.s;
+	v->ed = &P.ed;
+	v->ov = OV_NONE;
+	editor_relayout();
+}
+
+static void editor_leave(const char *ring)
+{
+	struct view *v = &P.v;
+	v->ov = P.ed.from_picker ? OV_PICKER : OV_NONE;
+	snprintf(v->ring, sizeof v->ring, "%s", ring && P.ed.from_picker ? ring : "");
+	v->ed = NULL;
+	editor_close(&P.ed);
+	editor_relayout();
+}
+
+static void editor_tap(int op, int arg)
+{
+	struct view *v = &P.v;
+	if (op == ED_SELECT)
+		P.ed.target = arg >= 0 && arg < v->g.n ? (struct tnode *)v->g.p[arg].n : NULL;
+	char id[TMPL_ID];
+	snprintf(id, sizeof id, "%s", P.ed.t && P.ed.t->id ? P.ed.t->id : "");
+	switch (editor_act(&P.ed, op, arg, P.s.dir)) {
+	case ER_SAVED: editor_leave(id); break;
+	case ER_CLOSED: editor_leave(NULL); break;
+	case ER_CHANGED: editor_relayout(); break;
+	default: break;
+	}
+}
+
 static void tap(double x, double y, bool finger)
 {
 	struct view *v = &P.v;
@@ -785,7 +870,7 @@ static void tap(double x, double y, bool finger)
 		relayout_later();
 		return;
 	}
-	if (finger && v->ov == OV_NONE && (!h || h->a == A_EVENT || h->a == A_NONE)) {
+	if (finger && !v->ed && v->ov == OV_NONE && (!h || h->a == A_EVENT || h->a == A_NONE)) {
 		/* a finger tap on a field opens its text mode (FR-012); the pen never does. A cut
 		 * title shows whole first (FR-018) */
 		if (h && h->a == A_EVENT && h->arg) {
@@ -851,10 +936,16 @@ static void tap(double x, double y, bool finger)
 	case A_COG: v->ov = OV_MENU; relayout_later(); break;
 	case A_BACK: v->ov = OV_INFO; relayout_later(); break;
 	case A_HIDDEN: v->ov = OV_HIDDEN; v->hidden_kind = h->arg; relayout_later(); break;
-	case A_PICKER: v->ov = OV_PICKER; v->scope = 0; relayout_later(); break;
+	case A_PICKER: v->ov = OV_PICKER; v->scope = 0; v->ring[0] = 0; relayout_later(); break;
+	case A_EDIT: editor_enter(h->arg); break;
+	case A_ED: editor_tap(h->arg, (int)h->id - 100); break;
 	case A_SCOPE: v->scope = h->arg; relayout_later(); break;
 	case A_PICK: {
-		const struct tmpl *t = pl_templates[h->arg];
+		const struct tmpl *ts[64];
+		if (h->arg >= tmpl_list(v->per.kind, ts, 64))
+			break;
+		const struct tmpl *t = ts[h->arg];
+		v->ring[0] = 0;
 		if (v->scope == 3)
 			snprintf(P.s.def[v->per.kind], sizeof P.s.def[0], "%s", t->id);
 		else
@@ -919,6 +1010,20 @@ static void finger_down(double x, double y)
 {
 	P.tx = x, P.ty = y;
 	P.drag = 0;
+	P.ed_drag = 0;
+	if (P.v.ed && P.ed.sel && P.ed.ov == EO_NONE) {
+		/* the selected widget, or its right or lower edge: a drag moves or resizes it */
+		for (int i = 0; i < P.v.g.n; i++) {
+			const struct placed *p = &P.v.g.p[i];
+			if (p->n != P.ed.sel)
+				continue;
+			double px = 12 + p->x, py = 60 + 12 + p->y;
+			if (x >= px && x < px + p->w + 12 && y >= py && y < py + p->h + 12)
+				P.ed_drag = x > px + p->w - 14 || y > py + p->h - 14 ? 2 : 1;
+		}
+		P.ed_x0 = x, P.ed_y0 = y;
+		return;
+	}
 	const struct vhit *h = P.refused || P.v.tm ? NULL : view_hit(&P.v, x, y);
 	if (h && h->a == A_EVENT && P.v.ov == OV_NONE) {
 		struct entry *e = store_get(&P.s, h->id);
@@ -956,8 +1061,42 @@ static void finger_motion(double x, double y)
 	}
 }
 
+static void editor_drag_end(double x, double y)
+{
+	struct view *v = &P.v;
+	double dx = x - P.ed_x0, dy = y - P.ed_y0;
+	if (P.ed_drag == 2) { /* the edge: a weight step per 60 px along the drag */
+		int steps = (int)lround((fabs(dx) > fabs(dy) ? dx : dy) / 60);
+		for (int i = 0; i < abs(steps); i++)
+			editor_act(&P.ed, steps > 0 ? ED_MORE : ED_LESS, 0, NULL);
+		editor_relayout();
+		return;
+	}
+	for (int i = 0; i < v->g.n; i++) { /* the widget: onto the nearest edge of the one under the finger */
+		const struct placed *p = &v->g.p[i];
+		double px = 12 + p->x, py = 60 + 12 + p->y;
+		if (p->n == P.ed.sel || x < px || x >= px + p->w || y < py || y >= py + p->h)
+			continue;
+		double d[4] = { x - px, px + p->w - x, y - py, py + p->h - y };
+		int side = 0;
+		for (int k = 1; k < 4; k++)
+			if (d[k] < d[side])
+				side = k;
+		P.ed.target = (struct tnode *)p->n;
+		editor_act(&P.ed, ED_DROP, side, NULL);
+		editor_relayout();
+		return;
+	}
+}
+
 static void finger_up(double x, double y)
 {
+	if (P.ed_drag && (fabs(x - P.tx) >= 24 || fabs(y - P.ty) >= 24)) {
+		editor_drag_end(x, y);
+		P.ed_drag = 0;
+		return;
+	}
+	P.ed_drag = 0;
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
 		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0);
@@ -1372,6 +1511,7 @@ int main(int argc, char **argv)
 	data_dir(dir, sizeof dir);
 	store_init(&P.s, dir);
 	store_load(&P.s);
+	tmpl_user_load(dir);
 	look_voice_name(P.voice, sizeof P.voice);
 	look_init(&P.L, P.voice);
 	P.v.today = day_today();
