@@ -164,26 +164,75 @@ int main(void)
 		uint32_t ent = 0;
 		struct entry *x = field_stroke(&a, &ent, &mk, 1, pt, 2);
 		CHECK(x && ent == x->id && x->kind == E_TODO && x->rank == 3 && x->f.ns == 1);
-		CHECK(!field_value(&a, &ent, "", NULL, 0, NULL, 0)); /* a reading not ready yet */
+		CHECK(!field_value(&a, &ent, "", NULL, 0, NULL, 0, NULL, 0)); /* a reading not ready yet */
 		CHECK_INT(a.n, 1);
 		uint32_t g1 = 1;
-		CHECK(field_value(&a, &ent, "", &g1, 1, NULL, 0));
+		CHECK(field_value(&a, &ent, "", NULL, 0, &g1, 1, NULL, 0));
 		CHECK_INT(ent, 0);
 		CHECK_INT(a.n, 0);
 		x = field_stroke(&a, &ent, &mk, 2, pt, 2);
 		CHECK(x && ent && a.n == 1 && x->f.ns == 1 && x->per.kind == P_WEEK);
-		CHECK(!field_value(&a, &ent, "milk", NULL, 0, "st", 2));
+		CHECK(!field_value(&a, &ent, "milk", NULL, 0, NULL, 0, "st", 2));
 		CHECK(x->f.value && !strcmp(x->f.value, "milk") && x->f.state_len == 2);
 		/* an event keeps its time when its title is struck out */
 		struct entry *ev = store_add(&a, E_EVENT, period_of(P_DAY, d));
 		uint32_t eid = ev->id;
 		field_stroke(&a, &eid, NULL, 1, pt, 2);
-		CHECK(!field_value(&a, &eid, "", &g1, 1, NULL, 0) && store_get(&a, eid));
+		CHECK(!field_value(&a, &eid, "", NULL, 0, &g1, 1, NULL, 0) && store_get(&a, eid));
 		/* a title region makes nothing when its event is gone */
 		store_delete(&a, eid);
 		struct fmake none = { E_NKINDS };
 		CHECK(field_stroke(&a, &eid, &none, 3, pt, 2) == NULL);
 		store_free(&a);
+	}
+
+	/* a text-mode edit: the value's layout keeps the unchanged words' ink and sets the
+	 * edited one in Autograph; it survives the file, with neat strokes and the opt-ins */
+	{
+		struct store a;
+		store_init(&a, dir);
+		struct entry *t = store_add(&a, E_TODO, period_of(P_DAY, d));
+		sample_ink(&t->f, "call the bonk", 2, 27, 9);
+		uint32_t ent = t->id, k0 = t->f.s[0].k, k1 = t->f.s[1].k, k2 = t->f.s[2].k;
+		float path[] = { 0, 60, 20, 1, 90, 20, 1, 90, 30, 4 };
+		struct pl_word w[3] = {
+			{ 0, 4, false, &k0, 1, 0, 0, { 0 }, NULL, 0 },
+			{ 5, 3, false, &k1, 1, 0, 0, { 0 }, NULL, 0 },
+			{ 9, 4, true, NULL, 0, 0, 0, { 60, 12, 30, 18 }, path, 10 },
+		};
+		CHECK(!field_value(&a, &ent, "call the bank", w, 3, &k2, 1, "s", 1));
+		CHECK_INT(t->f.ns, 2);
+		CHECK_INT(t->f.nw, 3);
+		CHECK_INT(field_word_of(&t->f, k1), 1);
+		CHECK_INT(field_word_of(&t->f, k2), -1);
+		struct pl_point np[2] = { { 3, 20, 0.5f, 0 }, { 30, 20, 0.5f, 4 } };
+		field_set_neat(&t->f, k0, np, 2);
+		t->f.neaten = SHOW_ON;
+		a.neaten = false;
+		CHECK(field_neaten(&a, &t->f) && !field_autograph(&a, &t->f));
+		char *x1 = store_ics(&a);
+		struct store b;
+		store_init(&b, NULL);
+		CHECK(store_parse_ics(&b, x1));
+		char *x2 = store_ics(&b);
+		CHECK_STR(x2, x1);
+		CHECK(b.n == 1 && b.e[0]->f.nw == 3 && b.e[0]->f.w[2].set && b.e[0]->f.w[2].npath == 10 &&
+		      b.e[0]->f.w[2].box[0] == 60 && b.e[0]->f.nneat == 1 && b.e[0]->f.neaten == SHOW_ON);
+		free(x1), free(x2);
+		/* text typed into an empty row makes its entry */
+		struct fmake mk = { E_NOTE, period_of(P_DAY, d), "evening", 0 };
+		uint32_t ne = 0;
+		CHECK(field_typed(&b, &ne, &mk, "") == NULL);
+		struct entry *y = field_typed(&b, &ne, &mk, "rain all day");
+		CHECK(y && ne == y->id && !strcmp(y->slot, "evening") && !strcmp(y->f.value, "rain all day"));
+		/* the settings */
+		a.neaten = true, a.strength = 0.35f, a.autograph = true;
+		CHECK(store_save_settings(&a));
+		struct store c;
+		store_init(&c, dir);
+		store_load(&c);
+		CHECK(c.neaten && c.autograph && c.strength > 0.34f && c.strength < 0.36f);
+		store_free(&a), store_free(&b), store_free(&c);
 	}
 
 	/* the solver gives every widget at least its minimum, upright and turned */

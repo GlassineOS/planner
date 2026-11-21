@@ -16,7 +16,9 @@ static void shot(struct store *s, const char *voice, struct view *v, const char 
 {
 	struct look L;
 	look_init(&L, voice);
-	cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, (int)v->W, (int)v->H);
+	/* with the keyboard up the window is as tall as what it leaves (the page isn't laid out again) */
+	int h = v->vis_h > 0 ? (int)v->vis_h : (int)v->H;
+	cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, (int)v->W, h);
 	cairo_t *cr = cairo_create(sf);
 	view_layout(v, s, &L, cr);
 	view_paint(v, s, &L, cr);
@@ -58,6 +60,32 @@ int main(void)
 			struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV[k].ov };
 			shot(&s, VOICES[vi], &v, OV[k].name);
 			n++;
+		}
+		/* text mode: one field, then the whole view, the keyboard up (boards text.field, text.view) */
+		{
+			struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
+			shot(&s, VOICES[vi], &w, "tmp");
+			const struct vfield *f = NULL;
+			for (int i = 0; i < w.nf; i++)
+				if (w.f[i].k == F_ENTRY && w.f[i].h <= 48 && store_get(&s, w.f[i].entry)->kind == E_TODO)
+					f = f ? f : &w.f[i];
+			static char text[128];
+			snprintf(text, sizeof text, "%s", store_get(&s, f->entry)->f.value);
+			snprintf(w.tm_name, sizeof w.tm_name, "%s", f->name);
+			w.tm = 1, w.tm_text = text, w.tm_cur = (int)strlen(text), w.tm_neaten = true;
+			w.vis_h = 896 - 236;
+			w.scroll = view_scroll_to(&w, f);
+			shot(&s, VOICES[vi], &w, "text.field");
+			w.tm = 2;
+			shot(&s, VOICES[vi], &w, "text.view");
+			n += 2;
+		}
+		{
+			struct view w = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_SETTINGS };
+			shot(&s, VOICES[vi], &w, "cog.settings");
+			w.ov = OV_INFO, w.search = true, w.q = "the", w.q_cur = 3;
+			shot(&s, VOICES[vi], &w, "info.search");
+			n += 2;
 		}
 		/* the template editor: a widget selected, the list to add one, the in-use question, a new one,
 		 * a notes widget's slot, a drag's drop marker, a removal's notice, back to the shipped one */
@@ -120,6 +148,25 @@ int main(void)
 			n++;
 		}
 		store_choose(&s, d, d.start, "day-agenda");
+		/* titles (board event.title): one grows into the free time below it, one shrinks, one
+		 * is cut at its block's edge */
+		{
+			struct entry *g = store_add(&s, E_EVENT, d), *k = store_add(&s, E_EVENT, d), *c = store_add(&s, E_EVENT, d);
+			g->start = 11 * 60, g->end = 11 * 60 + 30;
+			sample_ink(&g->f, "groceries", 2, 19, 11);
+			sample_ink(&g->f, "and the pharmacy", 2, 46, 12);
+			k->start = 12 * 60, k->end = 12 * 60 + 30;
+			sample_ink(&k->f, "return the library books and pick up the reserved ones on the way", 2, 19, 13);
+			c->start = 13 * 60, c->end = 13 * 60 + 30;
+			sample_ink(&c->f, "pick up the parcel and the new keys from the neighbour across the road before six, then "
+					  "bring the blue folder to the office", 2, 19, 14);
+			struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
+			shot(&s, VOICES[vi], &w, "event.title");
+			w.ov = OV_TITLE, w.title = c->id;
+			shot(&s, VOICES[vi], &w, "event.title.whole");
+			store_delete(&s, g->id), store_delete(&s, k->id), store_delete(&s, c->id);
+			n += 2;
+		}
 		struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_HIDDEN, .hidden_kind = 0 };
 		shot(&s, VOICES[vi], &v, "hidden.list");
 		struct look L;
@@ -133,6 +180,11 @@ int main(void)
 		cairo_destroy(cr);
 		cairo_surface_destroy(sf);
 		n += 2;
+	}
+	for (int vi = 0; vi < 3; vi++) {
+		char p[128];
+		snprintf(p, sizeof p, "out/renders/tmp.%s.png", VOICES[vi]);
+		remove(p);
 	}
 	store_free(&s);
 	printf("render: %d images in out/renders\n", n);

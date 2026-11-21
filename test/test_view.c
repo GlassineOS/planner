@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The day view: its fields (one writing region each), its controls and the hidden count. */
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../src/view.h"
 #include "sample.h"
@@ -100,6 +102,150 @@ int main(void)
 			CHECK(w.t == pl_templates[i]);
 			CHECK(w.nf > 0);
 		}
+	}
+	/* ---- text mode (FR-012 to FR-017) ---- */
+	{
+		struct view w = { .per = period_of(P_DAY, today), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		store_choose(&s, w.per, w.per.start, "day-lists");
+		view_layout(&w, &s, &L, cr);
+		/* the lowest entry field: under the keyboard once it is up */
+		const struct vfield *lo = NULL;
+		for (int i = 0; i < w.nf; i++)
+			if (w.f[i].k == F_ENTRY && w.f[i].h <= 48 && (!lo || w.f[i].y > lo->y))
+				lo = &w.f[i];
+		CHECK(lo != NULL);
+		struct vfield before = *lo;
+		int nf = w.nf;
+		w.tm = 1;
+		snprintf(w.tm_name, sizeof w.tm_name, "%s", lo->name);
+		w.tm_text = "typed words";
+		w.tm_cur = 5;
+		w.vis_h = 884 - 236;
+		w.scroll = view_scroll_to(&w, lo);
+		CHECK(w.scroll > 0 && (int)w.scroll % PL_ROW == 0);
+		view_layout(&w, &s, &L, cr);
+		/* the keyboard doesn't lay the page out again: every field where it was */
+		CHECK_INT(w.nf, nf);
+		lo = NULL;
+		for (int i = 0; i < w.nf; i++)
+			if (!strcmp(w.f[i].name, before.name))
+				lo = &w.f[i];
+		CHECK(lo && lo->y == before.y && lo->h == before.h && lo->x == before.x);
+		/* the field lies above the bar over the keyboard, below the view's bar */
+		CHECK(lo->y + 40 - w.scroll <= w.vis_h - 46 && lo->y - w.scroll >= 60);
+		CHECK(view_field_at(&w, lo->x + 5, lo->y - w.scroll + 5) == lo);
+		/* the bar's switches and its way out, on the screen (never scrolled) */
+		const struct vhit *d = find(&w, A_TM_DONE, -1), *ne = find(&w, A_TM_NEATEN, -1), *au = find(&w, A_TM_AUTOGRAPH, -1);
+		CHECK(d && ne && au && d->fixed && d->y >= w.vis_h - 46 && d->y + d->h <= w.vis_h);
+		CHECK(view_hit(&w, d->x + 2, d->y + 2) == d && view_hit(&w, ne->x + 2, ne->y + 2) == ne);
+		CHECK(ne->x + ne->w <= au->x + 0.5 && au->x + au->w <= d->x + 0.5); /* Neaten, Set in Autograph, Done */
+		/* nothing under the bar writes */
+		CHECK(view_field_at(&w, d->x + 2, d->y + 2) == NULL);
+		/* the whole view: Back to ink, no switches */
+		w.tm = 2;
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_TM_DONE, -1) && !find(&w, A_TM_NEATEN, -1));
+		cairo_save(cr);
+		view_paint(&w, &s, &L, cr);
+		cairo_restore(cr);
+	}
+	/* a value with one edited word: that word set in Autograph (its outline filled), the
+	 * others' ink as written (FR-014) */
+	{
+		struct store t;
+		store_init(&t, NULL);
+		int d0 = today;
+		struct entry *e = store_add(&t, E_TODO, period_of(P_DAY, d0));
+		e->rank = 1;
+		sample_ink(&e->f, "call the", 2, 24, 3);
+		uint32_t k0 = e->f.s[0].k, k1 = e->f.s[1].k;
+		float path[] = { 0, 120, 8, 1, 150, 8, 1, 150, 26, 1, 120, 26, 4 };
+		struct pl_word wd[3] = {
+			{ 0, 4, false, &k0, 1, 0, 0, { 0 }, NULL, 0 },
+			{ 5, 3, false, &k1, 1, 0, 0, { 0 }, NULL, 0 },
+			{ 9, 4, true, NULL, 0, 0, 0, { 120, 8, 30, 18 }, path, 13 },
+		};
+		uint32_t ent = e->id;
+		field_value(&t, &ent, "call the bank", wd, 3, NULL, 0, NULL, 0);
+		struct view w = { .per = period_of(P_DAY, d0), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		view_layout(&w, &t, &L, cr);
+		const struct vfield *f = view_field_of(&w, ent);
+		CHECK(f != NULL);
+		cairo_save(cr);
+		cairo_set_source_rgb(cr, 1, 1, 1);
+		cairo_paint(cr);
+		view_paint(&w, &t, &L, cr);
+		cairo_restore(cr);
+		cairo_surface_flush(sf);
+		uint32_t *px = (uint32_t *)cairo_image_surface_get_data(sf);
+		int stride = cairo_image_surface_get_stride(sf) / 4;
+#define DARK(X, Y) ((px[(int)(Y) * stride + (int)(X)] & 0xff) < 0x60)
+		if (f) {
+			CHECK(DARK(f->x + 135, f->y + 17)); /* the set word, filled */
+			int ink = 0;
+			for (int yy = 0; yy < 30; yy++)
+				for (int xx = 0; xx < 60; xx++)
+					ink += DARK(f->x + xx, f->y + yy);
+			CHECK(ink > 10); /* "call" as written */
+		}
+#undef DARK
+		store_free(&t);
+	}
+	/* titles (FR-018): one that fits is whole (a tap opens text mode), a long one in a short
+	 * block shrinks to the smallest readable size, then is cut (a tap shows it whole) */
+	{
+		struct period d = period_of(P_DAY, today);
+		store_choose(&s, d, d.start, "day-agenda");
+		struct entry *e = store_add(&s, E_EVENT, d);
+		e->start = 12 * 60, e->end = 12 * 60 + 30;
+		/* written on and on past the block's edge: wider than its block even at 11 px */
+		sample_ink(&e->f, "pick up the parcel and the new keys from the neighbour across the road before six, then "
+				  "bring the blue folder to the office and ask about the shelf, the bike light and the plants", 2, 19, 5);
+		struct view w = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		view_layout(&w, &s, &L, cr);
+		int cut = -1, whole = -1;
+		for (int i = 0; i < w.nh; i++)
+			if (w.hit[i].a == A_EVENT && w.hit[i].id == e->id)
+				cut = w.hit[i].arg;
+			else if (w.hit[i].a == A_EVENT)
+				whole = whole < 0 ? w.hit[i].arg : whole;
+		CHECK_INT(cut, 1);
+		CHECK_INT(whole, 0);
+		/* its card shows it whole */
+		w.ov = OV_TITLE;
+		w.title = e->id;
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_CLOSE, -1) != NULL);
+		store_delete(&s, e->id);
+	}
+	/* search in the (i) popover (FR-050) */
+	{
+		struct period d = period_of(P_DAY, today);
+		struct view w = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_INFO };
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_SEARCH, -1) != NULL);
+		w.search = true;
+		w.q = "PASSPORT";
+		view_layout(&w, &s, &L, cr);
+		const struct vhit *r = find(&w, A_RESULT, -1);
+		struct entry *re = r ? store_get(&s, r->id) : NULL;
+		CHECK(re && strstr(re->f.value, "passport") && re->per.kind == P_MONTH);
+		CHECK(view_hit(&w, r->x + 4, r->y + 4) == r);
+		w.q = "zebra";
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_RESULT, -1) == NULL);
+	}
+	/* the settings */
+	{
+		struct view w = { .per = period_of(P_DAY, today), .today = today, .W = 702, .H = 884, .hidden_kind = -1, .ov = OV_SETTINGS };
+		view_layout(&w, &s, &L, cr);
+		const struct vhit *n = find(&w, A_SET_NEATEN, -1), *a = find(&w, A_SET_AUTOGRAPH, -1), *k = find(&w, A_SET_STRENGTH, -1);
+		CHECK(n && a && k && find(&w, A_CLOSE, -1));
+		CHECK(view_hit(&w, n->x + 4, n->y + 4) == n && view_hit(&w, k->x + 4, k->y + 4) == k);
+		CHECK(view_field_at(&w, 300, 500) == NULL); /* nothing writes under the sheet */
+		w.ov = OV_MENU;
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_SETTINGS, -1) != NULL);
 	}
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
