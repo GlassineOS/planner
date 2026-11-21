@@ -217,7 +217,8 @@ it says that it needs the handwriting service and why, and doesn't start.
   - dragging an event's block moves it and dragging its edge changes its length, both in
     steps of 30 minutes. During a drag the view refreshes once per step, only where the
     block leaves and enters. A dragged block looks as it will when released; the only
-    other mark during a drag is a dashed outline at the block's old place;
+    other mark during a drag is a dashed outline at the block's old place, and the release
+    refreshes only that place as the outline goes;
   - date pickers set or change the day, week or month an entry belongs to.
 
   When an event's title needs more room than its block, the title field grows past the
@@ -399,7 +400,8 @@ Host level:
   raises "+n more", done rows give way first, then the oldest open, and one empty row stays;
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
-  block leaves and enters, and the release refreshes nothing more;
+  block leaves and enters, and the release refreshes only the old place, where the dashed
+  outline goes;
 - a long title in a short event grows its title field into the free time below the block
   without changing the event's times, and is cut with "…" when the next event follows right
   away;
