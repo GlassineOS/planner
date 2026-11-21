@@ -1116,15 +1116,37 @@ static void tap_(double x, double y, bool finger)
  * on the bar waited PAUSE_MS, and the page was painted once in the old layout before. A
  * relayout the writing asked for before the tap still waits for the pause, unless the tap
  * asks for one too (it then lays out everything) */
+static bool pop_ov(enum overlay o)
+{
+	return o == OV_NONE || o == OV_INFO || o == OV_MENU;
+}
+
 static void tap(double x, double y, bool finger)
 {
+	struct view *v = &P.v;
 	bool held = P.relayout; /* a relayout the writing asked for keeps its pause */
 	P.relayout = false;
+	/* what is shown before: a popover opened or closed over the same page repaints only
+	 * its rectangle and the bar (FR-061), not the whole page */
+	enum overlay ov0 = v->ov;
+	struct period per0 = v->per;
+	const struct tmpl *t0 = v->t;
+	bool plain0 = !v->tm && !v->search && !v->ed && !P.dirty;
+	double px = v->pop_x, py = v->pop_y, pw = v->pop_w, ph = v->pop_h;
 	tap_(x, y, finger);
 	if (P.relayout && P.configured && !P.refused) {
 		P.relayout = false;
 		layout();
 		P.dirty = true;
+		if (plain0 && !held && ov0 != v->ov && pop_ov(ov0) && pop_ov(v->ov) && v->per.kind == per0.kind &&
+		    v->per.start == per0.start && v->t == t0 && !v->tm && !v->search && !v->ed && v->scroll == 0) {
+			P.dirty = false;
+			repaint(0, 0, P.W, V_BAR + 8);
+			if (ov0 != OV_NONE)
+				repaint(px - 8, py - 8, pw + 16, ph + 16);
+			if (v->ov != OV_NONE)
+				repaint(v->pop_x - 8, v->pop_y - 8, v->pop_w + 16, v->pop_h + 16);
+		}
 	}
 	P.relayout = P.relayout || held;
 }
