@@ -8,6 +8,7 @@
 #define PL_VIEW_H
 #include <cairo.h>
 #include <stdbool.h>
+#include "editor.h"
 #include "grid.h"
 #include "look.h"
 #include "store.h"
@@ -19,6 +20,7 @@ enum fkind {
 	F_ENTRY,  /* an entry's field (its title, its text) */
 	F_NEW,    /* an empty row: the first stroke makes the entry */
 	F_FREE,   /* an agenda's free time: reading off, a drawn block makes an event */
+	F_NAME,   /* the template editor's name, written with the pen (no entry) */
 };
 struct vfield {
 	enum fkind k;
@@ -41,6 +43,8 @@ enum act {
 	A_SETTINGS, A_SET_NEATEN, A_SET_STRENGTH, A_SET_AUTOGRAPH, /* the settings sheet */
 	A_TM_NEATEN, A_TM_AUTOGRAPH, A_TM_DONE,                   /* the bar above the keyboard */
 	A_SEARCH, A_RESULT,                                         /* search in the (i) popover */
+	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
+	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
 };
 struct vhit {
 	double x, y, w, h;
@@ -91,6 +95,8 @@ struct view {
 	const char *q;      /* the words searched for; owned by the caller */
 	int q_cur;
 	uint32_t title;     /* OV_TITLE: the event whose cut title shows whole */
+	struct editor *ed;  /* the template editor, when open: it takes the whole screen */
+	char ring[40];      /* the picker rings this template (a new one just saved), else the one in use */
 };
 
 struct hidden_group {
