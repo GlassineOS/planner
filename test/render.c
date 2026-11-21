@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Offscreen renders of every shipped template in each voice, upright and turned, and of
  * the overlays (spec 001 acceptance), into out/renders/. The window is the design's screen
- * less the system's status bar: 702 x 896 upright, 936 x 662 turned. Synthetic ink. */
+ * less the system's status bar: 702 x 896 upright, 936 x 662 turned. Synthetic ink.
+ *   render [SCALE [TEXT]]   at SCALE device pixels per design pixel (shell spec 012), laid
+ *                           out and painted at it as the program does, the text
+ *                           size TEXT percent: into out/renders-SCALE[-tTEXT] */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +15,9 @@
 #include "sample.h"
 
 static const char *VOICES[] = { "white", "editorial", "stationery" };
+static double SC;      /* 0: as the design, one pixel each */
+static int TEXT;       /* 0: the text size not set */
+static char DIR[64] = "out/renders";
 
 static void shot(struct store *s, const char *voice, struct view *v, const char *name)
 {
@@ -18,23 +25,40 @@ static void shot(struct store *s, const char *voice, struct view *v, const char 
 	look_init(&L, voice);
 	/* with the keyboard up the window is as tall as what it leaves (the page isn't laid out again) */
 	int h = v->vis_h > 0 ? (int)v->vis_h : (int)v->H;
-	cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, (int)v->W, h);
+	if (TEXT)
+		ui_metrics_voice(L.uv, 0, TEXT / 100.0);
+	cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, SC ? ui_device_px(v->W, SC) : (int)v->W,
+							 SC ? ui_device_px(h, SC) : h);
 	cairo_t *cr = cairo_create(sf);
-	view_layout(v, s, &L, cr);
+	if (SC) {
+		view_layout_at(v, s, &L, SC); /* measured at the scale it is painted at, as the program does */
+		cairo_scale(cr, SC, SC);
+	} else
+		view_layout(v, s, &L, cr);
 	view_paint(v, s, &L, cr);
 	char p[256];
-	snprintf(p, sizeof p, "out/renders/%s.%s.png", name, voice);
+	snprintf(p, sizeof p, "%s/%s.%s.png", DIR, name, voice);
 	cairo_surface_write_to_png(sf, p);
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	if (argc > 1) {
+		SC = atof(argv[1]);
+		TEXT = argc > 2 ? atoi(argv[2]) : 0;
+		if (SC <= 0)
+			return 2;
+		if (TEXT)
+			snprintf(DIR, sizeof DIR, "out/renders-%s-t%d", argv[1], TEXT);
+		else
+			snprintf(DIR, sizeof DIR, "out/renders-%s", argv[1]);
+	}
 	setenv("GLASSINE_PLANNER_TODAY", SAMPLE_TODAY, 1);
 	setenv("GLASSINE_PLANNER_NOW", "860", 1);
 	mkdir("out", 0755);
-	mkdir("out/renders", 0755);
+	mkdir(DIR, 0755);
 	struct store s;
 	store_init(&s, NULL);
 	sample_fill(&s);
@@ -268,11 +292,14 @@ int main(void)
 		}
 		struct look L;
 		look_init(&L, VOICES[vi]);
-		cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 702, 896);
+		cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, SC ? ui_device_px(702, SC) : 702,
+								 SC ? ui_device_px(896, SC) : 896);
 		cairo_t *cr = cairo_create(sf);
+		if (SC)
+			cairo_scale(cr, SC, SC);
 		view_paint_refused(&L, cr, 702, 896, NULL);
 		char p[128];
-		snprintf(p, sizeof p, "out/renders/start.refused.%s.png", VOICES[vi]);
+		snprintf(p, sizeof p, "%s/start.refused.%s.png", DIR, VOICES[vi]);
 		cairo_surface_write_to_png(sf, p);
 		cairo_destroy(cr);
 		cairo_surface_destroy(sf);
@@ -280,10 +307,10 @@ int main(void)
 	}
 	for (int vi = 0; vi < 3; vi++) {
 		char p[128];
-		snprintf(p, sizeof p, "out/renders/tmp.%s.png", VOICES[vi]);
+		snprintf(p, sizeof p, "%s/tmp.%s.png", DIR, VOICES[vi]);
 		remove(p);
 	}
 	store_free(&s);
-	printf("render: %d images in out/renders\n", n);
+	printf("render: %d images in %s\n", n, DIR);
 	return 0;
 }

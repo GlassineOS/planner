@@ -2816,9 +2816,16 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 		tbar(&c);
 }
 
+static double bar_h = 60;
+double view_bar_h(void)
+{
+	return bar_h;
+}
+
 void view_layout(struct view *v, struct store *s, const struct look *L, cairo_t *measure)
 {
 	ui_draw_init();
+	bar_h = ui_grow(ui_grow(60, &L->h1, 1, 1), &L->sub, 1, 1); /* 60 while the text keeps its size */
 	run(v, s, L, measure, 0);
 }
 
