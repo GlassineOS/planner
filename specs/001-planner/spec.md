@@ -52,8 +52,8 @@ Terms used below:
 with the pen in the agenda's free time and writes "dentist" in it, **Then** an event from
 14:00 to 15:00 exists, its title shows as the person's ink exactly as written, and a moment
 later searching for "dentist" finds it. No converted text appears anywhere on the page.
-**When** the title is longer than the hour holds, **Then** the event's block grows into the
-free time below it and the event still ends at 15:00.
+**When** the title is longer than the hour holds, **Then** its title field grows into the
+free time below the block and the event still ends at 15:00.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
@@ -218,8 +218,8 @@ it says that it needs the handwriting service and why, and doesn't start.
     when released;
   - date pickers set or change the day, week or month an entry belongs to.
 
-  When an event's title needs more room than its block, the block grows into the free time
-  below it to hold the title; the event's start and end stay as set.
+  When an event's title needs more room than its block, the title field grows past the
+  block into the free time below it; the event's start and end stay as set.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
   not set the entry's time or date. An event is timed (a start and an end, which may cross
   midnight; it shows on each day it covers) or all-day (one or more whole days).
@@ -396,8 +396,8 @@ Host level:
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
   block leaves and enters, and the release refreshes nothing more;
-- a long title in a short event grows the block into the free time below without changing
-  its times;
+- a long title in a short event grows its title field into the free time below the block
+  without changing the event's times;
 - a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
