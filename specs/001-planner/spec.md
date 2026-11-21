@@ -222,8 +222,10 @@ it says that it needs the handwriting service and why, and doesn't start.
     block leaves and enters. A dragged block looks as it will when released; the only
     other marks during a drag are a dashed outline at the block's old place and, in the
     agenda's hour gutter, the time the block would land on. That readout is part of the
-    gutter, not of the block's look; it changes with each step and goes on release. The
-    release refreshes only the old place, where the outline goes, and the gutter;
+    gutter, not of the block's look; it changes with each step and goes on release. A block
+    held past the agenda's first or last hour scrolls its hours one step per step, with the
+    readout pinned at that edge of the gutter; on release the agenda shows its own hours
+    again. The release refreshes only the old place, where the outline goes, and the gutter;
   - date pickers set or change the day, week or month an entry belongs to.
 
   When an event's title needs more room than its block, the title field grows past the
@@ -328,8 +330,11 @@ it says that it needs the handwriting service and why, and doesn't start.
 - **FR-044**: Every widget gets at least its minimum size. When the view can't give every
   widget its minimum, in either orientation, the template editor says so and by how much,
   and doesn't save the template until it fits.
-- **FR-045**: In the template editor the person adds, removes, moves and resizes widgets
-  and changes their weights, and sees the result with the data of a real period.
+- **FR-045**: In the template editor the person adds, removes, moves and resizes widgets,
+  changes their weights and settings, and sees the result with the data of a real period.
+  Each of these has a tap target; dragging a widget or its edge does the same by hand. The
+  editor only arranges: its view of the period's entries can't be written into, and
+  nothing done in it creates, changes or deletes an entry.
 - **FR-046**: There is no relayout while the person writes: while the pen is down, and
   until the person pauses after lifting it, the layout stays as it is. It settles once after
   the pause, in one refresh of only the widgets whose size changed.
@@ -340,6 +345,12 @@ it says that it needs the handwriting service and why, and doesn't start.
   and "+n more" with the count of what doesn't; a tap opens the widget's whole content. In
   a full list, done entries give way first, then the oldest open ones; one empty row to
   write in always stays. Nothing is dropped and ink is never shrunk to fit.
+- **FR-049**: The editor opens from the template picker and from the maintenance menu.
+  New starts an empty template of the kind and Copy a copy of the chosen template; each
+  has a name from the start, which the person can write over with the pen. Save keeps the
+  template and applies it wherever it is used; a new template or a copy is used by no
+  period until the person chooses it. Cancel leaves the template as it was, and asks first
+  when something was changed.
 
 ### Details, maintenance and search
 
@@ -360,7 +371,7 @@ it says that it needs the handwriting service and why, and doesn't start.
   maintenance menu:
   - text mode for the whole view (FR-013);
   - choose template and plan ahead (FR-030, FR-033);
-  - edit this template (FR-045);
+  - edit this template (FR-045, FR-049);
   - settings, including the global Neaten and Set in Autograph (FR-011);
   - debug, in developer builds only.
 
