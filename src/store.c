@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -316,6 +318,7 @@ void store_free(struct store *s)
 	free(s->c);
 	free(s->dir);
 	free(s->deleted);
+	free(s->replayed);
 	memset(s, 0, sizeof *s);
 }
 
@@ -1197,6 +1200,83 @@ static bool seen_same(const struct store *s, const struct stat *st)
 	       s->seen_mtime == (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
 }
 
+/* the journal over what planner.ics held: each entry as last noted */
+static void replay(struct store *s, const char *text)
+{
+	struct store o;
+	store_init(&o, NULL);
+	store_parse_ics(&o, text);
+	for (int i = 0; i < o.n; i++) {
+		struct entry *x = o.e[i], *y = by_uid(s, x->uid);
+		if (x->kind == E_MARK || has_uid(s->deleted, s->ndel, x->uid))
+			continue;
+		if (!y && !(y = store_put(s)))
+			break;
+		uint32_t id = y->id;
+		field_free(&y->f);
+		*y = *x;
+		y->id = id;
+		y->habit = 0;
+		memset(&x->f, 0, sizeof x->f); /* the field now belongs to y */
+	}
+	store_free(&o);
+}
+
+static int jid_of(struct store *s)
+{
+	if (!s->jid)
+		s->jid = (int)getpid();
+	return s->jid;
+}
+
+static bool has_name(char (*l)[64], int n, const char *name)
+{
+	for (int i = 0; i < n; i++)
+		if (!strcmp(l[i], name))
+			return true;
+	return false;
+}
+
+struct journal {
+	char name[64];
+	long long mtime;
+};
+
+static int by_mtime(const void *a, const void *b)
+{
+	long long x = ((const struct journal *)a)->mtime, y = ((const struct journal *)b)->mtime;
+	return x < y ? -1 : x > y;
+}
+
+/* the journals in the data directory, oldest first */
+static int journals(struct store *s, struct journal **out)
+{
+	struct journal *l = NULL;
+	int n = 0;
+	DIR *d = opendir(s->dir);
+	for (struct dirent *e; d && (e = readdir(d));) {
+		if (strncmp(e->d_name, "planner.journal.", 16) || strlen(e->d_name) >= 64)
+			continue;
+		char p[4096];
+		struct stat st;
+		snprintf(p, sizeof p, "%s/%s", s->dir, e->d_name);
+		if (stat(p, &st) < 0)
+			continue;
+		struct journal *m = realloc(l, (n + 1) * sizeof *l);
+		if (!m)
+			break;
+		l = m;
+		snprintf(l[n].name, 64, "%s", e->d_name);
+		l[n++].mtime = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+	}
+	if (d)
+		closedir(d);
+	if (n > 1)
+		qsort(l, n, sizeof *l, by_mtime);
+	*out = l;
+	return n;
+}
+
 bool store_save(struct store *s)
 {
 	if (!s->dir)
@@ -1222,13 +1302,98 @@ bool store_save(struct store *s)
 			free(t);
 		}
 	}
+	/* the other instances' journals: a running one's entries this one doesn't know; an
+	 * ended one's whole, unless replayed at load already */
+	char (*drop)[64] = NULL;
+	int ndrop = 0;
+	struct journal *jl = NULL;
+	int nj = journals(s, &jl);
+	for (int i = 0; i < nj; i++) {
+		int pid = atoi(jl[i].name + sizeof "planner.journal");
+		if (pid == jid_of(s))
+			continue;
+		bool alive = pid > 0 && (kill(pid, 0) == 0 || errno == EPERM);
+		bool seen = has_name(s->replayed, s->nrep, jl[i].name);
+		if (!alive && !seen) {
+			char *j = read_all(s->dir, jl[i].name);
+			if (j)
+				replay(s, j);
+			free(j);
+		} else if (alive) {
+			char *j = read_all(s->dir, jl[i].name);
+			if (j) {
+				struct store o;
+				store_init(&o, NULL);
+				store_parse_ics(&o, j);
+				take_foreign(s, &o);
+				store_free(&o);
+			}
+			free(j);
+		}
+		if (!alive) {
+			char (*d)[64] = realloc(drop, (ndrop + 1) * sizeof *drop);
+			if (d) {
+				drop = d;
+				snprintf(drop[ndrop++], 64, "%s", jl[i].name);
+			}
+		}
+	}
+	free(jl);
 	char *t = store_ics(s);
 	bool ok = t && write_atomic(s->dir, "planner.ics", t);
 	free(t);
 	if (ok && stat(p, &st) == 0)
 		seen_set(s, &st);
+	if (ok) { /* planner.ics holds them now */
+		snprintf(p, sizeof p, "%s/planner.journal.%d", s->dir, jid_of(s));
+		unlink(p);
+		for (int i = 0; i < ndrop; i++) {
+			snprintf(p, sizeof p, "%s/%s", s->dir, drop[i]);
+			unlink(p);
+		}
+		free(s->replayed);
+		s->replayed = NULL;
+		s->nrep = 0;
+	}
+	free(drop);
 	if (lk >= 0)
 		close(lk);
+	return ok;
+}
+
+bool store_note(struct store *s, uint32_t id)
+{
+	struct entry *x = store_get(s, id);
+	if (!s->dir || !x)
+		return true;
+	if (x->kind == E_MARK)
+		return store_save(s);
+	mkdirs(s->dir);
+	struct buf b = { 0 };
+	entry_ics(&b, x);
+	char p[4096];
+	snprintf(p, sizeof p, "%s/.lock", s->dir);
+	int lk = open(p, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (lk >= 0)
+		while (flock(lk, LOCK_EX) < 0 && errno == EINTR)
+			;
+	snprintf(p, sizeof p, "%s/planner.journal.%d", s->dir, jid_of(s));
+	int fd = open(p, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+	bool ok = fd >= 0;
+	for (size_t o = 0; ok && o < b.n;) {
+		ssize_t w = write(fd, b.p + o, b.n - o);
+		if (w < 0 && errno == EINTR)
+			continue;
+		ok = w > 0;
+		o += w > 0 ? (size_t)w : 0;
+	}
+	if (fd >= 0) {
+		ok = fdatasync(fd) == 0 && ok;
+		close(fd);
+	}
+	if (lk >= 0)
+		close(lk);
+	free(b.p);
 	return ok;
 }
 
@@ -1287,6 +1452,20 @@ bool store_load(struct store *s)
 		if (have)
 			seen_set(s, &st);
 	}
+	struct journal *jl = NULL;
+	int nj = journals(s, &jl);
+	for (int i = 0; i < nj; i++) {
+		t = read_all(s->dir, jl[i].name);
+		if (t)
+			replay(s, t);
+		free(t);
+		char (*r)[64] = realloc(s->replayed, (s->nrep + 1) * sizeof *r);
+		if (r) {
+			s->replayed = r;
+			snprintf(s->replayed[s->nrep++], 64, "%s", jl[i].name);
+		}
+	}
+	free(jl);
 	t = read_all(s->dir, "settings.conf");
 	if (t) {
 		for (char *l = strtok(t, "\n"); l; l = strtok(NULL, "\n")) {

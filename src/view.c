@@ -139,6 +139,12 @@ static void new_field(struct ctx *c, enum ekind k, struct period per, const char
 	f->first = first;
 }
 
+double pl_ink_width(double p)
+{
+	p = p < 0 ? 0 : p > 1 ? 1 : p;
+	return PL_INK_WMIN + (PL_INK_WMAX - PL_INK_WMIN) * (PL_INK_EXP == 1.0 ? p : pow(p, PL_INK_EXP));
+}
+
 /* the ink of a field at ox, oy, scaled by k (1 in its own field: ink is never scaled there),
  * word by word as its region laid it out (FR-014): an ink word's strokes moved by its dx, dy,
  * neatened while the field's Neaten is on (FR-011); a set word (edited in text mode) filled
@@ -148,6 +154,13 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 	if (!c->paint || (!f->ns && !f->nw))
 		return;
 	cairo_t *cr = c->cr;
+	{ /* nothing to draw outside what is being repainted */
+		double r, b, cx0, cy0, cx1, cy1;
+		field_extent(f, &r, &b);
+		cairo_clip_extents(cr, &cx0, &cy0, &cx1, &cy1);
+		if (ox - 8 > cx1 || oy - 8 > cy1 || ox + r * k + 8 < cx0 || oy + b * k + 8 < cy0)
+			return;
+	}
 	cairo_save(cr);
 	col(cr, c->L->pen);
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
@@ -161,17 +174,28 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 			continue;
 		int wi = field_word_of(f, raw->k);
 		double dx = wi >= 0 ? f->w[wi].dx * k : 0, dy = wi >= 0 ? f->w[wi].dy * k : 0;
-		double p = 0;
-		for (int j = 0; j < raw->n; j++)
-			p += raw->pt[j].p;
-		p /= raw->n ? raw->n : 1;
-		cairo_set_line_width(cr, fmax(0.9, (1.3 + 1.2 * p) * (k < 1 ? fmax(0.6, k) : 1)));
-		cairo_move_to(cr, ox + dx + s->pt[0].x * k, oy + dy + s->pt[0].y * k);
-		if (s->n == 1)
+		double ks = k < 1 ? fmax(0.6, k) : 1;
+#define W_AT(a, b) fmax(0.9, pl_ink_width(((a).p + (b).p) / 2) * ks)
+		if (s->n == 1) {
+			cairo_set_line_width(cr, W_AT(s->pt[0], s->pt[0]));
+			cairo_move_to(cr, ox + dx + s->pt[0].x * k, oy + dy + s->pt[0].y * k);
 			cairo_line_to(cr, ox + dx + s->pt[0].x * k + 0.01, oy + dy + s->pt[0].y * k);
-		for (int j = 1; j < s->n; j++)
-			cairo_line_to(cr, ox + dx + s->pt[j].x * k, oy + dy + s->pt[j].y * k);
-		cairo_stroke(cr);
+			cairo_stroke(cr);
+			continue;
+		}
+		/* the width follows the pressure along the stroke, as the panel's preview draws it:
+		 * runs of segments of about one width */
+		for (int j = 1; j < s->n;) {
+			double w0 = W_AT(s->pt[j - 1], s->pt[j]);
+			cairo_set_line_width(cr, w0);
+			cairo_move_to(cr, ox + dx + s->pt[j - 1].x * k, oy + dy + s->pt[j - 1].y * k);
+			do {
+				cairo_line_to(cr, ox + dx + s->pt[j].x * k, oy + dy + s->pt[j].y * k);
+				j++;
+			} while (j < s->n && fabs(W_AT(s->pt[j - 1], s->pt[j]) - w0) < 0.12);
+			cairo_stroke(cr);
+		}
+#undef W_AT
 	}
 	cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
 	for (int i = 0; i < f->nw; i++) {

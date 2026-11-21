@@ -124,6 +124,11 @@ struct store {
 	long long seen_ino, seen_size, seen_mtime;
 	char (*deleted)[48]; /* uids deleted here: another writer's copy of them stays deleted */
 	int ndel;
+	/* the journal (store_note): this instance's is planner.journal.<jid> (jid: the process
+	 * id unless set); the journals of instances that ended without saving, replayed at load */
+	int jid;
+	char (*replayed)[64];
+	int nrep;
 };
 
 void store_init(struct store *s, const char *dir);
@@ -170,6 +175,13 @@ bool store_load(struct store *s);
 /* entries; when the file changed since this store read or wrote it, the entries only the
  * file has (written by another instance) are taken in first, except those deleted here */
 bool store_save(struct store *s);
+/* entry id as it is now, kept at once (FR-024) without writing the whole file: appended to
+ * this instance's journal and synced. Marks and deletes are not journalled (save them).
+ * store_load replays every journal after planner.ics, the latest of each entry winning.
+ * store_save writes planner.ics with what a running instance only journalled (entries it
+ * doesn't know) and what an ended one left, then removes its own journal and the ended
+ * ones'; a running instance's journal stays until that instance saves */
+bool store_note(struct store *s, uint32_t id);
 bool store_save_choices(struct store *s);
 bool store_save_settings(struct store *s);
 /* the entries' file as text (tests: a template switch must leave it byte for byte) */
