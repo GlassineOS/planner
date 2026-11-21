@@ -94,9 +94,6 @@ struct store {
 	long long seen_ino, seen_size, seen_mtime;
 	char (*deleted)[48]; /* uids deleted here: another writer's copy of them stays deleted */
 	int ndel;
-	char (*filed)[48];   /* uids the file held when last read or written: one gone from it
-	                      * since was deleted by another writer */
-	int nfiled;
 };
 
 void store_init(struct store *s, const char *dir);
@@ -108,6 +105,25 @@ void store_delete(struct store *s, uint32_t id);
 int store_list(struct store *s, enum ekind k, struct period p, const char *slot, struct entry **out, int max);
 /* timed and all-day events touching day */
 int store_events(struct store *s, int day, struct entry **out, int max);
+
+/* ---- a field's writing region applied to the store (wl.c; tests drive it without Wayland) ---- */
+
+/* what a field makes when a stroke comes and it has no entry: an empty row's entry, or the
+ * same again when its entry was emptied (struck out) and deleted. kind E_NKINDS: nothing */
+struct fmake {
+	enum ekind kind;
+	struct period per;
+	char slot[32];
+	int rank;
+};
+/* a stroke for the field whose entry is *entry (0: none yet): made when there is none, the
+ * stroke kept with it; *entry set. NULL when nothing is to be made */
+struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake *mk, uint32_t k,
+			   const struct pl_point *p, int n);
+/* the region's value: strokes that left (gone), the text and the saved state. An entry other
+ * than an event whose ink and text are all gone is deleted, *entry = 0 (true) */
+bool field_value(struct store *s, uint32_t *entry, const char *text, const uint32_t *gone, size_t ngone,
+		 const void *state, size_t len);
 
 /* the template a period uses, and how it got it: 0 its own, 1 a range, 2 onwards, 3 default */
 const char *store_template(const struct store *s, struct period p, int *how);

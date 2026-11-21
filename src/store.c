@@ -214,7 +214,6 @@ void store_free(struct store *s)
 	free(s->c);
 	free(s->dir);
 	free(s->deleted);
-	free(s->filed);
 	memset(s, 0, sizeof *s);
 }
 
@@ -335,6 +334,44 @@ int store_events(struct store *s, int day, struct entry **out, int max)
 	}
 	qsort(out, n, sizeof *out, by_start);
 	return n;
+}
+
+/* ---- a field's region ---- */
+
+struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake *mk, uint32_t k,
+			   const struct pl_point *p, int n)
+{
+	struct entry *e = *entry ? store_get(s, *entry) : NULL;
+	if (!e) {
+		if (!mk || mk->kind >= E_NKINDS)
+			return NULL;
+		e = store_add(s, mk->kind, mk->per);
+		if (!e)
+			return NULL;
+		e->rank = mk->rank;
+		snprintf(e->slot, sizeof e->slot, "%s", mk->slot);
+		*entry = e->id;
+	}
+	field_add_stroke(&e->f, k, p, n);
+	return e;
+}
+
+bool field_value(struct store *s, uint32_t *entry, const char *text, const uint32_t *gone, size_t ngone,
+		 const void *state, size_t len)
+{
+	struct entry *e = *entry ? store_get(s, *entry) : NULL;
+	if (!e)
+		return false;
+	for (size_t i = 0; i < ngone; i++)
+		field_remove_stroke(&e->f, gone[i]);
+	field_set_value(&e->f, text, state, len);
+	if (e->kind != E_EVENT && field_empty(&e->f)) {
+		/* all its ink went (struck out): the row is empty again, not an entry */
+		store_delete(s, e->id);
+		*entry = 0;
+		return true;
+	}
+	return false;
 }
 
 /* ---- template choices ---- */
@@ -923,32 +960,8 @@ static void take_foreign(struct store *s, struct store *o)
 		}
 }
 
-/* the entries s read from the file before that another writer has deleted since */
-static void drop_deleted_elsewhere(struct store *s, struct store *o)
-{
-	for (int i = s->n - 1; i >= 0; i--) {
-		struct entry *x = s->e[i];
-		if (has_uid(s->filed, s->nfiled, x->uid) && !by_uid(o, x->uid)) {
-			field_free(&x->f);
-			free(x);
-			memmove(&s->e[i], &s->e[i + 1], (s->n - i - 1) * sizeof *s->e);
-			s->n--;
-		}
-	}
-}
-
-static void filed_set(struct store *s)
-{
-	free(s->filed);
-	s->filed = s->n ? malloc(s->n * sizeof *s->filed) : NULL;
-	s->nfiled = 0;
-	for (int i = 0; s->filed && i < s->n; i++)
-		snprintf(s->filed[s->nfiled++], 48, "%s", s->e[i]->uid);
-}
-
 static void seen_set(struct store *s, const struct stat *st)
 {
-	filed_set(s);
 	s->seen = true;
 	s->seen_ino = (long long)st->st_ino;
 	s->seen_size = (long long)st->st_size;
@@ -981,7 +994,6 @@ bool store_save(struct store *s)
 			struct store o;
 			store_init(&o, NULL);
 			store_parse_ics(&o, t);
-			drop_deleted_elsewhere(s, &o);
 			take_foreign(s, &o);
 			store_free(&o);
 			free(t);

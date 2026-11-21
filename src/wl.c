@@ -32,6 +32,8 @@ struct region {
 	char name[96];
 	uint32_t entry;       /* 0 until its first stroke makes one (an empty row) */
 	struct vfield f;      /* the field it was made for (its kind, what to make) */
+	struct fmake mk;      /* what a stroke makes when it has no entry (an empty row, or its
+	                       * entry struck out and deleted before the page settles) */
 	bool live;            /* still a field of the view */
 	double x, y, w, h;    /* as last set */
 	struct region *next;
@@ -155,18 +157,6 @@ static void relayout_later(void)
 	P.dirty = true;
 }
 
-static struct entry *make_entry(struct region *rg)
-{
-	struct vfield *f = &rg->f;
-	struct entry *e = store_add(&P.s, f->ekind, f->per);
-	if (!e)
-		return NULL;
-	e->rank = f->rank;
-	snprintf(e->slot, sizeof e->slot, "%s", f->slot);
-	rg->entry = e->id;
-	return e;
-}
-
 static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct ghw_point *p, size_t n)
 {
 	struct region *rg = region_of(r);
@@ -190,21 +180,19 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 		relayout_later();
 		return;
 	}
-	struct entry *e = rg->entry ? store_get(&P.s, rg->entry) : NULL;
-	if (!e && rg->f.k == F_NEW)
-		e = make_entry(rg);
-	if (!e)
-		return;
 	struct pl_point *q = malloc(n * sizeof *q);
 	if (!q)
 		return;
 	for (size_t i = 0; i < n; i++)
 		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
-	field_add_stroke(&e->f, k, q, (int)n);
+	bool made = !rg->entry || !store_get(&P.s, rg->entry);
+	struct entry *e = field_stroke(&P.s, &rg->entry, &rg->mk, k, q, (int)n);
 	free(q);
+	if (!e)
+		return;
 	save(); /* FR-024: kept at once */
 	P.dirty = true;
-	if (rg->f.k == F_NEW)
+	if (made)
 		relayout_later(); /* a new row to write in, after the pause */
 }
 
@@ -212,18 +200,10 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 		     const uint32_t *gone, size_t ngone, const void *state, size_t len)
 {
 	struct region *rg = region_of(r);
-	struct entry *e = rg && rg->entry ? store_get(&P.s, rg->entry) : NULL;
-	if (!e)
+	if (!rg || !rg->entry || !store_get(&P.s, rg->entry))
 		return;
-	for (size_t i = 0; i < ngone; i++)
-		field_remove_stroke(&e->f, gone[i]);
-	field_set_value(&e->f, text, state, len);
-	if (e->kind != E_EVENT && field_empty(&e->f)) {
-		/* all its ink went (struck out): the row is empty again, not an entry */
-		store_delete(&P.s, e->id);
-		rg->entry = 0;
-		relayout_later();
-	}
+	if (field_value(&P.s, &rg->entry, text, gone, ngone, state, len))
+		relayout_later(); /* all its ink went (struck out): the row is empty again */
 	save();
 	if (ngone)
 		P.dirty = true;
@@ -304,6 +284,8 @@ static void sync_regions(void)
 			}
 			rg->f = *f;
 			rg->entry = f->k == F_ENTRY ? f->entry : 0;
+			rg->mk = (struct fmake){ f->k == F_NEW ? f->ekind : E_NKINDS, f->per, "", f->rank };
+			snprintf(rg->mk.slot, sizeof rg->mk.slot, "%s", f->slot);
 			ghw_region_set_context(rg->r, GHW_NORMAL, 0, "");
 			ghw_region_set_reading(rg->r, f->k != F_FREE);
 			ghw_region_set_layer(rg->r, f->layer);
@@ -318,6 +300,11 @@ static void sync_regions(void)
 		}
 		rg->live = true;
 		rg->f = *f;
+		struct entry *me = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
+		if (me) { /* struck out and deleted, its row makes the same entry again */
+			rg->mk = (struct fmake){ me->kind == E_EVENT ? E_NKINDS : me->kind, me->per, "", me->rank };
+			snprintf(rg->mk.slot, sizeof rg->mk.slot, "%s", me->slot);
+		}
 		if (rg->entry && f->k == F_NEW)
 			rg->f.k = F_ENTRY;
 		double x = f->x, y = f->y, w = f->w, h = f->h;
