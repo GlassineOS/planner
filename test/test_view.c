@@ -197,6 +197,48 @@ int main(void)
 #undef DARK
 		store_free(&t);
 	}
+	/* Set in Autograph (FR-011): a word that was read, shown set (its outline, with its strokes
+	 * kept), is filled from the outline while the switch is on and drawn as its ink while off */
+	{
+		struct store t;
+		store_init(&t, NULL);
+		int d0 = today;
+		struct entry *e = store_add(&t, E_TODO, period_of(P_DAY, d0));
+		e->rank = 1;
+		sample_ink(&e->f, "call", 2, 24, 3);
+		uint32_t k0 = e->f.s[0].k;
+		float path[] = { 0, 120, 8, 1, 150, 8, 1, 150, 26, 1, 120, 26, 4 };
+		struct pl_word wd[1] = { { 0, 4, true, &k0, 1, 0, 0, { 120, 8, 30, 18 }, path, 13 } };
+		uint32_t ent = e->id;
+		field_value(&t, &ent, "call", wd, 1, NULL, 0, NULL, 0);
+		CHECK(e->f.ns == 1 && e->f.nw == 1 && e->f.w[0].nks == 1); /* the strokes stay */
+		for (int on = 0; on < 2; on++) {
+			t.autograph = on;
+			struct view w = { .per = period_of(P_DAY, d0), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+			view_layout(&w, &t, &L, cr);
+			const struct vfield *f = view_field_of(&w, ent);
+			CHECK(f != NULL);
+			cairo_save(cr);
+			cairo_set_source_rgb(cr, 1, 1, 1);
+			cairo_paint(cr);
+			view_paint(&w, &t, &L, cr);
+			cairo_restore(cr);
+			cairo_surface_flush(sf);
+			uint32_t *px = (uint32_t *)cairo_image_surface_get_data(sf);
+			int stride = cairo_image_surface_get_stride(sf) / 4;
+#define DARK(X, Y) ((px[(int)(Y) * stride + (int)(X)] & 0xff) < 0x60)
+			if (f) {
+				int ink = 0;
+				for (int yy = 0; yy < 30; yy++)
+					for (int xx = 0; xx < 60; xx++)
+						ink += DARK(f->x + xx, f->y + yy);
+				CHECK(on ? DARK(f->x + 135, f->y + 17) : !DARK(f->x + 135, f->y + 17));
+				CHECK(on ? ink == 0 : ink > 10); /* the strokes: not drawn while shown set */
+			}
+#undef DARK
+		}
+		store_free(&t);
+	}
 	/* titles (FR-018): one that fits is whole (a tap opens text mode), a long one in a short
 	 * block shrinks to the smallest readable size, then is cut (a tap shows it whole) */
 	{

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later
  * The view's fields as the handwriting service's writing regions: one region per field,
  * kept across layouts (its ink stays) and told where the field now lies. After every layout
- * each live region's rectangle, clip, layer, guides and reading equal the field's (a moved
+ * each live region's rectangle, clip, layer, guides, reading and display equal the field's (a moved
  * or stretched event, a template or view switch, the keyboard, the page's move). No Wayland
  * here: wl.c passes the handwriting calls, the tests pass recorders. */
 #ifndef PL_REGIONS_H
@@ -22,6 +22,7 @@ struct region {
 	double x, y, w, h;    /* the rectangle as last set */
 	int cx, cy, cw, ch;   /* the clip as last set (cw 0: none) */
 	int layer, reading;   /* as last set (-1: not yet) */
+	int display;          /* as last set: 1 its words shown set in Autograph (-1: not yet) */
 	double guide, first;  /* as last set (guide -1: not yet) */
 	struct region *next;
 };
@@ -36,6 +37,8 @@ struct region_ops {
 	void (*layer)(struct ghw_region *r, int layer);
 	void (*guides)(struct ghw_region *r, double spacing, double first);
 	void (*reading)(struct ghw_region *r, int on);
+	/* the words shown as ink (0) or set in Autograph (1): the field's Set in Autograph */
+	void (*display)(struct ghw_region *r, int set);
 	void *ud;
 };
 
@@ -46,6 +49,10 @@ struct region_env {
 	bool pen_down;                           /* a stroke is being written */
 	bool (*covered)(const struct vfield *f); /* under an overlay: takes no strokes */
 };
+
+/* the display a region's field asks for: 1 when its words are shown set in Autograph (its
+ * own Set in Autograph, else the settings'; FR-011), 0 for ink and fields that are no entry */
+int regions_display(const struct store *s, const struct region *rg);
 
 /* the regions after a layout of e->v (its fields): made, moved, set, or gone */
 void regions_sync(struct region **list, const struct region_env *e, const struct region_ops *ops);

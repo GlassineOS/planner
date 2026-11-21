@@ -401,6 +401,8 @@ static struct ghw_region *region_make(void *ud, struct region *rg)
 		bool on = ne ? field_neaten(&P.s, &ne->f) : P.s.neaten;
 		ghw_region_set_neaten(rg->r, on, P.s.strength);
 	}
+	/* Set in Autograph before its ink comes back: one value, in the display asked for */
+	ghw_region_set_display(rg->r, (rg->display = regions_display(&P.s, rg)) ? GHW_DISPLAY_SET : GHW_DISPLAY_INK);
 	struct entry *e = rg->entry ? store_get(&P.s, rg->entry) : NULL;
 	if (e)
 		restore(rg, e);
@@ -419,6 +421,7 @@ static void sync_regions(void)
 		.layer = ghw_region_set_layer,
 		.guides = ghw_region_set_guides,
 		.reading = ghw_region_set_reading,
+		.display = ghw_region_set_display,
 	};
 	struct region_env env = { &P.v, &P.s, P.H, P.pen_down, covered };
 	regions_sync(&P.regions, &env, &ops);
