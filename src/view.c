@@ -2373,11 +2373,11 @@ static void year(struct ctx *c)
 		ui_text_wrap(&c->g, &lf, lead, 16, 64, W - 32, 3, 1.4, L->soft);
 	double sx;
 	double y = scopes(c, 64 + lh + 12, &sx);
-	/* the year shown and its arrows (.pl-ynav): ‹ 2027 ›; turned, the days' year puts them at
-	 * the end of the scopes' row (.pl-ynav.is-in) when they fit there, so that the twelve
-	 * months and the choices below them fit the window */
+	/* the year shown and its arrows (.pl-ynav): ‹ 2027 ›; turned, they go to the end of the
+	 * scopes' row (.pl-ynav.is-in) when they fit there, so that the twelve months and the
+	 * choices below them fit the window */
 	const double NAVW = 40 + 8 + 56 + 8 + 40;
-	bool nav_in = k == P_DAY && W > v->H && sx + 14 + NAVW <= W - 16;
+	bool turned = W > v->H, nav_in = turned && sx + 14 + NAVW <= W - 16;
 	int yr, m0, d0;
 	day_to_ymd(v->per.start, &yr, &m0, &d0);
 	yr += v->year_off;
@@ -2443,7 +2443,7 @@ static void year(struct ctx *c)
 		 * turned, Monday first */
 		UiFont mf = { L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, hf9 = fam(L->mono, 500, 0, 9), df = fam(L->mono, 600, 0, 9);
 		static const char *HD[] = { "M", "T", "W", "T", "F", "S", "S" };
-		int per = W > v->H ? 4 : 3;
+		int per = turned ? 4 : 3;
 		double colw = (W - 32 - (per - 1) * 14) / per, dw = (colw - 6 * 3) / 7;
 		for (int r = 0; r < 12 / per; r++) {
 			double rowh = 0;
@@ -2469,17 +2469,22 @@ static void year(struct ctx *c)
 		}
 		y -= 8;
 	} else {
-		/* the months (.pl-year, .pl-ym): a row each, a cell per period */
+		/* the months (.pl-year, .pl-ym): a row each, a cell per period; turned, two columns
+		 * of six months (January to June, July to December) */
+		int cols = turned ? 2 : 1;
+		double colw = (W - 32 - (cols - 1) * 14) / cols;
 		for (int m = 1; m <= 12; m++) {
+			int col = (m - 1) / (12 / cols), row = (m - 1) % (12 / cols);
+			double mx = 16 + col * (colw + 14), my = y + row * (34 + 4);
 			char mn[4];
 			snprintf(mn, sizeof mn, "%.3s", MON[m - 1]);
-			tc(c, &(UiFont){ L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, mn, 16, y + 17, 0, 34, L->soft);
+			tc(c, &(UiFont){ L->mono, 500, 0, 12, 0, 0, UI_CASE_NONE }, mn, mx, my + 17, 0, 34, L->soft);
 			int cl[32], nc = cells_of(k, yr, m, cl, 32);
-			double cx = 16 + 34 + 8, cw = (W - 16 - cx - 3 * (nc - 1)) / (nc ? nc : 1);
+			double cx = mx + 34 + 8, cw = (mx + colw - cx - 3 * (nc - 1)) / (nc ? nc : 1);
 			for (int i = 0; i < nc; i++)
-				year_cell(c, period_of(k, cl[i]), cx + i * (cw + 3), y + 4, cw, 26, 3, &cf, ts, nts, letter, 3);
-			y += 34 + 4;
+				year_cell(c, period_of(k, cl[i]), cx + i * (cw + 3), my + 4, cw, 26, 3, &cf, ts, nts, letter, 3);
 		}
+		y += (12 / cols) * (34 + 4);
 	}
 	/* the choices that reach into the shown year (.pl-ranges): each with Change or Remove;
 	 * one that started in another year is named with its year */
