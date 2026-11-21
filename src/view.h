@@ -29,6 +29,7 @@ enum fkind {
 	F_NEW,    /* an empty row: the first stroke makes the entry */
 	F_FREE,   /* an agenda's free time: reading off, a drawn block makes an event */
 	F_NAME,   /* the template editor's name, written with the pen (no entry) */
+	F_SLOT,   /* a new slot's name in the template editor (no entry) */
 };
 struct vfield {
 	enum fkind k;

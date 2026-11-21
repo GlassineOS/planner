@@ -289,6 +289,8 @@ it says that it needs the handwriting service and why, and doesn't start.
   those periods use instead.
 - **FR-032**: Editing a template changes it wherever it is used, past periods included.
   Copying a template before editing is the way to keep the old arrangement for some periods.
+  A template the planner comes with that the person edited can go back to the version it
+  came with, after asking; like an edit, that applies wherever it is used.
 - **FR-033**: The person can choose a template for a single period, for a range of periods
   (all weeks from April to June), or for every period of a kind from a date onwards, ahead
   of time; a choice for a single period wins over a range. The person can switch the
@@ -318,6 +320,7 @@ it says that it needs the handwriting service and why, and doesn't start.
   minimum includes room for that mark and for one empty row to write in.
 - **FR-042**: A widget may have settings that change what it shows (an agenda's first and
   last hour, a to-do list's period, a notes widget's slot), set per use in a template.
+  A notes widget's slot is one already in use or a new name the person writes with the pen.
 
 ### Layout
 

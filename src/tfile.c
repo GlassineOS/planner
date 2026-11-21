@@ -535,6 +535,25 @@ bool tmpl_user_put(const char *dir, struct tmpl *t)
 	return ok;
 }
 
+bool tmpl_user_remove(const char *dir, const char *id)
+{
+	int i = 0;
+	while (i < nuser && strcmp(user[i]->id, id))
+		i++;
+	if (i == nuser)
+		return false;
+	tmpl_free(user[i]);
+	memmove(&user[i], &user[i + 1], (nuser - i - 1) * sizeof *user);
+	nuser--;
+	if (dir && valid_id(id)) {
+		char p[4200];
+		snprintf(p, sizeof p, "%s/templates/%s.tmpl", dir, id);
+		if (unlink(p) < 0 && errno != ENOENT)
+			return false;
+	}
+	return true;
+}
+
 void tmpl_new_id(char *out, int len)
 {
 	int max = 0;

@@ -149,6 +149,13 @@ int main(void)
 		CHECK(v.hit[i].a == A_ED || v.hit[i].a == A_NONE);
 	CHECK(find(&v, A_ED, ED_SAVE) && find(&v, A_ED, ED_CANCEL) && find(&v, A_ED, ED_ADD));
 	CHECK(v.g.n == 5 && !e.short_);
+	/* the head counts the periods using it: the default, so every day with entries */
+	{
+		bool def = false;
+		int u = editor_uses(&s, e.t, &def);
+		CHECK(def && u >= 1 && e.uses == u && e.is_default);
+		CHECK(!find(&v, A_ED, ED_RESTORE)); /* shipped and never edited: nothing to go back to */
+	}
 	/* select the agenda: its tag has a target for every action */
 	select_kind(&e, &v, W_AGENDA, 0);
 	view_layout(&v, &s, &L, cr);
@@ -175,6 +182,37 @@ int main(void)
 	for (int i = 0; i < v.g.n; i++)
 		if (v.g.p[i].n->wg == W_AGENDA)
 			e.target = (struct tnode *)v.g.p[i].n;
+	/* a finger dragging the notes: over the agenda's lower part, the marker says below it */
+	{
+		const struct placed *ag = NULL, *no = NULL;
+		for (int i = 0; i < v.g.n; i++) {
+			if (v.g.p[i].n->wg == W_AGENDA)
+				ag = &v.g.p[i];
+			if (v.g.p[i].n == notes)
+				no = &v.g.p[i];
+		}
+		const struct tnode *t = NULL;
+		CHECK_INT(editor_drop_at(&v.g, notes, ag->x + ag->w / 2, ag->y + ag->h - 5, &t), 3);
+		CHECK(t == ag->n);
+		CHECK_INT(editor_drop_at(&v.g, notes, ag->x + 3, ag->y + ag->h / 2, &t), 0);
+		CHECK_INT(editor_drop_at(&v.g, notes, ag->x + ag->w - 3, ag->y + ag->h / 2, &t), 1);
+		CHECK_INT(editor_drop_at(&v.g, notes, ag->x + ag->w / 2, ag->y + 3, &t), 2);
+		CHECK_INT(editor_drop_at(&v.g, notes, no->x + no->w / 2, no->y + no->h / 2, &t), -1); /* over itself: nowhere */
+		CHECK(t == NULL);
+		CHECK_INT(editor_drop_at(&v.g, notes, -50, -50, &t), -1);
+		e.drop_target = ag->n;
+		e.drop_side = 3;
+		view_layout(&v, &s, &L, cr);
+		CHECK(!find(&v, A_ED, ED_MORE)); /* the tag gives way to the marker */
+		view_paint(&v, &s, &L, cr);
+		e.drop_target = NULL;
+		e.drop_side = -1;
+		view_layout(&v, &s, &L, cr);
+		/* an edge dragged: a weight step per 60 px, along the longer axis */
+		CHECK_INT(editor_edge_steps(130, 10), 2);
+		CHECK_INT(editor_edge_steps(5, -70), -1);
+		CHECK_INT(editor_edge_steps(20, 20), 0);
+	}
 	CHECK_INT(editor_act(&e, ED_DROP, 3, NULL), ER_CHANGED);
 	view_layout(&v, &s, &L, cr);
 	const struct placed *pa = NULL, *pn = NULL;
@@ -216,6 +254,14 @@ int main(void)
 	h = find(&v, A_ED, ED_SAVE);
 	CHECK(h == NULL); /* Save is off */
 	(void)keep_sel;
+	/* turned, the status bar stays on top: the window turned is the one the planner gets */
+	{
+		double tw, th;
+		editor_turned_size(702, 896, &tw, &th);
+		CHECK(tw == 936 && th == 662);
+		editor_turned_size(936, 662, &tw, &th);
+		CHECK(tw == 702 && th == 896);
+	}
 	/* a wide row fits upright but not turned: a short turned shows too */
 	{
 		struct editor w = { 0 };
@@ -264,6 +310,33 @@ int main(void)
 	/* read back from the file */
 	tmpl_user_load(dir);
 	CHECK(tmpl_find("day-lists") && tmpl_find("day-lists")->root->c[0]->c[0]->w == 4);
+
+	/* ---- back to the shipped version: asks, then the person's file goes ---- */
+	editor_open_edit(&e, tmpl_find("day-lists"));
+	e.data = &s;
+	editor_act(&e, ED_EDIT_ALL, 0, NULL);
+	v.ed = &e;
+	view_layout(&v, &s, &L, cr);
+	CHECK(editor_edited_shipped(&e) && find(&v, A_ED, ED_RESTORE));
+	CHECK_INT(editor_act(&e, ED_RESTORE_YES, 0, dir), ER_NONE); /* not without asking */
+	CHECK_INT(editor_act(&e, ED_RESTORE, 0, NULL), ER_CHANGED);
+	CHECK_INT(e.ov, EO_RESTORE);
+	view_layout(&v, &s, &L, cr);
+	CHECK(find(&v, A_ED, ED_RESTORE_YES) && find(&v, A_ED, ED_KEEP));
+	CHECK_INT(editor_act(&e, ED_KEEP, 0, NULL), ER_CHANGED); /* Keep mine */
+	CHECK_INT(e.ov, EO_NONE);
+	CHECK(access(tp, F_OK) == 0);
+	editor_act(&e, ED_RESTORE, 0, NULL);
+	CHECK_INT(editor_act(&e, ED_RESTORE_YES, 0, dir), ER_SAVED);
+	editor_close(&e);
+	v.ed = NULL;
+	CHECK(access(tp, F_OK) != 0);
+	CHECK(tmpl_find("day-lists") == orig && tmpl_default(P_DAY) == orig);
+	view_layout(&v, &s, &L, cr);
+	CHECK(v.t == orig);
+	tmpl_user_load(dir);
+	CHECK(tmpl_find("day-lists") == orig);
+	CHECK(!tmpl_user_remove(dir, "day-lists")); /* nothing left to remove */
 
 	/* ---- Copy first, from the in-use dialog; renamed by a reading ---- */
 	editor_open_edit(&e, tmpl_find("day-lists"));
@@ -335,8 +408,115 @@ int main(void)
 	editor_act(&e, ED_ADD_W, W_NOTES, NULL);
 	CHECK(e.sel && e.sel->slot && !strcmp(e.sel->slot, "notes") && e.sel->period == P_DAY);
 	e.data = &s;
-	CHECK_INT(editor_act(&e, ED_SLOT, 0, NULL), ER_CHANGED);
-	CHECK(strcmp(e.sel->slot, "notes"));
+	struct tnode *nw = e.sel;
+	CHECK_INT(editor_act(&e, ED_SETTINGS, 0, NULL), ER_CHANGED);
+	view_layout(&v, &s, &L, cr);
+	CHECK(find(&v, A_ED, ED_SLOTS) != NULL);
+	CHECK_INT(editor_act(&e, ED_SLOTS, 0, NULL), ER_CHANGED);
+	CHECK_INT(e.ov, EO_SLOT);
+	view_layout(&v, &s, &L, cr);
+	{
+		const char *sl[32];
+		int ns = editor_slots(&s, sl, 32);
+		CHECK(ns >= 1 && find(&v, A_ED, ED_SLOT_PICK) && find(&v, A_ED, ED_KEEP));
+		int nslot = 0;
+		for (int i = 0; i < v.nf; i++)
+			nslot += v.f[i].k == F_SLOT;
+		CHECK_INT(nslot, 1); /* the new slot's field */
+		for (int i = 0; i < v.nf; i++)
+			CHECK(v.f[i].k == F_SLOT || v.f[i].k == F_NAME);
+		CHECK_INT(editor_slot_days(&s, "notes", P_DAY), 1);
+		CHECK_INT(editor_slot_days(&s, "nothing", P_DAY), 0);
+		CHECK_INT(editor_act(&e, ED_SLOT_PICK, ns, NULL), ER_NONE);
+	}
+	/* a new slot written with the pen: ink, then its reading names the slot (and the title that named it) */
+	struct pl_point pts[3] = { { 10, 10, 1, 0 }, { 20, 12, 1, 8 }, { 30, 11, 1, 16 } };
+	editor_ink(&e, 1, 7, pts, 3);
+	editor_ink(&e, 1, 8, pts, 3);
+	CHECK_INT(e.slot.ns, 2);
+	editor_ink_value(&e, 1, "", NULL, 0, NULL, 0); /* nothing read yet */
+	CHECK_STR(nw->slot, "notes");
+	uint32_t gone = 8;
+	editor_ink_value(&e, 1, "  Gratitude! ", &gone, 1, NULL, 0);
+	CHECK_INT(e.slot.ns, 1);
+	CHECK_STR(nw->slot, "gratitude");
+	CHECK_STR(nw->title, "Gratitude");
+	CHECK(e.dirty);
+	view_layout(&v, &s, &L, cr);
+	CHECK_INT(editor_act(&e, ED_KEEP, 0, NULL), ER_CHANGED); /* back to the widget's settings */
+	CHECK_INT(e.ov, EO_WSET);
+	/* or one in use, picked */
+	editor_act(&e, ED_SLOTS, 0, NULL);
+	CHECK_INT(e.slot.ns, 0); /* the field starts empty each time */
+	{
+		const char *sl[32];
+		int ns = editor_slots(&s, sl, 32), at = -1;
+		for (int i = 0; i < ns; i++)
+			if (!strcmp(sl[i], "notes"))
+				at = i;
+		CHECK_INT(editor_act(&e, ED_SLOT_PICK, at, NULL), ER_CHANGED);
+	}
+	CHECK_STR(nw->slot, "notes");
+	CHECK_STR(nw->title, "Notes");
+	CHECK_INT(e.ov, EO_WSET);
+	editor_act(&e, ED_KEEP, 0, NULL);
+	/* the name, written with the pen the same way */
+	editor_act(&e, ED_NAME, 0, NULL);
+	editor_ink(&e, 0, 9, pts, 3);
+	editor_ink_value(&e, 0, "Journal", NULL, 0, NULL, 0);
+	CHECK_STR(e.t->name, "Journal");
+	CHECK_INT(e.name.ns, 1);
+	/* a slot for anything but notes: none */
+	editor_act(&e, ED_ADD_W, W_TODO, NULL);
+	CHECK_INT(editor_act(&e, ED_SLOTS, 0, NULL), ER_NONE);
+	editor_act(&e, ED_REMOVE, 0, NULL);
+	CHECK(!e.notice[0]); /* a to-do list's entries never needed it */
+	/* the only notes widget for a slot with entries: removed, and it says the notes stay */
+	e.sel = nw;
+	CHECK_INT(editor_act(&e, ED_REMOVE, 0, NULL), ER_CHANGED);
+	CHECK_STR(e.notice, "Notes on 1 day stay stored, unchanged.");
+	view_layout(&v, &s, &L, cr);
+	view_paint(&v, &s, &L, cr);
+	editor_act(&e, ED_ADD, 0, NULL); /* the next action: the notice goes */
+	CHECK(!e.notice[0]);
+	editor_act(&e, ED_ADD_W, W_NOTES, NULL);
+	/* a second widget for the slot: removing one says nothing, also when one names the
+	 * template's own period and the other leaves it to the template */
+	struct tnode *n1 = e.sel;
+	editor_act(&e, ED_ADD_W, W_NOTES, NULL);
+	n1->period = -1;
+	e.sel->period = P_DAY;
+	editor_act(&e, ED_REMOVE, 0, NULL);
+	CHECK(!e.notice[0]);
+	/* a slot of several words, with an umlaut: read, saved in the template file, read back */
+	editor_act(&e, ED_SELECT, 0, NULL);
+	e.sel = n1;
+	editor_act(&e, ED_SLOTS, 0, NULL);
+	editor_ink(&e, 1, 11, pts, 3);
+	editor_ink_value(&e, 1, "Für später, ok", NULL, 0, NULL, 0);
+	CHECK_STR(n1->slot, "für später ok");
+	CHECK_STR(n1->title, "Für später ok");
+	{
+		char *txt = tmpl_to_text(e.t);
+		struct tmpl *back = tmpl_from_text(txt);
+		CHECK(back && same_tree(back->root, e.t->root));
+		tmpl_free(back);
+		free(txt);
+		/* a reading too long for a slot is cut on a whole character */
+		editor_ink_value(&e, 1, "äääääääääääääääääääääääää", NULL, 0, NULL, 0);
+		CHECK(strlen(n1->slot) <= 31 && strlen(n1->slot) % 2 == 0);
+	}
+	editor_act(&e, ED_KEEP, 0, NULL);
+	editor_act(&e, ED_KEEP, 0, NULL);
+	/* the editor over the cog's text mode for the whole view: still no entry field */
+	v.tm = 2;
+	view_layout(&v, &s, &L, cr);
+	for (int i = 0; i < v.nf; i++)
+		CHECK(v.f[i].k != F_ENTRY && v.f[i].k != F_NEW && v.f[i].k != F_FREE);
+	for (int i = 0; i < v.nh; i++)
+		CHECK(v.hit[i].a == A_ED || v.hit[i].a == A_NONE);
+	v.tm = 0;
+	CHECK(!editor_edited_shipped(&e)); /* a new one has no shipped version */
 	view_layout(&v, &s, &L, cr);
 	CHECK_INT(editor_act(&e, ED_SAVE, 0, dir), ER_SAVED);
 	editor_close(&e);
@@ -347,6 +527,15 @@ int main(void)
 	store_choose(&s, v.per, v.per.start, cid);
 	view_layout(&v, &s, &L, cr);
 	CHECK(v.t == cp);
+	{
+		bool def = true;
+		int before = editor_uses(&s, orig, NULL);
+		CHECK_INT(editor_uses(&s, cp, &def), 1); /* this day, chosen */
+		CHECK(!def);
+		store_choose(&s, period_of(P_DAY, v.per.start + 40), v.per.start + 40, cid); /* a day without entries, chosen */
+		CHECK_INT(editor_uses(&s, cp, NULL), 2);
+		CHECK_INT(editor_uses(&s, orig, NULL), before);
+	}
 	store_choose(&s, v.per, v.per.start, "day-lists");
 	/* a broken file falls back to the kind's default */
 	FILE *bf = fopen(tp, "w");

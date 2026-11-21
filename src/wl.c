@@ -246,12 +246,12 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 	if (!rg || !n)
 		return;
 	P.pen_up_ms = now_ms();
-	if (rg->f.k == F_NAME) { /* the template's name: kept with the editor, never an entry */
+	if (rg->f.k == F_NAME || rg->f.k == F_SLOT) { /* the editor's names: kept with the editor, never an entry */
 		struct pl_point *q = malloc(n * sizeof *q);
 		if (q) {
 			for (size_t i = 0; i < n; i++)
 				q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
-			field_add_stroke(&P.ed.name, k, q, (int)n);
+			editor_ink(&P.ed, rg->f.k == F_SLOT, k, q, (int)n);
 			free(q);
 		}
 		P.dirty = true;
@@ -294,11 +294,13 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 		     const uint32_t *gone, size_t ngone, const void *state, size_t len)
 {
 	struct region *rg = region_of(r);
-	if (rg && rg->f.k == F_NAME) {
-		for (size_t i = 0; i < ngone; i++)
-			field_remove_stroke(&P.ed.name, gone[i]);
-		field_set_value(&P.ed.name, text, state, len);
-		editor_name_value(&P.ed, text);
+	if (rg && (rg->f.k == F_NAME || rg->f.k == F_SLOT)) {
+		char was[32];
+		snprintf(was, sizeof was, "%s", P.ed.sel && P.ed.sel->slot ? P.ed.sel->slot : "");
+		editor_ink_value(&P.ed, rg->f.k == F_SLOT, text, gone, (int)ngone, state, len);
+		/* a new slot's name read: the page behind shows it (the field keeps its place) */
+		if (rg->f.k == F_SLOT && P.ed.sel && strcmp(P.ed.sel->slot ? P.ed.sel->slot : "", was))
+			relayout_later();
 		P.dirty = true;
 		return;
 	}
@@ -846,6 +848,9 @@ static void editor_relayout(void)
 static void editor_enter(int how)
 {
 	struct view *v = &P.v;
+	if (v->tm)
+		tm_close(); /* the editor's page has no entry to type into, and doesn't scroll */
+	v->scroll = 0;
 	bool picker = v->ov == OV_PICKER;
 	const struct tmpl *t = v->t;
 	if (picker && v->ring[0] && tmpl_find(v->ring))
@@ -1199,6 +1204,17 @@ static void finger_down(double x, double y)
 
 static void finger_motion(double x, double y)
 {
+	if (P.ed_drag == 1 && (fabs(x - P.tx) >= 24 || fabs(y - P.ty) >= 24)) {
+		/* the widget dragged: a marker where it would land (board event.drag move) */
+		const struct tnode *t = NULL;
+		int side = editor_drop_at(&P.v.g, P.ed.sel, x - 12, y - 60 - 12, &t);
+		if (t != P.ed.drop_target || side != P.ed.drop_side) {
+			P.ed.drop_target = t;
+			P.ed.drop_side = side;
+			editor_relayout();
+		}
+		return;
+	}
 	if (!P.drag)
 		return;
 	struct entry *e = store_get(&P.s, P.drag);
@@ -1224,28 +1240,22 @@ static void editor_drag_end(double x, double y)
 {
 	struct view *v = &P.v;
 	double dx = x - P.ed_x0, dy = y - P.ed_y0;
+	P.ed.drop_target = NULL;
+	P.ed.drop_side = -1;
 	if (P.ed_drag == 2) { /* the edge: a weight step per 60 px along the drag */
-		int steps = (int)lround((fabs(dx) > fabs(dy) ? dx : dy) / 60);
+		int steps = editor_edge_steps(dx, dy);
 		for (int i = 0; i < abs(steps); i++)
 			editor_act(&P.ed, steps > 0 ? ED_MORE : ED_LESS, 0, NULL);
 		editor_relayout();
 		return;
 	}
-	for (int i = 0; i < v->g.n; i++) { /* the widget: onto the nearest edge of the one under the finger */
-		const struct placed *p = &v->g.p[i];
-		double px = 12 + p->x, py = 60 + 12 + p->y;
-		if (p->n == P.ed.sel || x < px || x >= px + p->w || y < py || y >= py + p->h)
-			continue;
-		double d[4] = { x - px, px + p->w - x, y - py, py + p->h - y };
-		int side = 0;
-		for (int k = 1; k < 4; k++)
-			if (d[k] < d[side])
-				side = k;
-		P.ed.target = (struct tnode *)p->n;
+	const struct tnode *t = NULL; /* the widget: onto the nearest edge of the one under the finger */
+	int side = editor_drop_at(&v->g, P.ed.sel, x - 12, y - 60 - 12, &t);
+	if (side >= 0) {
+		P.ed.target = (struct tnode *)t;
 		editor_act(&P.ed, ED_DROP, side, NULL);
-		editor_relayout();
-		return;
 	}
+	editor_relayout();
 }
 
 static void finger_up(double x, double y)
@@ -1256,6 +1266,10 @@ static void finger_up(double x, double y)
 		return;
 	}
 	P.ed_drag = 0;
+	if (P.ed.drop_target) { /* a short drag: no drop, the marker goes */
+		P.ed.drop_target = NULL;
+		editor_relayout();
+	}
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
 		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0);
