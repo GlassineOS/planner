@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "frame.h"
+#include "trace.h"
 
 struct frect frect_union(struct frect a, struct frect b)
 {
@@ -19,6 +20,7 @@ struct frect frect_union(struct frect a, struct frect b)
 static void draw(uint32_t *px, int w, int h, const struct frect *clip, frame_paint paint, void *ud)
 {
 	cairo_surface_t *cs = cairo_image_surface_create_for_data((unsigned char *)px, CAIRO_FORMAT_RGB24, w, h, w * 4);
+	double t0 = pl_trace ? pl_tr_now() : 0;
 	cairo_t *cr = cairo_create(cs);
 	if (clip) {
 		cairo_rectangle(cr, clip->x, clip->y, clip->w, clip->h);
@@ -28,12 +30,30 @@ static void draw(uint32_t *px, int w, int h, const struct frect *clip, frame_pai
 	cairo_destroy(cr);
 	cairo_surface_flush(cs);
 	cairo_surface_destroy(cs);
+	if (pl_trace)
+		pl_tr_paint_ms = pl_tr_now() - t0;
+}
+
+/* n pixels differ: two at a time (musl's memcmp goes byte by byte, ~4x slower here) */
+static bool px_diff(const uint32_t *a, const uint32_t *b, int n)
+{
+	int i = 0;
+	uint64_t d = 0;
+	for (; i + 2 <= n; i += 2) {
+		uint64_t x, y;
+		memcpy(&x, a + i, 8);
+		memcpy(&y, b + i, 8);
+		d |= x ^ y;
+	}
+	if (i < n)
+		d |= a[i] ^ b[i];
+	return d != 0;
 }
 
 static bool tile_diff(const struct frame *f, int tx, int ty, int tw, int th)
 {
 	for (int y = ty; y < ty + th; y++)
-		if (memcmp(f->cur + (size_t)y * f->w + tx, f->alt + (size_t)y * f->w + tx, (size_t)tw * 4))
+		if (px_diff(f->cur + (size_t)y * f->w + tx, f->alt + (size_t)y * f->w + tx, tw))
 			return true;
 	return false;
 }
@@ -113,7 +133,11 @@ int frame_update(struct frame *f, int w, int h, const struct frect *r, frame_pai
 			memcpy(f->alt + (size_t)y * w + a.x, f->cur + (size_t)y * w + a.x, (size_t)a.w * 4);
 		draw(f->cur, w, h, &a, paint, ud);
 	}
-	return diff(f, a, runs, max, box);
+	double t0 = pl_trace ? pl_tr_now() : 0;
+	int n = diff(f, a, runs, max, box);
+	if (pl_trace)
+		pl_tr_diff_ms = pl_tr_now() - t0;
+	return n;
 }
 
 void frame_free(struct frame *f)

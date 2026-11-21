@@ -21,6 +21,19 @@ static void paint(void *ud, cairo_t *cr)
 	view_paint(p->v, p->s, p->L, cr);
 }
 
+/* one pixel at (dot_x, dot_y), on white; dot_x < 0: none */
+static int dot_x = -1, dot_y;
+static void paint_dot(void *ud, cairo_t *cr)
+{
+	cairo_set_source_rgb(cr, 1, 1, 1);
+	cairo_paint(cr);
+	if (dot_x >= 0) {
+		cairo_set_source_rgb(cr, 0, 0, 0);
+		cairo_rectangle(cr, dot_x, dot_y, 1, 1);
+		cairo_fill(cr);
+	}
+}
+
 int main(void)
 {
 	setenv("GLASSINE_PLANNER_TODAY", SAMPLE_TODAY, 1);
@@ -89,6 +102,24 @@ int main(void)
 	CHECK(pl_ink_width(0) == PL_INK_WMIN && pl_ink_width(1) == PL_INK_WMAX && pl_ink_width(0.5) > PL_INK_WMIN);
 	struct frect a = { 0, 0, 0, 0 }, b = { 4, 5, 6, 7 };
 	CHECK(frect_union(a, b).w == 6 && frect_union(b, (struct frect){ 0, 0, 2, 2 }).w == 10);
+	/* a single changed pixel is found anywhere, in a frame of an odd width (the last pixel
+	 * of a row, a tile cut by the edge) */
+	{
+		struct frame d = { 0 };
+		static const int at[][2] = { { 0, 0 }, { 16, 3 }, { 99, 50 }, { 100, 50 }, { 100, 60 }, { 17, 61 } };
+		dot_x = -1;
+		frame_update(&d, 101, 61, NULL, paint_dot, NULL, runs, 64, &box);
+		for (size_t k = 0; k < sizeof at / sizeof *at; k++) {
+			dot_x = at[k][0], dot_y = at[k][1] < 61 ? at[k][1] : 60;
+			n = frame_update(&d, 101, 61, NULL, paint_dot, NULL, runs, 64, &box);
+			CHECK_INT(n, 1);
+			CHECK(box.x <= dot_x && dot_x < box.x + box.w && box.y <= dot_y && dot_y < box.y + box.h);
+			dot_x = -1;
+			n = frame_update(&d, 101, 61, NULL, paint_dot, NULL, runs, 64, &box);
+			CHECK_INT(n, 1);
+		}
+		frame_free(&d);
+	}
 	frame_free(&f);
 	frame_free(&ref);
 	cairo_destroy(mc);

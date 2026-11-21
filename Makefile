@@ -120,6 +120,10 @@ check: $(O)/test_store $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_editor
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render
 
+# bench: what a view change costs (test/bench.c); not part of check
+$(O)/bench: test/bench.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
+	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
+
 renders: $(O)/render
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/render
 

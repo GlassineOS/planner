@@ -340,7 +340,8 @@ it says that it needs the handwriting service and why, and doesn't start.
   nothing done in it creates, changes or deletes an entry.
 - **FR-046**: There is no relayout while the person writes: while the pen is down, and
   until the person pauses after lifting it, the layout stays as it is. It settles once after
-  the pause, in one refresh of only the widgets whose size changed.
+  the pause, in one refresh of only the widgets whose size changed. A tap on a control (the
+  bar, a date, a popover) is no writing: what it changes is laid out at once.
 - **FR-047**: Ink is anchored to its field. When a field changes size or place, its ink
   moves with it unscaled; a field never becomes smaller than the ink it holds, unless the
   widget is at its minimum (FR-048).
