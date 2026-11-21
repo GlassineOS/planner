@@ -53,8 +53,10 @@ with the pen in the agenda's free time and writes "dentist" in it, **Then** an e
 14:00 to 15:00 exists, its title shows as the person's ink exactly as written, and a moment
 later searching for "dentist" finds it. No converted text appears anywhere on the page.
 **When** the title is longer than the hour holds, **Then** its title field grows into the
-free time below the block and the event still ends at 15:00. **When** another event follows
-right away, **Then** the title is cut with "…" and a tap on it shows the whole title.
+free time below the block and the event still ends at 15:00. **When** another event later
+takes that free time, **Then** the title shrinks evenly to fit, and if even its smallest
+readable size doesn't fit, it is cut at the block's edge and a tap on it shows the whole
+title.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
@@ -222,9 +224,12 @@ it says that it needs the handwriting service and why, and doesn't start.
   - date pickers set or change the day, week or month an entry belongs to.
 
   When an event's title needs more room than its block, the title field grows past the
-  block into the free time below it; the event's start and end stay as set. When there is
-  no free time below the block (the next event follows right away), the title is cut with
-  "…" and a tap on it shows the whole title.
+  block into the free time below it; the event's start and end stay as set. A title that
+  no longer fits its space (the event is shortened, another event takes the free time
+  below, the view is smaller, or the title is set in the person's font) shrinks evenly to
+  fit, down to a smallest readable size; below that size it is cut at the block's edge. A
+  tap on a cut title shows the whole title; a tap on a title that is not cut opens its text
+  mode (FR-012). No title is cut with an ellipsis.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
   not set the entry's time or date. An event is timed (a start and an end, which may cross
   midnight; it shows on each day it covers) or all-day (one or more whole days).
@@ -403,8 +408,9 @@ Host level:
   block leaves and enters, and the release refreshes only the old place, where the dashed
   outline goes;
 - a long title in a short event grows its title field into the free time below the block
-  without changing the event's times, and is cut with "…" when the next event follows right
-  away;
+  without changing the event's times; a title that no longer fits shrinks evenly down to
+  the smallest readable size, then is cut at the block's edge, and a tap on a cut title
+  shows the whole title while a tap on an uncut one opens text mode;
 - a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
@@ -475,6 +481,11 @@ Hardware: ink latency and refresh counts on a device, supervised.
   details popup says so; the person can choose another from the maintenance menu.
 - **No handwriting service**: the planner doesn't start and says why (FR-001).
 - **An entry moved to another date**: its ink, reading and edits move with it (FR-021).
+- **A title that no longer fits**: it can't overflow while written, since its field grows
+  into the free time below. When its space shrinks later (the event is shortened, another
+  event takes the free time below, a smaller view, or a typed title set in the person's
+  font), it shrinks evenly to fit down to the smallest readable size, then is cut at the
+  block's edge; a tap on a cut title shows it whole.
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
   is removed only by an explicit delete.
 - **A reading that fails** (the service is busy, a script it can't read): the ink is kept,
