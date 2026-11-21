@@ -3,22 +3,28 @@
 **Feature Branch**: `spec-001-planner`
 **Status**: Draft
 **Input**: A pen-first planner on e-ink with month, week and day views. Every text field is
-written by hand and stays the person's own ink; the planner reads it into text for search
-and reminders. A text mode edits those readings with the on-screen keyboard. Times and dates
-are set with widgets. Pages are laid out from editable templates of reusable widgets on a
-fluid grid, and the data belongs to dates, not to layouts.
+written by hand and stays the person's own ink; the handwriting service reads it into text,
+which the planner's data uses. A text mode edits those readings with the on-screen keyboard.
+Times and dates are set with widgets. Pages are laid out from editable templates of reusable
+widgets on a fluid grid, and the data belongs to dates, not to layouts.
 
 ## Context
 
 A paper planner is written by hand and laid out the way its owner likes: a spread for the
 week, a page per day, a habit grid in the margin. A calendar app knows what is written in it,
-so it can find things and remind its owner, but it asks for typing and fixes the layout. The
-planner keeps the paper side, the person's own ink in a layout of their choosing, and gets the
-calendar side from what the handwriting service reads in that ink.
+so it can find things, remind its owner and sync, but it asks for typing and fixes the
+layout. The planner keeps the paper side, the person's own ink in a layout of their choosing,
+and makes the calendar side possible from what the handwriting service reads in that ink.
 
-It depends on the handwriting work in `GlassineOS/handwriting`: the pen and service
-interfaces (spec 004), writing regions (spec 005), and the person's letter model, font and
-neatening (spec 003). It draws in Interleaf, the GlassineOS design system, and its voices
+This spec is the planner's handwriting frontend: the views, the fields, the templates and
+widgets, and the data they write. A calendar backend (storage, sync such as CalDAV,
+reminders and notifications, repeat rules) is a separate piece with its own spec later. The
+frontend keeps its data as standard calendar objects so that backend can take them over
+(FR-020).
+
+It depends on the handwriting work in `GlassineOS/handwriting`: writing regions (spec 005),
+the pen and service interfaces they extend (spec 004), and neatening and the person's font,
+Autograph (spec 003). It draws in Interleaf, the GlassineOS design system, and its voices
 (`GlassineOS/ui`).
 
 Terms used below:
@@ -29,8 +35,10 @@ Terms used below:
 - **Widget**: a reusable part of a view (an agenda, a to-do list, notes) that shows some of
   the data of the period it is in.
 - **Handwriting field**: a place in a widget where the person writes free text (an event's
-  title, a to-do, a note).
+  title, a to-do, a note); one writing region of handwriting spec 005.
 - **Reading**: the text the handwriting service reads from the ink of one field.
+- **Slot**: the name of a free-text place in a period ("morning notes", "evening notes"),
+  shared by every template that uses the name.
 
 ## User scenarios
 
@@ -57,10 +65,12 @@ ticks one, **Then** the week holds three to-dos, one done, each shown in the per
 
 ### Scenario 4 – Switch a template without losing anything (Priority: P1)
 
-**Given** a day with events, to-dos and a note, shown with a template that has an agenda,
-a to-do list and notes, **When** the person switches that day to a template with only an
-agenda, **Then** the events show in the new layout and the to-dos and the note are kept.
-**When** the person switches back, **Then** the to-dos and the note reappear as they were.
+**Given** a day with events, to-dos and a "morning notes" entry, shown with a template that
+has an agenda, a to-do list and morning notes, **When** the person switches that day to a
+template with only an agenda, **Then** the events show in the new layout, and a small count
+says that one note and the to-dos are hidden. **When** the person taps the count, **Then**
+the hidden entries are listed, still in ink. **When** the person switches back, **Then** the
+to-dos and the note show in their places as they were.
 
 ### Scenario 5 – Correct a reading in text mode (Priority: P1)
 
@@ -68,137 +78,170 @@ agenda, **Then** the events show in the new layout and the to-dos and the note a
 about the card", **When** the person turns that field to text mode, **Then** the reading shows
 as an ordinary text field and the system on-screen keyboard opens. **When** the person
 changes "bonk" to "bank" and returns to ink mode, **Then** the field shows the person's ink
-for every word except "bank", which is set in the person's own font in its place, and search
-finds the to-do under "bank".
+for every word except "bank", which is set in Autograph, the person's font, in its place, and
+search finds the to-do under "bank".
 
-### Scenario 6 – Plan the year's layouts ahead (Priority: P2)
+### Scenario 6 – Keep a diary (Priority: P1)
+
+**Given** a day template with "morning notes" and "evening notes", **When** the person writes
+into both, **Then** the day holds two journal entries, one per slot. **Given** another day
+template that also has "evening notes", **When** the person switches to it, **Then** the
+evening entry shows there, and the morning entry is counted as hidden.
+
+### Scenario 7 – Plan the year's layouts ahead (Priority: P2)
 
 **Given** several week templates, **When** the person sets one template for January to
 March and another from April onwards, **Then** every week shows the template set for it,
 and any single week can still be given a different one, before, during or after it.
 
-### Scenario 7 – Edit a template on the device (Priority: P2)
+### Scenario 8 – Edit and copy templates on the device (Priority: P2)
 
-**Given** a day template, **When** the person copies it, adds a habit tracker, moves the
-notes below the agenda and gives the agenda more weight, **Then** the copy is a new template
-the person can name and pick, and the original is unchanged.
+**Given** a day template, **When** the person adds a habit tracker, moves the notes below the
+agenda and gives the agenda more weight, **Then** every day that uses the template, past days
+included, shows the new arrangement. **When** the person wants the old arrangement kept for
+some days, **Then** they copy the template before editing and give those days the copy.
 
-### Scenario 8 – Search what was written by hand (Priority: P2)
+### Scenario 9 – Search what was written by hand (Priority: P2)
 
 **Given** months of handwritten entries, **When** the person searches for a word, **Then**
-the planner lists the entries whose reading or edited text contains it, each shown in its
-ink with its date, and opening one shows its period with that entry visible.
-
-### Scenario 9 – Be reminded (Priority: P2)
-
-**Given** an event with a reminder, **When** the reminder's time comes, **Then** the person
-is reminded of the event and its time, whether or not the planner is open.
+the planner lists the entries whose text contains it, each shown in its ink with its date,
+and opening one shows its period with that entry visible.
 
 ### Scenario 10 – Neater ink, by choice (Priority: P3)
 
 **Given** a notes field, **When** the person turns on neatening for that field, **Then** its
 ink is shown neatened at the chosen strength and the original can be brought back. **When**
 the person instead turns on "set in my font", **Then** each word that was read is shown set
-in the person's own font. Both can be turned on for one field or for all fields.
+in Autograph. Both can be turned on for one field or for all fields.
+
+### Scenario 11 – No handwriting service (Priority: P3)
+
+**Given** a system without writing regions, **When** the person opens the planner, **Then**
+it says that it needs the handwriting service and why, and doesn't start.
 
 ## Requirements
 
+### Start
+
+- **FR-001**: The planner needs writing regions (handwriting spec 005). When the system
+  doesn't offer them, the planner doesn't start and tells the person, in plain words, that it
+  needs the handwriting service. There is no keyboard-only mode.
+
 ### Views and periods
 
-- **FR-001**: The planner has a month view, a week view and a day view. Each shows one
+- **FR-002**: The planner has a month view, a week view and a day view. Each shows one
   period, drawn from the template chosen for that period (FR-030).
-- **FR-002**: The person moves to the previous or next period of the same kind, to today,
+- **FR-003**: The person moves to the previous or next period of the same kind, to today,
   and from a period to the periods it contains or lies in (a day of a month view opens that
   day; a day view reaches its week and month).
-- **FR-003**: The first day of the week and the date and time formats follow the system's
+- **FR-004**: The first day of the week and the date and time formats follow the system's
   settings.
 
 ### Handwriting fields
 
-- **FR-004**: Every text field is a handwriting field. The person writes into it with the
+- **FR-005**: Every text field is a handwriting field. The person writes into it with the
   pen; there is no field that asks for typing in ink mode.
-- **FR-005**: What the person writes stays the person's ink. In ink mode the planner never
+- **FR-006**: What the person writes stays the person's ink. In ink mode the planner never
   shows a reading in place of the ink, beside it or over it: no conversion preview, no
   correction pop-up, no candidate list, no peek and no marker of uncertainty.
-- **FR-006**: Each field's ink is read into text by the handwriting service through its
-  writing regions (handwriting spec 005), one region per field. The reading is stored with
-  the entry and is what the planner's data and backend use: search (FR-050), reminders
-  (FR-053), and any later sync.
-- **FR-007**: A reading is kept up to date when the ink of its field changes (more writing,
+- **FR-007**: Each handwriting field is one writing region (handwriting spec 005). Its
+  reading is stored with its entry as the entry's text, and is what the planner's data use:
+  search (FR-050) here, and a later calendar backend.
+- **FR-008**: A reading is kept up to date when the ink of its field changes (more writing,
   erasing). Reading happens after the person pauses and never delays the ink.
-- **FR-008**: Ink that is not read as text (a drawing, an arrow, a doodle) stays ink and is
+- **FR-009**: Ink that is not read as text (a drawing, an arrow, a doodle) stays ink and is
   kept with the field; it does not count as text.
-- **FR-009**: The person erases with the pen's eraser or an erase tool; erasing ink removes
+- **FR-010**: The person erases with the pen's eraser or an erase tool; erasing ink removes
   it and updates the reading.
-- **FR-010**: Two opt-ins change how ink is shown, never what is stored as written:
+- **FR-011**: Two opt-ins change how ink is shown, never what is stored as written:
   - **Neaten**: the ink is shown neatened (handwriting spec 003), at a strength the person
     chooses; turning it off shows the ink as written.
-  - **Set in my font**: each word that was read is shown set in the person's own font
-    instead of the ink; turning it off shows the ink.
+  - **Set in my font**: each word that was read is shown set in Autograph instead of the
+    ink; turning it off shows the ink.
 
   Each can be set for one field or for every field; a field's own choice wins over the
   global one. Both are off unless the person turns them on.
 
 ### Text mode
 
-- **FR-011**: A control turns one field, or the whole view, into text mode. In text mode
-  each handwriting field shows its current text (FR-013) as an ordinary text field, edited
+- **FR-012**: A control turns one field, or the whole view, into text mode. In text mode
+  each handwriting field shows its current text (FR-014) as an ordinary text field, edited
   with the system on-screen keyboard.
-- **FR-012**: Leaving text mode returns the field or view to ink mode. Text mode never
+- **FR-013**: Leaving text mode returns the field or view to ink mode. Text mode never
   changes the ink.
-- **FR-013**: A field's current text is its reading, with the person's text-mode edits
+- **FR-014**: A field's current text is its reading, with the person's text-mode edits
   applied. When a field's text was changed in text mode, ink mode shows the field word by
   word: words the person did not change keep their ink, and words the person changed or
-  added are set in the person's font in their place. A deleted word's ink is not shown.
-- **FR-014**: Writing more ink into a field that has edited words adds that ink in its place
+  added are set in Autograph in their place. A deleted word's ink is not shown.
+- **FR-015**: Writing more ink into a field that has edited words adds that ink in its place
   and its reading to the current text; the edited words stay as edited.
-- **FR-015**: A field whose ink is erased completely and whose edited text is empty is empty.
-- **FR-016**: Text mode has no correction suggestions, candidate lists or markers of
+- **FR-016**: A field whose ink is erased completely and whose edited text is empty is empty.
+- **FR-017**: Text mode has no correction suggestions, candidate lists or markers of
   uncertainty either; it shows the text and lets the person change it.
 
 ### Times and dates
 
-- **FR-017**: Times and dates are never written by hand. They are set with widgets made for
+- **FR-018**: Times and dates are never written by hand. They are set with widgets made for
   them: drawing a block in an agenda creates an event over that time; dragging an event's
   block moves it and dragging its edge changes its length, both in steps of 30 minutes;
   date pickers set or change the day, week or month an entry belongs to.
-- **FR-018**: Every handwriting field is free text. Writing a time or date into a field does
-  not set the entry's time or date.
-- **FR-019**: An event is timed (a start and an end on a day) or all-day (one or more whole
-  days). Timed events may cross midnight; they show on each day they cover.
+- **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
+  not set the entry's time or date. An event is timed (a start and an end, which may cross
+  midnight; it shows on each day it covers) or all-day (one or more whole days).
 
 ### Data belongs to dates
 
-- **FR-020**: Every entry belongs to a date, not to a layout:
-  - an **event** to a day and a time, or to whole days (FR-019);
-  - a **to-do** to a day, a week or a month, with a done state;
-  - a **note** to a day, a week or a month;
-  - a **priority** to a day, a week or a month, with a rank;
-  - a **habit mark** to a habit and a day.
-- **FR-021**: A template is a view of the data. Choosing, switching, editing or deleting a
-  template never creates, changes or deletes an entry.
-- **FR-022**: An entry no widget of the current view shows stays stored, unchanged, and
-  appears again in any view whose template shows it.
-- **FR-023**: A view tells the person, without opening anything, when its period holds
-  entries none of its widgets shows, and how many of each kind; from there the person can
-  see them or switch to a template that shows them.
-- **FR-024**: Entries of a longer period may show in a shorter one when the shorter view's
+- **FR-020**: The planner's data are standard calendar objects (events, to-dos, journal
+  entries), each tied to dates, so that a later calendar backend can store and sync them.
+  The kinds of entry are:
+  - an **event**, on a day and a time or on whole days;
+  - a **to-do**, of a day, a week or a month, with a done state;
+  - a **note** (a journal or diary entry), of a day, a week or a month;
+  - a **priority**, of a day, a week or a month, with a rank;
+  - a **habit mark**, of a habit and a day.
+
+  A habit or a priority is carried in a standard calendar object too; the planner doesn't
+  invent a kind of object a calendar can't hold.
+- **FR-021**: The ink is attached to its entry, with its reading and the person's text-mode
+  edits; moving an entry to another date moves them with it.
+- **FR-022**: Every entry is keyed by its date or period and its kind, and an entry of free
+  text (a note) also by its slot, a name such as "morning notes" or "evening notes". A
+  widget that shows free text names the slot it shows; templates that use the same slot name
+  show the same entries.
+- **FR-023**: Entries of a longer period may show in a shorter one when the shorter view's
   template asks for them (the week's to-dos in a day view), and entries of shorter periods
   in a longer one (a month view's days with their events). Changing an entry in any view
   changes the one entry.
+- **FR-024**: Entries are kept as soon as they are written; a crash, a power loss or a cut
+  battery loses at most the stroke being drawn.
+- **FR-025**: Nothing the person writes leaves the device.
+
+### No template operation loses data
+
+- **FR-026**: A template is a view of the data. Choosing, switching, editing, copying or
+  deleting a template never creates, changes or deletes an entry.
+- **FR-027**: An entry that no widget of the current view shows stays stored, unchanged, and
+  appears again in any view whose template shows it.
+- **FR-028**: A view whose period holds entries none of its widgets shows has a small count of
+  hidden entries per kind (and per slot for notes). Tapping it lists them, in ink, where the
+  person can open, move or delete each one.
+- **FR-029**: A template has no coverage rules: it may show any part of its period's data,
+  or none of a kind (a week template need not show all seven days).
 
 ### Templates
 
 - **FR-030**: Each period kind (month, week, day) has several templates. Each period has at
   most one template chosen for it; a period with none uses its kind's default (FR-034).
 - **FR-031**: The person can create, name, copy, edit, delete and pick templates on the
-  device. A template that a period uses can't be deleted without the person choosing what
+  device. A template that periods use can't be deleted without the person choosing what
   those periods use instead.
-- **FR-032**: The person can choose a template for a single period, for a range of periods
+- **FR-032**: Editing a template changes it wherever it is used, past periods included.
+  Copying a template before editing is the way to keep the old arrangement for some periods.
+- **FR-033**: The person can choose a template for a single period, for a range of periods
   (all weeks from April to June), or for every period of a kind from a date onwards, ahead
-  of time; a choice for a single period wins over a range.
-- **FR-033**: The person can switch the template of any period at any time, including
-  periods in the past. A switch takes effect at once and follows FR-021.
+  of time; a choice for a single period wins over a range. The person can switch the
+  template of any period at any time, including periods in the past; a switch takes effect
+  at once.
 - **FR-034**: Each kind has one default template, which the person can change. The planner
   comes with at least one template for each kind.
 
@@ -207,15 +250,16 @@ in the person's own font. Both can be turned on for one field or for all fields.
 - **FR-040**: Widgets are reusable across templates. The planner ships at least:
   - **day agenda**: the hours of a day with its timed events as blocks, all-day events above;
   - **to-do list**: the to-dos of a period, to write, tick and reorder;
-  - **free notes**: an open writing area for the notes of a period;
+  - **free notes**: an open writing area for the notes of a period, in a named slot;
   - **habit tracker**: the person's habits against the days of the period, a tap marks a day;
   - **mini month**: the days of a month, marking days with entries, a tap opens a day;
   - **week overview**: the days of a week with their events and to-dos in short;
   - **priorities**: a short ranked list for a period.
 - **FR-041**: Each widget declares which data it shows (which kinds of entry, of which
-  period relative to the view's period) and its minimum size and preferred size.
+  period relative to the view's period, and for free text which slot) and its minimum size
+  and preferred size.
 - **FR-042**: A widget may have settings that change what it shows (an agenda's first and
-  last hour, a to-do list's period), set per use in a template.
+  last hour, a to-do list's period, a notes widget's slot), set per use in a template.
 
 ### Layout
 
@@ -237,24 +281,12 @@ in the person's own font. Both can be turned on for one field or for all fields.
   a mark that more exists, with the count where it is countable; a tap opens the widget's
   whole content. Nothing is dropped and ink is never shrunk to fit.
 
-### Search, reminders
+### Search
 
-- **FR-050**: Search finds entries whose current text (FR-013) contains the words searched
+- **FR-050**: Search finds entries whose current text (FR-014) contains the words searched
   for, across all periods. Results show the entries' ink with their dates; opening one shows
-  its period with that entry visible, under a template that shows it or by itself when the
-  period's template doesn't.
-- **FR-051**: Entries are written to the person's storage as soon as they are written; a
-  crash, a power loss or a full battery cut loses at most the stroke being drawn.
-- **FR-052**: Readings are made on the device. Nothing the person writes leaves the device.
-- **FR-053**: An event can have a reminder at a chosen time before it. At that time the
-  person is reminded of the event and its time, also when the planner is closed.
-  [NEEDS CLARIFICATION: Must a reminder wake the device from sleep, and how is it shown on a
-  sleeping e-ink screen (on the sleep screen, a light, a sound), or does it only show at the
-  next wake? And does a reminder outside the planner show the event's ink or its text?]
-- **FR-054**: Events may repeat: [NEEDS CLARIFICATION: which repeat rules belong in 001?
-  Proposed basics: daily, weekly on chosen weekdays, monthly on the same date, yearly, with an
-  end date or none; changing or removing one occurrence or all of them. Everything else
-  (nth weekday of a month, exceptions lists, repeating to-dos) later?]
+  its period with that entry visible, or the period's hidden-entries list when its template
+  doesn't show it.
 
 ### Look
 
@@ -268,35 +300,35 @@ in the person's own font. Both can be turned on for one field or for all fields.
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Pen interface (raw and neatened strokes, readings) | consumed | 1 | `GlassineOS/handwriting` spec 004 |
-| Writing regions (one region per handwriting field) | consumed | not yet specified | `GlassineOS/handwriting` spec 005 (not published yet) |
-| Service interface (reading saved ink, letter model and font status) | consumed | 1 | `GlassineOS/handwriting` spec 004 |
-| Neatening and the person's font | consumed | 1 | `GlassineOS/handwriting` spec 003 |
+| Writing regions (one region per handwriting field, its value, text mode) | consumed | 1, draft | `GlassineOS/handwriting` spec 005 (GlassineOS/handwriting#122) |
+| Pen and service interfaces | consumed | 1 | `GlassineOS/handwriting` spec 004 |
+| Neatening and Autograph, the person's font | consumed | 1 | `GlassineOS/handwriting` spec 003 |
 | Interleaf and the voices, the drawing library | consumed | current | `GlassineOS/ui` |
 | System on-screen keyboard | consumed | — | `GlassineOS/shell`, `GlassineOS/wvkbd` |
 | Ink protocol (ink areas, brushes) | consumed | glassine_ink_v1 | `GlassineOS/protocols` |
-| The planner's stored data | owned, not yet an interface | — | later spec; the format is out of scope here |
+| The planner's entries as standard calendar objects, with ink, slots and template choices | owned, not yet an interface | — | the calendar backend's spec, later |
 
 ## Device scope and risk
 
-Device-neutral: any device with a pen and an e-ink panel; a device without a pen gets no
-handwriting fields and is not a target of this spec. No device risk. User data: the planner
-keeps the person's entries and templates in the person's storage; FR-021 and FR-051 protect
-them.
+Device-neutral: any device with a pen and an e-ink panel and the handwriting service. No
+device risk. User data: the planner keeps the person's entries and templates on the device;
+FR-024 and FR-026–FR-028 protect them.
 
 ## Acceptance
 
 Host level:
 
-- switching through every shipped template of a kind and back leaves the stored entries
-  byte-for-byte as before, for a period holding every kind of entry;
-- an entry shown by no widget is counted by the view's notice (FR-023) and reappears with a
-  template that shows it;
+- switching through every shipped template of a kind and back, and editing and deleting
+  templates, leaves the stored entries byte-for-byte as before, for a period holding every
+  kind of entry and several slots;
+- an entry shown by no widget is counted by the view's hidden count (FR-028), listed in ink
+  from it, and reappears with a template that shows it;
 - recorded pen input for a field gives a stored reading, and search finds it;
-- a text-mode edit of one word shows that word in the font and every other word as ink;
+- a text-mode edit of one word shows that word in Autograph and every other word as ink;
 - the layout gives every widget at least its minimum; content past it raises the more mark;
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps;
+- without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
 
 Product level: in the images acceptance suite, write an event and a to-do by pen, switch the
@@ -306,36 +338,44 @@ Hardware: ink latency and refresh counts on a device, supervised.
 
 ## Out of scope
 
-- CalDAV and any other sync. The readings make it possible later; nothing in 001 depends on
-  it.
+- **Calendar backend**, its own spec later:
+  - storage and its format;
+  - sync, such as CalDAV;
+  - reminders and notifications;
+  - repeat rules;
+  - what happens to unfinished to-dos when their period ends.
 - Sharing entries, templates or calendars with other people.
-- Repeat rules beyond the basics FR-054 settles.
-- The storage format.
 - Importing from or exporting to other calendars.
-- Time zones: times are the device's local wall-clock time.
 - Undated entries (an inbox or "someday" list).
+- Time zones: times are the device's local wall-clock time.
 
 ## Key entities
 
 - **Period**: a day, week or month; identified by its kind and its dates.
-- **Entry**: an event, to-do, note, priority or habit mark, attached to a date (FR-020). An
-  entry with text holds one or more handwriting fields.
+- **Entry**: an event, to-do, note (journal entry), priority or habit mark, a standard
+  calendar object keyed by its date or period, its kind and, for free text, its slot (FR-020,
+  FR-022).
 - **Handwriting field**: the ink written into it, its reading, the person's text-mode edits
-  and its display opt-ins (FR-010).
+  and its display opt-ins (FR-011); attached to its entry.
+- **Slot**: a name for a free-text place in a period, shared across templates.
 - **Habit**: a named habit the habit tracker lists; its marks belong to days.
 - **Template**: a named arrangement of widgets for one period kind, with weights and widget
   settings.
 - **Template choice**: which template a period, a range of periods or a kind from a date on
   uses; plus each kind's default.
-- **Widget**: a reusable part of a view with what data it shows and its minimum and preferred
+- **Widget**: a reusable part of a view with the data it shows and its minimum and preferred
   size.
-- **Reminder**: a time before an event at which the person is reminded.
 
 ## Edge cases
 
-- **Switching to a template that shows some data nowhere**: the entries stay stored (FR-022)
-  and the view's notice names what is hidden (FR-023); nothing asks the person to confirm,
-  since nothing is lost.
+- **Switching to a template that shows some data nowhere**: the entries stay stored (FR-027)
+  and the hidden count names them per kind; tapping it lists them in ink (FR-028). Nothing
+  asks the person to confirm, since nothing is lost.
+- **A template edit removes the only widget showing a slot that has entries**: the edit is
+  saved; every period using the template, past ones included, keeps its entries in that slot
+  and shows them in its hidden count. Adding a widget for that slot name again, to this or
+  any template, shows them in place. The editor may say how many periods hold entries in the
+  slot; it doesn't block the edit.
 - **A widget too small for its content**: it shows what fits and the more mark; a tap opens
   all of it (FR-048). A template whose widgets can't all get their minimum can't be saved
   without the person seeing that (FR-044).
@@ -343,66 +383,51 @@ Hardware: ink latency and refresh counts on a device, supervised.
   settles after the pause (FR-046); ink moves with its field and is never scaled (FR-047).
   Resizing in the template editor applies to the template, not to entries.
 - **Text mode on a whole view**: every handwriting field in the view becomes a text field;
-  time and date widgets stay as they are. Ink with no reading (FR-008) stays visible and is
+  time and date widgets stay as they are. Ink with no reading (FR-009) stays visible and is
   not editable as text. The keyboard takes space from the view in one refresh and gives it
   back on leaving.
-- **A person without a letter model**: readings, search and reminders work as for anyone.
-  Words edited in text mode are set in the voice's text face until the person's font exists,
-  then in the font (open question below). "Set in my font" can't be turned on and says why; neatening offers what
-  the handwriting service can do without a letter model.
+- **A person without a letter model**: readings and search work as for anyone. Autograph
+  exists from the start, plain until it has learned the person's letters, so edited words
+  and "set in my font" use it as it is and follow it as it grows. Neatening offers what the
+  handwriting service can do without a letter model.
 - **A period with no template chosen**: it uses the default of its kind (FR-034); the person
   can choose another from the view.
-- **An entry written in a field and then moved to another date**: the ink, reading and edits
-  move with it.
+- **No handwriting service**: the planner doesn't start and says why (FR-001).
+- **An entry moved to another date**: its ink, reading and edits move with it (FR-021).
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
   is removed only by an explicit delete.
-- **A reading that fails** (the service is not running, a script it can't read): the ink is
-  kept, the field has no text yet and is read again later; search can't find it until then.
+- **A reading that fails** (the service is busy, a script it can't read): the ink is kept,
+  the field has no text yet and is read again later; search can't find it until then.
 - **A to-do of a week that spans two months**: it belongs to the week; month views show it
   only if their template asks for the weeks' to-dos.
-- **Deleting a template in use**: FR-031.
+- **Two widgets in one template showing the same slot**: both show the same entry; writing in
+  either changes it.
 
 ## Assumptions
 
-- The handwriting service and the person's font are available as handwriting specs 003 and
-  004 describe; the planner adds no recognizer of its own.
-- Writing regions (handwriting spec 005) are not published yet. The planner assumes of them:
-  one region per handwriting field, read on its own; a reading that says which strokes form
-  which word, so text-mode edits can replace single words (FR-013); and readings that follow
-  changes to a region's ink (FR-007).
-- A new period with no template chosen gets its kind's default without asking; the person
-  picks another from the view when they want one.
-- Without a letter model or font, words edited in text mode are set in the voice's text face
-  (see the open question below).
+- Writing regions are as handwriting spec 005 (GlassineOS/handwriting#122) describes: many
+  regions per surface, each one field with its reading as its value, a text mode on the
+  system keyboard, and a stored region handed back with its strokes and value shows them
+  as before.
+- Autograph, the person's font, always exists (handwriting spec 003); it starts plain and
+  grows as the person's letters are learned.
+- A new period with no template chosen gets its kind's default without asking.
 - An event is created by drawing a block over its time in an agenda, or with a date and time
-  picker; there is no other way in 001.
-- Every entry has a date; there is no undated inbox or "someday" list in 001.
+  picker.
+- Until the calendar backend exists, the planner keeps its entries on the device itself, as
+  standard calendar objects; how is left to the plan.
 - The planner runs in the person's own session; guests see none of its data.
 - One person, one planner: there are no separate calendars to pick from in 001.
 - The 30-minute step is the same for every agenda.
 - A day agenda shows the hours its settings name; events outside them show as a count at
   its top or bottom edge.
 
-## Open questions
-
-- [NEEDS CLARIFICATION: Unfinished to-dos when their period ends: do they stay where they
-  were, move to the next period by themselves, or wait for the person to move them (with a
-  one-tap "move to next")?]
-- [NEEDS CLARIFICATION: Editing a template that past periods use: does the edit change how
-  those past periods look, or do periods that already used it keep the old arrangement?]
-- [NEEDS CLARIFICATION: A person without a letter model or font who edits a word in text
-  mode: is that word set in the voice's text face (typed-looking text inside the ink, until
-  the font exists), or does editing in text mode wait until the font exists, or is the edit
-  kept in the text only while the ink stays as written?]
-
-FR-053 (reminders on a sleeping device) and FR-054 (which repeat rules) are open as well.
-
 ## Success criteria
 
 - **SC-001**: Writing a handwritten event or to-do takes no more steps than on paper plus
   setting its time with the widget: no confirmation, no conversion step.
-- **SC-002**: Switching a period's template through every shipped template and back loses
-  and changes no entry, in every test case.
+- **SC-002**: Switching, editing, copying and deleting templates in every combination the
+  tests cover loses and changes no entry.
 - **SC-003**: An entry written by hand can be found by search within 5 seconds of the
   person's pause, for at least 95 % of entries whose reading matches what was written.
 - **SC-004**: A period change or template switch costs one panel refresh; a change inside a
@@ -411,3 +436,4 @@ FR-053 (reminders on a sleeping device) and FR-054 (which repeat rules) are open
   for next week in under 3 minutes without help.
 - **SC-006**: In ink mode no converted text is ever shown, except words the person edited
   in text mode or chose to set in their font.
+- **SC-007**: Every hidden entry of a period is reachable from its view in one tap.
