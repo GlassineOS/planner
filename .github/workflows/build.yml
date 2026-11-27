@@ -18,7 +18,7 @@ jobs:
             apk add -q build-base pkgconf linux-headers git curl cairo-dev pango-dev librsvg-dev glib-dev \
               font-dejavu font-eb-garamond wayland-dev wayland-protocols libxkbcommon-dev fontconfig python3
             make check HW_DIR=$(sh test/hw.sh)'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: renders
