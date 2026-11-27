@@ -152,6 +152,16 @@ const struct vfield *view_field_at(const struct view *v, double x, double y);
 /* the page's scroll that brings field f above the bar over the keyboard (whole rows) */
 double view_scroll_to(const struct view *v, const struct vfield *f);
 const struct vfield *view_field_of(const struct view *v, uint32_t entry);
+/* A stroke drawn into an agenda's free time f (FR-018), its points in f's coordinates. A
+ * tall narrow stroke over an hour or more is the block drawn over the event's time (true):
+ * start and end are its extent in 30-minute steps. Any other stroke is writing (false): the
+ * event starts at the half hour it starts in and lasts an hour */
+bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, int *start, int *end);
+/* The event that stroke makes, laid out at once (relayout lays out v again): a block's
+ * stroke goes; writing's stroke is the title's first ink (*kept), stroke k of the event's
+ * field, moved into it as the layout placed it, so it stays where it was written. NULL: none */
+struct entry *view_free_stroke(struct view *v, struct store *s, const struct vfield *f, uint32_t k,
+			       const struct pl_point *p, int n, void (*relayout)(void *ud), void *ud, bool *kept);
 /* a choice of template as the picker and the year list name it: from the period of kind k at
  * day from to the one at day to (to < 0: on from there, to == from: that period only), its year
  * added where it isn't shown_year: "weeks 1–13 · Jan–Mar", "from week 14 on · from Apr",
