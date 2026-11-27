@@ -191,6 +191,65 @@ int main(int argc, char **argv)
 			store_delete(&s, g->id), store_delete(&s, k->id), store_delete(&s, c->id);
 			n += 2;
 		}
+		/* slips (boards event.drag, event.delete, event.stack): the sample's dentist at
+		 * 14:00 lifted, its corner pulled, crumpled, crossed out, its card; overlapping
+		 * events shingled, one brought to the top, three fanned out */
+		{
+			struct entry *ev[16], *dn = NULL;
+			int ne = store_events(&s, d.start, ev, 16);
+			for (int i = 0; i < ne; i++)
+				if (!ev[i]->allday && ev[i]->start == 14 * 60)
+					dn = ev[i];
+			if (dn) {
+				struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
+				w.drag = dn->id, w.drag_s0 = dn->start, w.drag_e0 = dn->end;
+				dn->start += 30, dn->end += 30;
+				shot(&s, VOICES[vi], &w, "event.drag.moved");
+				dn->start -= 30, dn->end += 30;
+				w.drag_ear = true;
+				shot(&s, VOICES[vi], &w, "event.drag.resize");
+				dn->end -= 60;
+				w.drag = 0, w.drag_ear = false;
+				w.crumple = dn->id;
+				shot(&s, VOICES[vi], &w, "event.delete.press");
+				w.ov = OV_DELETE, w.title = dn->id;
+				shot(&s, VOICES[vi], &w, "event.delete.press-confirm");
+				w.crumple = 0;
+				w.ov = OV_NONE;
+				struct look LL;
+				look_init(&LL, VOICES[vi]);
+				view_layout_at(&w, &s, &LL, SC ? SC : 1);
+				static struct pl_point q[40];
+				const struct vslip *sl = view_slip(&w, dn->id);
+				if (sl) {
+					for (int i = 0; i < 40; i++) {
+						double f = i / 39.0;
+						q[i] = (struct pl_point){ (float)(sl->x - 16 + (sl->w + 26) * f),
+									  (float)(sl->y + sl->h * (0.86 - 0.68 * f) + 3 * sin(f * 6)), 0.5f, 0 };
+					}
+					w.xout = q, w.nxout = 40;
+				}
+				w.ov = OV_DELETE, w.title = dn->id;
+				shot(&s, VOICES[vi], &w, "event.delete.cross-confirm");
+				struct entry *cb = store_add(&s, E_EVENT, d), *ks = store_add(&s, E_EVENT, d);
+				cb->start = 14 * 60 + 30, cb->end = 15 * 60 + 30;
+				sample_ink(&cb->f, "call the bank", 2, 19, 21);
+				struct view u = { .per = d, .today = today, .W = 702, .H = 896 };
+				store_delete(&s, ks->id);
+				shot(&s, VOICES[vi], &u, "event.stack.shingled");
+				view_raise(&u, dn->id);
+				shot(&s, VOICES[vi], &u, "event.stack.swapped");
+				u.nraise = 0;
+				ks = store_add(&s, E_EVENT, d);
+				ks->start = 15 * 60, ks->end = 16 * 60;
+				sample_ink(&ks->f, "pick up the keys", 2, 19, 22);
+				shot(&s, VOICES[vi], &u, "event.stack.stack");
+				u.fan = dn->id;
+				shot(&s, VOICES[vi], &u, "event.stack.fanned");
+				store_delete(&s, cb->id), store_delete(&s, ks->id);
+				n += 9;
+			}
+		}
 		struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_HIDDEN, .hidden_kind = 0 };
 		shot(&s, VOICES[vi], &v, "hidden.list");
 		/* an entry of the hidden list opened, and moved (no boards: Open and Move) */
