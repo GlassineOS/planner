@@ -601,7 +601,7 @@ int main(void)
 		CHECK(find(&w, A_SETTINGS, -1) != NULL);
 	}
 	/* a wrapped text's lines lh apart at every scale, as at scale 1 (pango alone spaced
-	 * them lh times the scale apart: an empty line in a dialog's paragraph at scale 2) */
+	 * them lh times the scale apart: an empty line in a dialog's paragraph at scale 2): glassine-ui 1.5.1 spaces them so */
 	{
 		static const char *const voices[] = { "white", "editorial", "stationery" };
 		static const double scales[] = { 1, 1.25, 1.6, 2, 3 };
@@ -617,8 +617,8 @@ int main(void)
 					UiGc g = { mc, 0, NULL };
 					const UiFont *fs[] = { &K.body, &K.sub, &K.h1 };
 					for (int fi = 0; fi < 3; fi++) {
-						double one = view_text_wrap(&g, fs[fi], "Ag", 0, 0, 1e4, 1, 0, 0);
-						double two = view_text_wrap(&g, fs[fi], "Ag\nAg", 0, 0, 1e4, 2, lhs[li], 0);
+						double one = ui_text_wrap(&g, fs[fi], "Ag", 0, 0, 1e4, 1, 0, 0);
+						double two = ui_text_wrap(&g, fs[fi], "Ag\nAg", 0, 0, 1e4, 2, lhs[li], 0);
 						bool ok = fabs((two - one) - lhs[li] * one) < 1;
 						if (!ok)
 							fprintf(stderr, "%s at %g, lh %g: lines %.1f apart, want %.1f\n", voices[vi], scales[si],
