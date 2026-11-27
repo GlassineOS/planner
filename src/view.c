@@ -1121,6 +1121,481 @@ static void w_weekov(struct ctx *c, struct wbox *b)
 	}
 }
 
+/* ---- an agenda's paper slips (FR-018; boards event.drag, event.delete, event.stack) ---- */
+
+#define SL_TAB_W 26
+#define SL_TAB_H 8
+#define SL_TAB_UP 6
+#define SL_TAB_RIGHT 30
+#define SL_LIFT 5
+#define SL_SHINGLE 14 /* a level's shift to the right */
+#define SL_STRIP 18   /* the least of a slip underneath that shows */
+#define SL_FAN_GAP 10
+
+void slip_tab(const struct vslip *s, double r[4])
+{
+	r[0] = s->x + s->w - SL_TAB_RIGHT - SL_TAB_W, r[1] = s->y - SL_TAB_UP, r[2] = SL_TAB_W, r[3] = SL_TAB_H;
+}
+
+void slip_tab_target(const struct vslip *s, double r[4])
+{
+	slip_tab(s, r);
+	r[0] -= (44 - SL_TAB_W) / 2, r[1] -= 10, r[2] = 44, r[3] = 28;
+}
+
+double slip_ear(double h, bool pulled)
+{
+	return pulled ? fmin(22, h - 4) : fmax(8, fmin(14, h - 6));
+}
+
+void slip_ear_target(const struct vslip *s, double r[4])
+{
+	r[0] = s->x + s->w - 32, r[1] = s->y + s->h - 32, r[2] = 32, r[3] = 32;
+}
+
+void slip_lift(const struct vslip *s, double r[4])
+{
+	r[0] = s->x + SL_LIFT, r[1] = s->y + SL_LIFT, r[2] = s->w, r[3] = s->h;
+}
+
+const struct vslip *view_slip(const struct view *v, uint32_t id)
+{
+	for (int i = 0; i < v->nslip; i++)
+		if (v->slip[i].id == id)
+			return &v->slip[i];
+	return NULL;
+}
+
+void view_raise(struct view *v, uint32_t id)
+{
+	int n = 0;
+	for (int i = 0; i < v->nraise; i++)
+		if (v->raise[i] != id)
+			v->raise[n++] = v->raise[i];
+	if (n == (int)(sizeof v->raise / sizeof *v->raise))
+		memmove(v->raise, v->raise + 1, --n * sizeof *v->raise);
+	v->raise[n++] = id;
+	v->nraise = n;
+}
+
+/* a slip as laid out, and how its title is shown */
+struct slipx {
+	struct vslip s;
+	struct entry *e;
+	double k;       /* the title's scale */
+	double fh;      /* its field's height (alone, on top: grown into the free time below) */
+	double gh;      /* the slip's height as drawn: grown, or its time's */
+	bool cut, grown;
+	bool tall;      /* long enough to show its time */
+	int i;          /* its index among the day's events */
+};
+
+/* the order of a stack's slips, bottom first: a slip brought to the top above those that
+ * weren't (the last brought, highest), else the later start above, of equal starts the
+ * shorter above (the longer shows its bottom) */
+static int z_raised(const struct view *v, uint32_t id)
+{
+	for (int i = 0; i < v->nraise; i++)
+		if (v->raise[i] == id)
+			return i + 1;
+	return 0;
+}
+static const struct view *z_view;
+static int z_cmp(const void *a, const void *b)
+{
+	const struct slipx *x = *(const struct slipx *const *)a, *y = *(const struct slipx *const *)b;
+	int rx = z_raised(z_view, x->s.id), ry = z_raised(z_view, y->s.id);
+	if (rx != ry)
+		return rx - ry;
+	if (x->s.s0 != y->s.s0)
+		return x->s.s0 - y->s.s0;
+	if (x->s.e0 != y->s.e0)
+		return y->s.e0 - x->s.e0;
+	return x->s.id < y->s.id ? -1 : x->s.id > y->s.id;
+}
+
+/* the title's scale in a box w x h: whole, else shrunk evenly to fit, down to the smallest
+ * readable size, then cut */
+static double title_fit(const struct field *f, double w, double h, bool *cut)
+{
+	double r, bt;
+	field_extent(f, &r, &bt);
+	double needw = r + 4, needh = bt + 4, k = 1;
+	*cut = false;
+	if (needw > w || needh > h) {
+		k = fmin(1, fmin(w / fmax(needw, 1), h / fmax(needh, 1)));
+		if (k < TITLE_MIN / INK_SIZE) {
+			k = TITLE_MIN / INK_SIZE;
+			*cut = true;
+		}
+	}
+	return k;
+}
+
+/* the stacks: overlapping events lie shingled, the one on top shifted SL_SHINGLE right per
+ * level; one underneath shows a strip of at least SL_STRIP px, its top while the one above
+ * starts later, else its bottom. A fanned stack (three or more) lies side by side */
+static void stack_slips(const struct view *v, struct slipx *sl, int n)
+{
+	z_view = v;
+	for (int a = 0; a < n;) {
+		int b = a + 1, maxe = sl[a].s.e0;
+		while (b < n && sl[b].s.s0 < maxe) {
+			maxe = sl[b].s.e0 > maxe ? sl[b].s.e0 : maxe;
+			b++;
+		}
+		int nz = b - a;
+		struct slipx *o[V_SLIPS];
+		bool fanned = false;
+		for (int i = 0; i < nz; i++) {
+			o[i] = &sl[a + i];
+			o[i]->s.stack = a, o[i]->s.nz = nz;
+			fanned = fanned || (v->fan && o[i]->s.id == v->fan);
+		}
+		fanned = fanned && nz >= 3;
+		qsort(o, nz, sizeof *o, z_cmp);
+		for (int z = 0; z < nz; z++)
+			o[z]->s.z = z;
+		double x0 = sl[a].s.x, w0 = sl[a].s.w;
+		if (fanned) { /* side by side in time order, each at its own times */
+			double fw = floor((w0 - SL_FAN_GAP * (nz - 1)) / nz);
+			for (int i = 0; i < nz; i++) {
+				struct vslip *s = &sl[a + i].s;
+				s->x = x0 + i * (fw + SL_FAN_GAP), s->w = fw;
+				s->fan = true, s->parts = false;
+			}
+		} else if (nz > 1) {
+			for (int z = 0; z < nz; z++) {
+				struct vslip *s = &o[z]->s;
+				s->x = x0 + SL_SHINGLE * z, s->w = w0 - SL_SHINGLE * z;
+			}
+			for (int z = 1; z < nz; z++) {
+				struct vslip *u = &o[z]->s, *l = &o[z - 1]->s;
+				if (u->s0 > l->s0) { /* l's top shows: the one above starts SL_STRIP lower at least */
+					if (u->y < l->y + SL_STRIP) {
+						double d = l->y + SL_STRIP - u->y;
+						u->y += d;
+						u->h = fmax(u->h - d, SL_STRIP);
+					}
+					l->sy = l->y, l->sh = fmin(u->y - l->y, l->h), l->strip_top = true;
+				} else { /* l's bottom shows: it reaches SL_STRIP below the one above at least */
+					double ub = u->y + u->h;
+					if (l->y + l->h < ub + SL_STRIP)
+						l->h = ub + SL_STRIP - l->y;
+					l->sy = ub, l->sh = l->y + l->h - ub, l->strip_top = false;
+				}
+			}
+		}
+		a = b;
+	}
+}
+
+/* the lifted slip's shadow: a 1-px '/' hatch 3 px apart in whole device pixels, ink and
+ * paper only */
+static void hatch(struct ctx *c, const double r[4])
+{
+	cairo_t *cr = c->cr;
+	int u = (int)fmax(1, lround(ui_dev_scale(cr)));
+	cairo_surface_t *p = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 3 * u, 3 * u);
+	cairo_t *pc = cairo_create(p);
+	col(pc, c->L->ink);
+	cairo_rectangle(pc, 2 * u, 0, u, u);
+	cairo_rectangle(pc, u, u, u, u);
+	cairo_rectangle(pc, 0, 2 * u, u, u);
+	cairo_fill(pc);
+	cairo_destroy(pc);
+	cairo_pattern_t *pat = cairo_pattern_create_for_surface(p);
+	cairo_pattern_set_extend(pat, CAIRO_EXTEND_REPEAT);
+	cairo_pattern_set_filter(pat, CAIRO_FILTER_NEAREST);
+	cairo_matrix_t m;
+	cairo_get_matrix(cr, &m); /* the pattern in device pixels */
+	cairo_pattern_set_matrix(pat, &m);
+	cairo_save(cr);
+	double x0 = r[0], y0 = r[1], x1 = r[0] + r[2], y1 = r[1] + r[3];
+	cairo_user_to_device(cr, &x0, &y0);
+	cairo_user_to_device(cr, &x1, &y1);
+	cairo_identity_matrix(cr);
+	cairo_rectangle(cr, round(x0), round(y0), round(x1) - round(x0), round(y1) - round(y0));
+	cairo_set_matrix(cr, &m);
+	cairo_set_source(cr, pat);
+	cairo_fill(cr);
+	cairo_restore(cr);
+	cairo_pattern_destroy(pat);
+	cairo_surface_destroy(p);
+}
+
+/* a crumpled slip (held still): a jagged keyline a few px inside its box, four bent creases
+ * in soft ink (board event.delete, Planner.dc.html crumple) */
+static void crumple(struct ctx *c, double x, double y, double w, double h)
+{
+	static const int J[] = { 2, 0, 3, 1, 3, 0, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0, 1, 2, 3, 1, 0, 2, 3, 1, 2, 0, 3, 1, 2, 3 };
+	cairo_t *cr = c->cr;
+	int k = 0, n = (int)fmax(6, round(w / 34));
+#define JG() J[k++ % (int)(sizeof J / sizeof *J)]
+	cairo_new_path(cr);
+	for (int i = 0; i <= n; i++)
+		cairo_line_to(cr, x + round(3 + (w - 6) * i / n), y + 2 + JG());
+	cairo_line_to(cr, x + w - 2 - JG(), y + round(h * 0.45));
+	for (int i = n; i >= 0; i--)
+		cairo_line_to(cr, x + round(3 + (w - 6) * i / n), y + h - 2 - JG());
+	cairo_line_to(cr, x + 2 + JG(), y + round(h * 0.55));
+#undef JG
+	cairo_close_path(cr);
+	col(cr, c->L->paper);
+	cairo_fill_preserve(cr);
+	cairo_set_line_width(cr, 1.5);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_MITER);
+	col(cr, c->L->ink);
+	cairo_stroke(cr);
+	static const double C[4][3] = { { 0.16, 9, -5 }, { 0.39, -12, 6 }, { 0.63, 7, 10 }, { 0.86, -10, -4 } };
+	for (int i = 0; i < 4; i++) {
+		double cx = x + round(w * C[i][0]);
+		cairo_move_to(cr, cx, y + 4);
+		cairo_line_to(cr, cx + C[i][1], y + round(h * 0.5));
+		cairo_line_to(cr, cx + C[i][2], y + h - 4);
+	}
+	cairo_set_line_width(cr, 1);
+	col(cr, c->L->soft);
+	cairo_stroke(cr);
+}
+
+/* a slip's paper: its keyline and the heavier lower edge (the paper's thickness) */
+static void slip_paper(struct ctx *c, const struct vslip *s, double h, bool grown)
+{
+	const struct look *L = c->L;
+	cairo_t *cr = c->cr;
+	double lw = L->voice == V_WHITE ? 1.5 : 1, low = L->voice == V_WHITE ? 2.5 : 2;
+	ui_col kc = L->voice == V_STATIONERY ? L->soft : L->ink;
+	lk_rect(cr, s->x, s->y, s->w, h, L->ui_r);
+	lk_fill(cr, L->paper);
+	if (!grown) {
+		cairo_save(cr);
+		lk_rect(cr, s->x, s->y, s->w, h, L->ui_r);
+		cairo_clip(cr);
+		lk_rect(cr, s->x, s->y + h - low, s->w, low, 0);
+		lk_fill(cr, kc);
+		cairo_restore(cr);
+	}
+	lk_stroke_box(cr, s->x, s->y, s->w, h, L->ui_r, lw, kc);
+	if (grown) { /* the grown part's lower edge is dotted */
+		cairo_rectangle(cr, s->x, s->y + h - 3, s->w, 3);
+		lk_fill(cr, L->paper);
+		lk_rule(cr, s->x, s->y + h - 2, s->w, 2, L->ink, 2);
+		cairo_rectangle(cr, s->x, s->y + h - 3, lw, 3);
+		cairo_rectangle(cr, s->x + s->w - lw, s->y + h - 3, lw, 3);
+		lk_fill(cr, kc);
+	}
+	if (L->ev_bar)
+		box(c, s->x, s->y, 3, h, 0, 0, 0, L->ink);
+}
+
+/* its tab on the top edge: paper with a keyline on three sides, the top corners rounded */
+static void slip_tab_paint(struct ctx *c, const struct vslip *s)
+{
+	const struct look *L = c->L;
+	cairo_t *cr = c->cr;
+	double r[4], lw = L->voice == V_WHITE ? 1.5 : 1, rr = L->voice == V_STATIONERY ? 2 : 4;
+	slip_tab(s, r);
+	ui_col kc = L->voice == V_STATIONERY ? L->soft : L->ink;
+	double x = r[0], y = r[1], w = r[2], h = r[3];
+	cairo_new_path(cr);
+	cairo_move_to(cr, x, y + h);
+	cairo_arc(cr, x + rr, y + rr, rr, M_PI, 3 * M_PI / 2);
+	cairo_arc(cr, x + w - rr, y + rr, rr, -M_PI / 2, 0);
+	cairo_line_to(cr, x + w, y + h);
+	cairo_close_path(cr);
+	col(cr, L->paper);
+	cairo_fill(cr);
+	double i = lw / 2, ri = rr - i;
+	cairo_move_to(cr, x + i, y + h);
+	cairo_arc(cr, x + rr, y + rr, ri, M_PI, 3 * M_PI / 2);
+	cairo_arc(cr, x + w - rr, y + rr, ri, -M_PI / 2, 0);
+	cairo_line_to(cr, x + w - i, y + h);
+	cairo_set_line_width(cr, lw);
+	col(cr, kc);
+	cairo_stroke(cr);
+}
+
+/* its folded corner at the lower right: the corner gone, the paper folded over, its
+ * diagonal the crease */
+static void slip_ear_paint(struct ctx *c, const struct vslip *s, double h, bool pulled)
+{
+	const struct look *L = c->L;
+	cairo_t *cr = c->cr;
+	double e = slip_ear(h, pulled), cx = s->x + s->w, cy = s->y + h;
+	cairo_move_to(cr, cx + 1, cy - e - 1);
+	cairo_line_to(cr, cx + 1, cy + 1);
+	cairo_line_to(cr, cx - e - 1, cy + 1);
+	cairo_close_path(cr);
+	col(cr, L->paper);
+	cairo_fill(cr);
+	double lw = pulled ? 2 : L->voice == V_STATIONERY ? 1 : 1.5, i = lw / 2; /* its keyline inside the slip */
+	cairo_move_to(cr, cx - i, cy - e);
+	cairo_line_to(cr, cx - e, cy - i);
+	cairo_line_to(cr, cx - e, cy - e);
+	cairo_close_path(cr);
+	col(cr, L->paper);
+	cairo_fill_preserve(cr);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+	cairo_set_line_width(cr, lw);
+	col(cr, pulled || L->voice != V_STATIONERY ? L->ink : L->soft);
+	cairo_stroke(cr);
+}
+
+static void slip_hits(struct ctx *c, struct slipx *sl, int n)
+{
+	/* topmost first: the tabs and folded corners, then the slips and their strips */
+	int top = 0;
+	for (int i = 0; i < n; i++)
+		top = sl[i].s.z > top ? sl[i].s.z : top;
+	for (int pass = 0; pass < 2; pass++)
+		for (int z = top; z >= 0; z--)
+			for (int i = 0; i < n; i++) {
+				struct vslip *s = &sl[i].s;
+				if (s->z != z)
+					continue;
+				bool ontop = s->sh <= 0;
+				double r[4];
+				if (pass == 0 && s->parts) {
+					if (ontop || !s->strip_top) {
+						struct vslip t = *s;
+						t.h = sl[i].gh;
+						slip_ear_target(&t, r);
+						hit(c, r[0], r[1], r[2], r[3], A_EV_EAR, 0, s->id);
+					}
+					if (ontop || s->strip_top) {
+						slip_tab_target(s, r);
+						hit(c, r[0], r[1], r[2], r[3], A_EV_TAB, 0, s->id);
+					}
+				}
+				if (pass == 1) {
+					if (s->fan)
+						hit(c, s->x, s->y, s->w, s->h, A_EV_FAN, 0, s->id);
+					else if (ontop)
+						hit(c, s->x, s->y, s->w, sl[i].gh, A_EVENT, sl[i].cut, s->id);
+					else
+						hit(c, s->x, s->sy, s->w, s->sh, A_EV_STRIP, s->nz, s->id);
+				}
+			}
+}
+
+/* the day agenda's timed events (collected in time order) as slips: stacked, laid out,
+ * their targets, fields and paper. end: the agenda's last hour's y */
+static void agenda_slips(struct ctx *c, struct slipx *sl, int n, struct entry **ev, int ne, int day, double end, int ws,
+			 int we, double y0, double pitch)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	bool fan_open = false;
+	stack_slips(v, sl, n);
+	for (int i = 0; i < n; i++) {
+		struct slipx *q = &sl[i];
+		struct vslip *s = &q->s;
+		fan_open = fan_open || s->fan;
+		if (v->crumple == s->id)
+			s->parts = false;
+		if (s->nz == 1) {
+			/* the title's room: its slip, and the free time below it down to the next
+			 * event or the agenda's end. A title that needs more grows its slip into
+			 * that room (a dotted lower edge); one that doesn't fit shrinks evenly down
+			 * to the smallest readable size, then is cut at the slip's edge */
+			double limit = end;
+			for (int j = 0; j < ne; j++) {
+				if (j == q->i || ev[j]->allday)
+					continue;
+				int sj = (ev[j]->per.start - day) * 1440 + ev[j]->start;
+				if (sj >= s->e0 && sj < we * 60)
+					limit = fmin(limit, y0 + (sj / 60.0 - ws) * pitch);
+			}
+			double room = fmax(s->h, round(limit) - s->y - 1), r, bt;
+			field_extent(&q->e->f, &r, &bt);
+			double needw = r + 4, needh = bt + 4;
+			q->k = 1, q->gh = s->h, q->cut = false;
+			if (needw > s->w || needh > s->h) {
+				q->k = fmin(1, fmin(s->w / fmax(needw, 1), room / fmax(needh, 1)));
+				if (q->k < TITLE_MIN / INK_SIZE) {
+					q->k = TITLE_MIN / INK_SIZE;
+					q->cut = true;
+				}
+				q->gh = fmin(room, fmax(s->h, ceil(needh * q->k)));
+				q->grown = q->gh > s->h;
+			}
+			/* while written, the field reaches a line below its ink, into the room */
+			q->fh = q->k < 1 ? q->gh : fmin(room, fmax(q->gh, bt > s->h - 6 ? bt + PL_ROW : s->h));
+		} else if (s->sh > 0) { /* underneath: its title in its strip */
+			q->k = title_fit(&q->e->f, s->w, s->sh, &q->cut);
+			q->gh = s->h, q->fh = s->sh;
+		} else { /* on top of a stack, or fanned: its own box */
+			q->k = title_fit(&q->e->f, s->w, s->h, &q->cut);
+			q->gh = q->fh = s->h;
+		}
+	}
+	if (!fan_open && v->fan && !c->paint)
+		v->fan = 0; /* the stack it fanned is gone */
+	if (!c->paint) {
+		slip_hits(c, sl, n);
+		for (int i = 0; i < n; i++) {
+			struct slipx *q = &sl[i];
+			struct vslip *s = &q->s;
+			bool strip = s->sh > 0 && !s->fan;
+			struct vfield *ef = entry_field(c, q->e, s->x, strip ? s->sy : s->y, s->w, strip ? s->sh : q->fh, 0, 0);
+			if (ef)
+				ef->layer = 1 + s->z;
+			if (v->nslip < V_SLIPS) {
+				struct vslip t = *s;
+				t.h = q->gh;
+				t.stack += v->nslip - i;
+				v->slip[v->nslip++] = t;
+			}
+		}
+		return;
+	}
+	/* painted stack by stack, bottom first */
+	for (int a = 0; a < n;) {
+		int nz = sl[a].s.nz;
+		for (int z = 0; z < nz; z++)
+			for (int i = a; i < a + nz; i++) {
+				struct slipx *q = &sl[i];
+				struct vslip *s = &q->s;
+				if (s->z != z)
+					continue;
+				if (v->drag == s->id) { /* lifted: its hatched shadow */
+					struct vslip t = *s;
+					t.h = q->gh;
+					double r[4];
+					slip_lift(&t, r);
+					hatch(c, r);
+				}
+				if (v->crumple == s->id)
+					crumple(c, s->x, s->y, s->w, q->gh);
+				else
+					slip_paper(c, s, q->gh, q->grown);
+				if (q->tall) {
+					char w1[8], w2[8], when[20];
+					hm(w1, sizeof w1, s->s0 < 0 ? 0 : s->s0);
+					hm(w2, sizeof w2, s->e0);
+					snprintf(when, sizeof when, "%s–%s", w1, w2);
+					UiFont wf = fam(L->mono, 400, 0, 10);
+					double th;
+					ui_text_w(&c->g, &wf, when, &th);
+					ui_text(&c->g, &wf, when, s->x + s->w - 6, s->y + 3, 2, 0, L->soft, &th);
+				}
+				bool strip = s->sh > 0 && !s->fan;
+				double iy = strip ? s->sy : s->y, ih = strip ? s->sh : q->gh;
+				cairo_save(c->cr);
+				cairo_rectangle(c->cr, s->x + 1, iy, s->w - 2, ih);
+				cairo_clip(c->cr);
+				ink(c, &q->e->f, s->x, iy, q->k);
+				cairo_restore(c->cr);
+				if (s->parts) {
+					slip_tab_paint(c, s);
+					slip_ear_paint(c, s, q->gh, v->drag == s->id && v->drag_ear);
+				}
+			}
+		a += nz;
+	}
+}
+
 static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 {
 	const struct look *L = c->L;
@@ -1232,8 +1707,9 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			}
 		}
 	}
-	/* timed events as blocks */
-	int before = 0, after = 0;
+	/* timed events: blocks on a compact agenda, paper slips on a day's (agenda_slips) */
+	int before = 0, after = 0, nsl = 0;
+	struct slipx sl[V_SLIPS];
 	for (int i = 0; i < ne; i++) {
 		struct entry *x = ev[i];
 		if (x->allday)
@@ -1249,79 +1725,22 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		}
 		double y1 = by + top + (fmax(s0, ws * 60) / 60.0 - ws) * pitch, y2 = by + top + (fmin(e0, we * 60) / 60.0 - ws) * pitch;
 		double bx = b->x + gut, bw = b->w - gut - (compact ? 2 : 6), byy = round(y1) + 1, bh = fmax(8, round(y2 - y1) - 2);
-		/* the title's room (FR-018): its block, and the free time below it down to the next
-		 * event or the agenda's end. A title that needs more grows its block into that room
-		 * (a dotted lower edge); one that doesn't fit shrinks evenly down to the smallest
-		 * readable size, then is cut at the block's edge */
-		double gh = bh, k = 1, fh = bh;
-		bool cut = false, grown = false;
 		if (!compact) {
-			double limit = by + top + (we - ws) * pitch;
-			for (int j = 0; j < ne; j++) {
-				if (j == i || ev[j]->allday)
-					continue;
-				int sj = (ev[j]->per.start - day) * 1440 + ev[j]->start;
-				if (sj >= e0 && sj < we * 60)
-					limit = fmin(limit, by + top + (sj / 60.0 - ws) * pitch);
-			}
-			double room = fmax(bh, round(limit) - byy - 1), r, bt;
-			field_extent(&x->f, &r, &bt);
-			double needw = r + 4, needh = bt + 4;
-			if (needw > bw || needh > bh) {
-				k = fmin(1, fmin(bw / fmax(needw, 1), room / fmax(needh, 1)));
-				if (k < TITLE_MIN / INK_SIZE) {
-					k = TITLE_MIN / INK_SIZE;
-					cut = true;
-				}
-				gh = fmin(room, fmax(bh, ceil(needh * k)));
-				grown = gh > bh;
-			}
-			/* while written, the field reaches a line below its ink, into the room */
-			fh = k < 1 ? gh : fmin(room, fmax(gh, bt > bh - 6 ? bt + PL_ROW : bh));
+			if (nsl < V_SLIPS)
+				sl[nsl++] = (struct slipx){ { x->id, s0, e0, bx, byy, bw, bh, 0, 0, false, 0, 1, 0, false, true }, x, 1, bh, bh,
+						      false, false, y2 - y1 >= 24, i };
+			continue;
 		}
-		box(c, bx, byy, bw, gh, compact ? fmin(L->ui_r, 8) : L->ui_r, L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
+		/* a compact agenda's block: its keyline, the title fitted, a tap opens the day */
+		box(c, bx, byy, bw, bh, fmin(L->ui_r, 8), L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
 		    L->voice == V_STATIONERY ? L->soft : L->ink, L->paper);
-		if (grown && c->paint) { /* the grown part's lower edge is dotted */
-			double lw = L->voice == V_STATIONERY || L->voice == V_EDITORIAL ? 1 : 1.5;
-			cairo_rectangle(c->cr, bx, byy + gh - 3, bw, 3);
-			lk_fill(c->cr, L->paper);
-			lk_rule(c->cr, bx, byy + gh - 2, bw, 2, L->ink, 2);
-			cairo_rectangle(c->cr, bx, byy + gh - 3, lw, 3);
-			cairo_rectangle(c->cr, bx + bw - lw, byy + gh - 3, lw, 3);
-			lk_fill(c->cr, L->voice == V_STATIONERY ? L->soft : L->ink);
-		}
 		if (L->ev_bar)
-			box(c, bx, byy, 3, gh, 0, 0, 0, L->ink);
-		if (!compact && y2 - y1 >= 24) {
-			char w1[8], w2[8], when[20];
-			hm(w1, sizeof w1, s0 < 0 ? 0 : s0);
-			hm(w2, sizeof w2, e0);
-			snprintf(when, sizeof when, "%s–%s", w1, w2);
-			UiFont wf = fam(L->mono, 400, 0, 10);
-			double th;
-			ui_text_w(&c->g, &wf, when, &th);
-			if (c->paint)
-				ui_text(&c->g, &wf, when, bx + bw - 6, byy + 3, 2, 0, L->soft, &th);
-		}
-		if (compact) {
-			ink_fit(c, &x->f, bx + 3, byy + 1, bw - 4, fmin(bh - 2, 15));
-			hit(c, bx, byy, bw, bh, A_DAY, day, 0);
-		} else {
-			struct vfield *ef = entry_field(c, x, bx, byy, bw, fh, 0, 0);
-			if (ef)
-				ef->layer = 1;
-			if (c->paint) {
-				cairo_save(c->cr);
-				cairo_rectangle(c->cr, bx + 1, byy, bw - 2, gh);
-				cairo_clip(c->cr);
-				ink(c, &x->f, bx, byy, k);
-				cairo_restore(c->cr);
-			}
-			hit(c, bx, byy, bw, gh, A_EVENT, cut, x->id);
-		}
+			box(c, bx, byy, 3, bh, 0, 0, 0, L->ink);
+		ink_fit(c, &x->f, bx + 3, byy + 1, bw - 4, fmin(bh - 2, 15));
+		hit(c, bx, byy, bw, bh, A_DAY, day, 0);
 	}
-	/* an event being dragged (FR-018): a dashed outline where it was, and in the gutter the
-	 * time it would land on */
+	/* an event being dragged (FR-018): a dashed outline where it was, under the slips, and in
+	 * the gutter the time it would land on (its end, while its corner is pulled) */
 	struct entry *dg = v->drag && !compact ? store_get(c->s, v->drag) : NULL;
 	if (dg && dg->per.start == day && c->paint) {
 		double y1 = by + top + (v->drag_s0 / 60.0 - ws) * pitch, y2 = by + top + (v->drag_e0 / 60.0 - ws) * pitch;
@@ -1331,11 +1750,16 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		cairo_set_dash(c->cr, dash, 2, 0);
 		lk_stroke_box(c->cr, bx, round(y1) + 1, bw, fmax(8, round(y2 - y1) - 2), L->ui_r, 1, L->soft);
 		cairo_restore(c->cr);
+	}
+	if (!compact)
+		agenda_slips(c, sl, nsl, ev, ne, day, by + top + (we - ws) * pitch, ws, we, by + top, pitch);
+	if (dg && dg->per.start == day && c->paint) {
 		char t[8];
-		hm(t, sizeof t, dg->start);
+		int at = v->drag_ear ? dg->end : dg->start;
+		hm(t, sizeof t, at);
 		UiFont rf = fam(L->mono, 600, 0, 10);
 		double th, w = ui_text_w(&c->g, &rf, t, &th);
-		double ry = by + top + (dg->start / 60.0 - ws) * pitch;
+		double ry = by + top + (at / 60.0 - ws) * pitch;
 		lk_rect(c->cr, b->x + 2, ry - th / 2 - 2, w + 6, th + 4, 3);
 		lk_fill(c->cr, L->ink);
 		ui_text(&c->g, &rf, t, b->x + 5, ry - th / 2, 0, 0, L->paper, &th);
@@ -2110,6 +2534,160 @@ static void title_card(struct ctx *c)
 	hit(c, 0, 0, v->W, v->H, A_CLOSE, 0, 0); /* a tap anywhere closes it */
 }
 
+/* ---- the card that deletes an event (FR-018; board event.delete): after a cross-out or a
+ * crumple, over its slip ---- */
+
+#define DC_W 340
+#define DC_H 135
+
+/* a button (planner.css .pl-btn: 0 plain, 1 primary), its right edge at x; its width */
+static double btn_r(struct ctx *c, double x, double y, const char *label, int style, enum act a, uint32_t id)
+{
+	const struct look *L = c->L;
+	UiFont bf = btn_font(L);
+	double w = tw(c, &bf, label) + 28;
+	x -= w;
+	if (style == 1)
+		box(c, x, y, w, 40, L->ui_r, 0, 0, L->ink);
+	else
+		box(c, x, y, w, 40, L->ui_r, L->edge, L->ink, L->paper);
+	tc(c, &bf, label, x + w / 2, y + 20, 1, 0, style == 1 ? L->paper : L->ink);
+	hit(c, x, y, w, 40, a, 0, id);
+	return w;
+}
+
+/* the stroke that crossed it out, as the pen drew it */
+static void xout_paint(struct ctx *c)
+{
+	struct view *v = c->v;
+	if (!v->xout || v->nxout < 2)
+		return;
+	cairo_t *cr = c->cr;
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+	col(cr, c->L->pen);
+	for (int i = 1; i < v->nxout; i++) {
+		const struct pl_point *a = &v->xout[i - 1], *b = &v->xout[i];
+		cairo_set_line_width(cr, pl_ink_width((a->p + b->p) / 2));
+		cairo_move_to(cr, a->x, a->y);
+		cairo_line_to(cr, b->x, b->y);
+		cairo_stroke(cr);
+	}
+}
+
+static void delete_card(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *e = store_get(c->s, v->title);
+	const struct vslip *s = view_slip(v, v->title);
+	double x = s ? s->x + s->w + 4 - DC_W : v->W - 8 - DC_W, y = s ? s->y + s->h + 6 : v->H / 3;
+	if (s && y + DC_H > v->H - 8) /* no room below: above it */
+		y = s->y - 6 - DC_H;
+	x = fmax(8, fmin(x, v->W - 8 - DC_W));
+	y = fmax(BAR + 4, fmin(y, v->H - 8 - DC_H));
+	v->pop_x = x, v->pop_y = y, v->pop_w = DC_W, v->pop_h = DC_H;
+	if (c->paint)
+		xout_paint(c);
+	pop_frame(c, x, y, DC_W, DC_H);
+	if (e && c->paint)
+		ink_fit(c, &e->f, x + 10, y + 8, DC_W - 20, 28);
+	rule(c, x, y + 44, DC_W);
+	if (e) {
+		char w1[8], w2[8], t[64];
+		int yy, m, d;
+		day_to_ymd(e->per.start, &yy, &m, &d);
+		hm(w1, sizeof w1, e->start);
+		hm(w2, sizeof w2, e->end);
+		snprintf(t, sizeof t, "%s–%s · %s %d", w1, w2, DOW[day_weekday(e->per.start)], d);
+		UiFont ff = fam(L->mono, 400, 0, 12);
+		tc(c, &ff, t, x + 12, y + 44 + 15.5, 0, DC_W - 24, L->soft);
+	}
+	rule(c, x, y + 75, DC_W);
+	double bx = x + DC_W - 12;
+	bx -= btn_r(c, bx, y + 85, "Delete event", 1, A_DEL_YES, v->title) + 8;
+	btn_r(c, bx, y + 85, "Keep", 0, A_DEL_KEEP, v->title);
+	hit(c, x, y, DC_W, DC_H, A_NONE, 0, 0);
+	hit(c, 0, 0, v->W, v->H + v->scroll, A_DEL_KEEP, 0, v->title); /* a tap outside keeps it */
+}
+
+/* ---- crossed out (FR-018) ---- */
+
+/* does the segment a-b meet the rectangle r (x, y, w, h)? */
+static bool seg_meets(const struct pl_point *a, const struct pl_point *b, const double r[4])
+{
+	double t0 = 0, t1 = 1, dx = b->x - a->x, dy = b->y - a->y;
+	double p[4] = { -dx, dx, -dy, dy }, q[4] = { a->x - r[0], r[0] + r[2] - a->x, a->y - r[1], r[1] + r[3] - a->y };
+	for (int i = 0; i < 4; i++) {
+		if (p[i] == 0) {
+			if (q[i] < 0)
+				return false;
+			continue;
+		}
+		double t = q[i] / p[i];
+		if (p[i] < 0)
+			t0 = fmax(t0, t);
+		else
+			t1 = fmin(t1, t);
+		if (t0 > t1)
+			return false;
+	}
+	return true;
+}
+
+static bool pt_in(const struct pl_point *p, const double r[4])
+{
+	return p->x >= r[0] && p->x < r[0] + r[2] && p->y >= r[1] && p->y < r[1] + r[3];
+}
+
+#define XO_NEAR 24 /* how far past the slip's edges or corners a cross-out's ends may lie */
+
+uint32_t view_cross_out(const struct view *v, const struct pl_point *p, int n)
+{
+	if (n < 2)
+		return 0;
+	const struct pl_point *a = &p[0], *b = &p[n - 1];
+	const struct vslip *best = NULL;
+	for (int i = 0; i < v->nslip; i++) {
+		const struct vslip *s = &v->slip[i];
+		double r[4] = { s->x, s->y, s->w, s->h };
+		if (pt_in(a, r) || pt_in(b, r))
+			continue; /* it starts or ends inside: writing */
+		bool through = false;
+		for (int j = 1; j < n && !through; j++)
+			through = seg_meets(&p[j - 1], &p[j], r);
+		if (!through)
+			continue;
+		const struct pl_point *l = a->x <= b->x ? a : b, *rt = a->x <= b->x ? b : a;
+		bool across = l->x < s->x + XO_NEAR && rt->x > s->x + s->w - XO_NEAR && l->x < s->x + XO_NEAR &&
+			      l->y > s->y - XO_NEAR && l->y < s->y + s->h + XO_NEAR && rt->y > s->y - XO_NEAR &&
+			      rt->y < s->y + s->h + XO_NEAR;
+		/* edge to edge: from outside its left edge to past its right edge */
+		bool edges = across && l->x < s->x && rt->x > s->x + s->w;
+		/* corner to corner: each end beyond a corner, the two opposite */
+		bool lt = l->y < s->y, lb = l->y >= s->y + s->h, rtop = rt->y < s->y, rbot = rt->y >= s->y + s->h;
+		bool corners = across && ((lt && rbot) || (lb && rtop));
+		if (!edges && !corners)
+			continue;
+		if (!best || s->z > best->z)
+			best = s;
+	}
+	return best ? best->id : 0;
+}
+
+bool view_covered(const struct view *v, const struct vfield *f)
+{
+	if (v->ed)
+		return false; /* the editor's only field is its name */
+	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS || v->ov == OV_DELETE)
+		return true;
+	if (v->ov == OV_INFO || v->ov == OV_MENU)
+		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
+	if (v->ov == OV_HIDDEN || v->ov == OV_MOVE)
+		return f->y + f->h > v->H - round((v->H - 60) * 0.66);
+	return false;
+}
+
 /* ---- Move: another day, week or month for an entry (from the hidden list) ---- */
 
 static void sheet_move(struct ctx *c)
@@ -2758,6 +3336,7 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 	if (!paint) {
 		v->nf = 0;
 		v->nh = 0;
+		v->nslip = 0;
 		int how = 3;
 		const char *id = store_template(s, v->per, &how);
 		v->t = tmpl_find(id);
@@ -2793,6 +3372,18 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 			settings(&c);
 		bar(&c);
 		page(&c);
+		if (v->ov == OV_DELETE) {
+			/* over its slip, as laid out: its targets go before the page's */
+			int nh = v->nh;
+			delete_card(&c);
+			int k = v->nh - nh;
+			struct vhit t[8];
+			if (k > 0 && k <= 8) {
+				memcpy(t, v->hit + nh, k * sizeof *t);
+				memmove(v->hit + k, v->hit, nh * sizeof *t);
+				memcpy(v->hit, t, k * sizeof *t);
+			}
+		}
 		return;
 	}
 	cairo_save(cr);
@@ -2809,6 +3400,8 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 		title_card(&c);
 	if (v->ov == OV_MOVE)
 		sheet_move(&c);
+	if (v->ov == OV_DELETE)
+		delete_card(&c);
 	if (v->tm)
 		text_fields(&c);
 	cairo_restore(cr);
@@ -3540,6 +4133,7 @@ static void ed_run(struct ctx *c)
 		v->H = H;
 		v->nf = 0;
 		v->nh = 0;
+		v->nslip = 0;
 		v->hidden_count = 0;
 		v->pop_w = 0;
 		if (e->ov == EO_USED || e->ov == EO_DISCARD || e->ov == EO_RESTORE)

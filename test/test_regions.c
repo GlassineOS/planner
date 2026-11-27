@@ -156,7 +156,7 @@ int main(void)
 
 	/* an event of the agenda, with no ink near its lower edge */
 	struct entry *ev = store_add(&t.s, E_EVENT, d);
-	ev->start = 13 * 60, ev->end = 14 * 60;
+	ev->start = 11 * 60, ev->end = 12 * 60; /* free time below to 14:00 */
 	sample_ink(&ev->f, "call", 2, 19, 1);
 	relayout(&t);
 	const struct vfield *ef = event_field(&t, ev->id);
@@ -305,6 +305,45 @@ int main(void)
 	ev->f.autograph = SHOW_FOLLOW;
 	relayout(&t);
 	CHECK_INT(k->display, 0);
+
+	/* overlapping events (FR-018): each slip's region on the layer its z-order gives, the top
+	 * one's above; a slip brought to the top takes the higher layer, the same regions kept;
+	 * fanned out, each region is its slip's place in the fan */
+	{
+		struct entry *o1 = store_add(&t.s, E_EVENT, d), *o2 = store_add(&t.s, E_EVENT, d);
+		o1->start = 19 * 60, o1->end = 20 * 60;
+		o2->start = 19 * 60 + 30, o2->end = 20 * 60 + 30;
+		sample_ink(&o1->f, "film", 2, 19, 31);
+		sample_ink(&o2->f, "call", 2, 19, 32);
+		relayout(&t);
+		const struct vfield *f1 = event_field(&t, o1->id), *f2 = event_field(&t, o2->id);
+		CHECK(f1 && f2);
+		if (f1 && f2) {
+			struct fake *k1 = (struct fake *)find_region(t.list, f1)->r, *k2 = (struct fake *)find_region(t.list, f2)->r;
+			CHECK(k1->layer == 1 && k2->layer == 2);
+			CHECK_INT(mismatches(t.list, &t.v, t.v.H), 0);
+			int n1 = made;
+			view_raise(&t.v, o1->id);
+			relayout(&t);
+			CHECK_INT(made, n1);
+			CHECK(k1->layer == 2 && k2->layer == 1);
+			CHECK_INT(mismatches(t.list, &t.v, t.v.H), 0);
+			struct entry *o3 = store_add(&t.s, E_EVENT, d);
+			o3->start = 20 * 60, o3->end = 21 * 60;
+			t.v.fan = o3->id;
+			relayout(&t);
+			const struct vslip *s3 = view_slip(&t.v, o3->id);
+			CHECK(s3 && s3->fan);
+			const struct vfield *f3 = event_field(&t, o3->id);
+			CHECK(f3 && s3 && find_region(t.list, f3) && ((struct fake *)find_region(t.list, f3)->r)->x == s3->x &&
+			      ((struct fake *)find_region(t.list, f3)->r)->w == s3->w);
+			CHECK_INT(mismatches(t.list, &t.v, t.v.H), 0);
+			t.v.fan = 0, t.v.nraise = 0;
+			store_delete(&t.s, o3->id);
+		}
+		store_delete(&t.s, o1->id), store_delete(&t.s, o2->id);
+		relayout(&t);
+	}
 
 	/* a page with no fields: every region goes */
 	t.v.nf = 0;

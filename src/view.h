@@ -21,7 +21,7 @@
 #define PL_INK_EXP 1.0
 double pl_ink_width(double pressure);
 
-enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE, OV_MOVE };
+enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE, OV_MOVE, OV_DELETE };
 
 /* a handwriting field: one writing region */
 enum fkind {
@@ -57,6 +57,11 @@ enum act {
 	A_YEAR_NAV, /* the year's arrows: arg -1/+1 */
 	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
 	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
+	/* an agenda's slip (FR-018), id the event: its tab and its folded corner (a drag moves it,
+	 * changes its end), the strip of a slip another lies on (a tap brings it to the top, or
+	 * fans out a stack of three or more), a fanned slip (a tap brings it to the top) */
+	A_EV_TAB, A_EV_EAR, A_EV_STRIP, A_EV_FAN,
+	A_DEL_KEEP, A_DEL_YES, /* the card that deletes an event: Keep (also a tap outside), Delete event */
 };
 struct vhit {
 	double x, y, w, h;
@@ -65,6 +70,31 @@ struct vhit {
 	uint32_t id;
 	bool fixed;     /* on the bar above the keyboard: screen coordinates, never scrolled */
 };
+
+/* An agenda's timed event as a paper slip on the day sheet (FR-018; boards event.drag,
+ * event.delete, event.stack): page coordinates, as laid out. Overlapping events lie as
+ * shingled slips, the one on top shifted right per level; one underneath shows a strip */
+struct vslip {
+	uint32_t id;
+	int s0, e0;          /* its minutes on the agenda's day */
+	double x, y, w, h;   /* as drawn: its level's place, a fanned slip's place in the fan */
+	double sy, sh;       /* the strip of it that shows (sh 0: it lies on top, all of it shows) */
+	bool strip_top;      /* the strip is its top (the one above starts later), else its bottom */
+	int z, nz;           /* its level in its stack (0 the bottom) and the stack's size (1 alone) */
+	int stack;           /* its stack's number in the view */
+	bool fan;            /* fanned out: side by side, no tab, no folded corner */
+	bool parts;          /* drawn with its tab and its folded corner */
+};
+#define V_SLIPS 64
+/* the slip's parts: its tab (26 x 8, 6 px above its top edge, 30 px in from its right edge),
+ * the tab's touch target (44 x 28), its folded corner's size (pulled: while its end is
+ * dragged) and touch target (32 x 32 at its lower right), its lifted shadow (its size, 5 px
+ * right and down), each as x, y, w, h */
+void slip_tab(const struct vslip *s, double r[4]);
+void slip_tab_target(const struct vslip *s, double r[4]);
+double slip_ear(double h, bool pulled);
+void slip_ear_target(const struct vslip *s, double r[4]);
+void slip_lift(const struct vslip *s, double r[4]);
 
 #define V_FIELDS 160
 /* the header bar's height (logical px): 60, and taller by as much as its title and its
@@ -94,6 +124,20 @@ struct view {
 	int hidden_count;
 	double pop_x, pop_y, pop_w, pop_h; /* the open popover's rectangle */
 	uint32_t drag; int drag_s0, drag_e0; /* an event being dragged: where it was (dashed outline, gutter readout) */
+	bool drag_ear;      /* its folded corner is pulled (its end dragged) */
+	/* the agenda's slips as laid out; the z-order the person chose (view state, never
+	 * saved: a slip brought to the top is last), a fanned stack (one of its slips), a
+	 * crumpled slip (held still) */
+	struct vslip slip[V_SLIPS];
+	int nslip;
+	uint32_t raise[16];
+	int nraise;
+	uint32_t fan;
+	uint32_t crumple;
+	/* OV_DELETE: the event in title; a stroke that crossed it out, page coordinates (owned
+	 * by the caller), shown over it while the card is open */
+	const struct pl_point *xout;
+	int nxout;
 	/* text mode (FR-012 to FR-017): the layout stays; the keyboard covers the screen below
 	 * vis_h and the page moves up by scroll (whole rows) to reach a field under it */
 	int tm;             /* 0 ink mode, 1 one field, 2 the whole view */
@@ -162,6 +206,18 @@ bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, in
  * field, moved into it as the layout placed it, so it stays where it was written. NULL: none */
 struct entry *view_free_stroke(struct view *v, struct store *s, const struct vfield *f, uint32_t k,
 			       const struct pl_point *p, int n, void (*relayout)(void *ud), void *ud, bool *kept);
+/* the slip of event id as laid out (NULL: none) */
+const struct vslip *view_slip(const struct view *v, uint32_t id);
+/* bring event id to the top of its stack (view state) */
+void view_raise(struct view *v, uint32_t id);
+/* A pen stroke (page coordinates) that crosses out a slip (FR-018): it starts and ends
+ * outside the slip, runs through it, and goes from edge to edge (from outside its left edge
+ * to past its right edge, either way) or between opposite corners. The slip it crosses out
+ * (the topmost, when it crosses several), else 0: a stroke that starts inside a slip is
+ * writing */
+uint32_t view_cross_out(const struct view *v, const struct pl_point *p, int n);
+/* under an overlay: the field takes no strokes */
+bool view_covered(const struct view *v, const struct vfield *f);
 /* a choice of template as the picker and the year list name it: from the period of kind k at
  * day from to the one at day to (to < 0: on from there, to == from: that period only), its year
  * added where it isn't shown_year: "weeks 1–13 · Jan–Mar", "from week 14 on · from Apr",

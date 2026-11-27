@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "hold.h"
 #include "content.h"
 #include "settle.h"
 #include "trace.h"
@@ -97,8 +98,13 @@ static struct {
 	double tool_x, tool_y;
 	/* dragging an event (finger) */
 	uint32_t drag;
-	int drag_s0, drag_e0, drag_mode; /* 1 move, 2 the lower edge */
+	int drag_s0, drag_e0, drag_mode; /* 1 move, 2 the end (the folded corner, the lower edge) */
 	double drag_y0, drag_mpp;
+	struct hold hold; /* a finger held still on a slip crumples it (FR-018) */
+	/* the pen outside every field: its points (page coordinates), for a cross-out */
+	struct pl_point *xpt;
+	int nxs, xs_cap;
+	bool xs_on;
 	/* the template editor, and a widget or its edge dragged in it (1 the widget, 2 its edge) */
 	struct editor ed;
 	int ed_drag;
@@ -246,6 +252,8 @@ static void relayout_later(void)
 
 static void layout(void);
 static void restore(struct region *rg, struct entry *e);
+static void delete_ask(uint32_t id, bool crossed);
+static void delete_done(bool del);
 static void free_relayout(void *ud)
 {
 	layout();
@@ -277,6 +285,25 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 			return;
 		for (size_t i = 0; i < n; i++)
 			q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
+		/* a stroke from above or below a slip to past its opposite corner crosses it out:
+		 * the card asks, no event is made (FR-018) */
+		if (P.xs_cap < (int)n) {
+			struct pl_point *nx = realloc(P.xpt, n * sizeof *nx);
+			if (nx)
+				P.xpt = nx, P.xs_cap = (int)n;
+		}
+		if (P.xs_cap >= (int)n && P.v.ov == OV_NONE) {
+			for (size_t i = 0; i < n; i++)
+				P.xpt[i] = (struct pl_point){ q[i].x + (float)rg->f.x, q[i].y + (float)rg->f.y, q[i].p, q[i].t };
+			P.nxs = (int)n;
+			uint32_t id = view_cross_out(&P.v, P.xpt, P.nxs);
+			if (id) {
+				free(q);
+				delete_ask(id, true);
+				return;
+			}
+			P.nxs = 0;
+		}
 		bool kept;
 		struct vfield f = rg->f;
 		struct entry *x = view_free_stroke(&P.v, &P.s, &f, k, q, (int)n, free_relayout, NULL, &kept);
@@ -388,16 +415,7 @@ static const struct ghw_region_listener region_listener = { .stroke = on_stroke,
 
 static bool covered(const struct vfield *f)
 {
-	struct view *v = &P.v;
-	if (v->ed)
-		return false; /* the editor's only field is its name */
-	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS)
-		return true;
-	if (v->ov == OV_INFO || v->ov == OV_MENU)
-		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
-	if (v->ov == OV_HIDDEN || v->ov == OV_MOVE)
-		return f->y + f->h > v->H - round((v->H - 60) * 0.66);
-	return false;
+	return view_covered(&P.v, f);
 }
 
 static void restore(struct region *rg, struct entry *e)
@@ -950,6 +968,28 @@ static void tap_(double x, double y, bool finger)
 		relayout_later();
 		return;
 	}
+	if (v->ov == OV_DELETE) { /* the card: Delete event, else (Keep, a tap outside) as it was */
+		if (h && (h->a == A_DEL_YES || h->a == A_DEL_KEEP))
+			delete_done(h->a == A_DEL_YES);
+		return;
+	}
+	if (v->fan && !(h && h->a == A_EV_FAN)) { /* a tap beside a fanned stack closes it */
+		v->fan = 0;
+		relayout_later();
+		return;
+	}
+	if (h && (h->a == A_EV_STRIP || h->a == A_EV_FAN)) {
+		/* a slip underneath: to the top, or a stack of three or more fanned out; a fanned
+		 * slip: to the top, the fan closed */
+		if (h->a == A_EV_STRIP && h->arg >= 3)
+			v->fan = h->id;
+		else {
+			view_raise(v, h->id);
+			v->fan = 0;
+		}
+		relayout_later();
+		return;
+	}
 	if (finger && !v->ed && v->ov == OV_NONE && (!h || h->a == A_EVENT || h->a == A_NONE)) {
 		/* a finger tap on a field opens its text mode (FR-012); the pen never does. A cut
 		 * title shows whole first (FR-018) */
@@ -1217,6 +1257,36 @@ static void tap(double x, double y, bool finger)
 		content_tap(&P.said);
 }
 
+/* the card that deletes event id (FR-018), after a cross-out (its stroke: P.xpt) or a crumple;
+ * laid out at once, not after the pen's pause */
+static void delete_ask(uint32_t id, bool crossed)
+{
+	struct view *v = &P.v;
+	v->ov = OV_DELETE;
+	v->title = id;
+	v->xout = crossed ? P.xpt : NULL;
+	v->nxout = crossed ? P.nxs : 0;
+	settle_done(&P.st);
+	layout();
+	P.dirty = true;
+	content_tap(&P.said);
+}
+
+/* the card closed: kept, or the event deleted */
+static void delete_done(bool del)
+{
+	struct view *v = &P.v;
+	if (del && store_get(&P.s, v->title)) {
+		store_delete(&P.s, v->title);
+		save(); /* a delete is never journalled */
+	}
+	v->ov = OV_NONE;
+	v->crumple = 0;
+	v->xout = NULL, v->nxout = 0;
+	P.nxs = 0;
+	relayout_later();
+}
+
 /* the free time field of the agenda an event is in: its minutes per px */
 static double mpp_of(uint32_t id)
 {
@@ -1245,8 +1315,12 @@ static void finger_down(double x, double y)
 		P.ed_x0 = x, P.ed_y0 = y;
 		return;
 	}
+	hold_end(&P.hold);
 	const struct vhit *h = P.refused || P.v.tm ? NULL : view_hit(&P.v, x, y);
-	if (h && h->a == A_EVENT && P.v.ov == OV_NONE) {
+	bool slip = h && (h->a == A_EVENT || h->a == A_EV_TAB || h->a == A_EV_EAR || h->a == A_EV_STRIP);
+	if (slip && P.v.ov == OV_NONE && !P.v.fan) {
+		/* a slip: by its tab or itself it moves, by its folded corner or its lower edge its
+		 * end; held still, it crumples */
 		struct entry *e = store_get(&P.s, h->id);
 		double mpp = mpp_of(h->id);
 		if (e && mpp > 0) {
@@ -1254,9 +1328,31 @@ static void finger_down(double x, double y)
 			P.drag_s0 = e->start, P.drag_e0 = e->end;
 			P.drag_y0 = y;
 			P.drag_mpp = mpp;
-			P.drag_mode = y > h->y + h->h - 10 ? 2 : 1;
+			P.drag_mode = h->a == A_EV_EAR || (h->a == A_EVENT && y > h->y + h->h - 10) ? 2 : 1;
 		}
+		if (e && h->a != A_EV_EAR)
+			hold_begin(&P.hold, e->id, x, y, now_ms());
 	}
+}
+
+/* the finger held still on a slip: it crumples (one refresh of its place); its lift opens the
+ * card that deletes it */
+static void hold_due(void)
+{
+	if (!hold_fire(&P.hold, now_ms()))
+		return;
+	struct entry *e = store_get(&P.s, P.hold.id);
+	if (!e || (P.drag && (e->start != P.drag_s0 || e->end != P.drag_e0))) {
+		hold_end(&P.hold); /* it was moved: a drag */
+		return;
+	}
+	P.drag = 0;
+	P.v.drag = 0;
+	P.v.crumple = e->id;
+	settle_done(&P.st);
+	layout();
+	P.dirty = true;
+	content_tap(&P.said);
 }
 
 static void finger_motion(double x, double y)
@@ -1273,11 +1369,22 @@ static void finger_motion(double x, double y)
 		}
 		return;
 	}
+	if (P.hold.fired)
+		return; /* crumpled: the lift opens the card */
 	if (!P.drag)
 		return;
 	struct entry *e = store_get(&P.s, P.drag);
 	if (!e)
 		return;
+	hold_move(&P.hold, x, y);
+	if ((fabs(x - P.tx) > HOLD_SLOP || fabs(y - P.ty) > HOLD_SLOP) && P.v.drag != P.drag) {
+		/* past the slop: a drag, the slip lifts */
+		P.v.drag = P.drag;
+		P.v.drag_s0 = P.drag_s0, P.v.drag_e0 = P.drag_e0;
+		P.v.drag_ear = P.drag_mode == 2;
+		relayout_later();
+		content_step(&P.said);
+	}
 	int steps = (int)lround((y - P.drag_y0) * P.drag_mpp / 30);
 	int s = P.drag_s0, en = P.drag_e0;
 	if (P.drag_mode == 1)
@@ -1288,8 +1395,10 @@ static void finger_motion(double x, double y)
 		en -= s, s = 0;
 	if (s != e->start || en != e->end) {
 		e->start = s, e->end = en;
+		hold_end(&P.hold);
 		P.v.drag = P.drag;
 		P.v.drag_s0 = P.drag_s0, P.v.drag_e0 = P.drag_e0;
+		P.v.drag_ear = P.drag_mode == 2;
 		relayout_later(); /* once per step, only where the block leaves and enters */
 		content_step(&P.said);
 	}
@@ -1330,9 +1439,17 @@ static void finger_up(double x, double y)
 		P.ed.drop_target = NULL;
 		editor_relayout();
 	}
+	if (P.hold.fired) { /* crumpled: the card */
+		uint32_t id = P.hold.id;
+		hold_end(&P.hold);
+		if (P.v.crumple == id && store_get(&P.s, id))
+			delete_ask(id, false);
+		return;
+	}
+	hold_end(&P.hold);
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
-		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0);
+		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0), lifted = P.v.drag != 0;
 		P.drag = 0;
 		P.v.drag = 0;
 		if (moved) {
@@ -1340,6 +1457,8 @@ static void finger_up(double x, double y)
 			relayout_later();
 			return;
 		}
+		if (lifted)
+			relayout_later(); /* put down where it was: the shadow goes */
 	}
 	if (fabs(x - P.tx) < 12 && fabs(y - P.ty) < 12)
 		tap(x, y, true);
@@ -1375,6 +1494,11 @@ static void t_cancel(void *d, struct wl_touch *t)
 {
 	P.touch_id = -1;
 	content_end(&P.said);
+	hold_end(&P.hold);
+	if (P.v.crumple && P.v.ov != OV_DELETE) {
+		P.v.crumple = 0;
+		relayout_later();
+	}
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
 		if (e)
@@ -1425,6 +1549,18 @@ static bool in_field(double x, double y)
 	}
 	return false;
 }
+/* a point of the pen's stroke outside the fields, screen coordinates */
+static void xs_add(double x, double y)
+{
+	if (P.nxs == P.xs_cap) {
+		int cap = P.xs_cap ? 2 * P.xs_cap : 256;
+		struct pl_point *n = realloc(P.xpt, cap * sizeof *n);
+		if (!n)
+			return;
+		P.xpt = n, P.xs_cap = cap;
+	}
+	P.xpt[P.nxs++] = (struct pl_point){ (float)x, (float)(y + P.v.scroll), 0.5f, 0 };
+}
 static void tt_type(void *d, struct zwp_tablet_tool_v2 *t, uint32_t type) {}
 static void tt_serial(void *d, struct zwp_tablet_tool_v2 *t, uint32_t hi, uint32_t lo) {}
 static void tt_wacom(void *d, struct zwp_tablet_tool_v2 *t, uint32_t hi, uint32_t lo) {}
@@ -1444,6 +1580,12 @@ static void tt_down(void *d, struct zwp_tablet_tool_v2 *t, uint32_t s)
 	P.tool_down = true;
 	P.pen_down = true;
 	down_x = P.tool_x, down_y = P.tool_y;
+	/* outside every field: no region takes the stroke, so it comes only here; kept for a
+	 * cross-out (FR-018) */
+	P.nxs = 0;
+	P.xs_on = !P.v.tm && P.v.ov == OV_NONE && !P.v.ed && !in_field(down_x, down_y);
+	if (P.xs_on)
+		xs_add(P.tool_x, P.tool_y);
 }
 static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 {
@@ -1451,12 +1593,22 @@ static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 	P.pen_down = false;
 	P.pen_up_ms = now_ms();
 	PL_TR("pen up %.0f,%.0f", P.tool_x, P.tool_y);
+	bool xs = P.xs_on;
+	P.xs_on = false;
 	if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
 		tap(down_x, down_y, false);
+	else if (xs) {
+		uint32_t id = view_cross_out(&P.v, P.xpt, P.nxs);
+		PL_TR("stroke outside the fields, %d points: crosses out %u", P.nxs, id);
+		if (id)
+			delete_ask(id, true);
+	}
 }
 static void tt_motion(void *d, struct zwp_tablet_tool_v2 *t, wl_fixed_t x, wl_fixed_t y)
 {
 	P.tool_x = wl_fixed_to_double(x), P.tool_y = wl_fixed_to_double(y);
+	if (P.xs_on && P.tool_down)
+		xs_add(P.tool_x, P.tool_y);
 }
 static void tt_pressure(void *d, struct zwp_tablet_tool_v2 *t, uint32_t p) {}
 static void tt_distance(void *d, struct zwp_tablet_tool_v2 *t, uint32_t p) {}
@@ -1898,6 +2050,7 @@ int main(int argc, char **argv)
 					}
 			}
 		}
+		hold_due();
 		if (P.save_due && !P.pen_down && now_ms() >= P.save_due)
 			save(); /* the journal into planner.ics, idle */
 		if (P.dirty || P.part.w > 0)
@@ -1914,6 +2067,9 @@ int main(int argc, char **argv)
 			int t2 = left > 0 ? (int)left + 5 : 5;
 			timeout = timeout < 0 || t2 < timeout ? t2 : timeout;
 		}
+		long long hl = hold_left(&P.hold, now_ms());
+		if (hl >= 0)
+			timeout = timeout < 0 || hl + 1 < timeout ? (int)hl + 1 : timeout;
 		if (P.tm_left_ms) {
 			long long left = KBD_GONE_MS - (now_ms() - P.tm_left_ms);
 			int t2 = left > 0 ? (int)left + 5 : 5;

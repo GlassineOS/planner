@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../src/hold.h"
 #include "../src/view.h"
 #include "sample.h"
 #include "t.h"
@@ -21,6 +22,18 @@ static uint32_t px(cairo_surface_t *sf, double x, double y)
 {
 	const unsigned char *d = cairo_image_surface_get_data(sf);
 	return ((const uint32_t *)(d + (int)y * cairo_image_surface_get_stride(sf)))[(int)x] & 0xffffff;
+}
+
+/* the box (x0, y0, x1, y1) where two paints differ; false when they don't */
+static bool diff_box(cairo_surface_t *a, cairo_surface_t *b, double r[4])
+{
+	int w = cairo_image_surface_get_width(a), h = cairo_image_surface_get_height(a);
+	r[0] = r[1] = 1e9, r[2] = r[3] = -1;
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++)
+			if (px(a, x, y) != px(b, x, y))
+				r[0] = fmin(r[0], x), r[1] = fmin(r[1], y), r[2] = fmax(r[2], x + 1), r[3] = fmax(r[3], y + 1);
+	return r[2] >= 0;
 }
 
 /* a stroke for the free time's tests: n points from (x0, y0) to (x1, y1), a zig-zag of
@@ -654,6 +667,263 @@ int main(void)
 					cairo_destroy(mc);
 					cairo_surface_destroy(ms);
 				}
+	}
+	/* FR-018: events as paper slips (boards event.drag, event.delete, event.stack) */
+	{
+		struct store ss;
+		store_init(&ss, NULL);
+		struct period d = period_of(P_DAY, today);
+		store_choose(&ss, d, d.start, "day-agenda");
+		struct entry *a = store_add(&ss, E_EVENT, d);
+		a->start = 10 * 60, a->end = 11 * 60;
+		sample_ink(&a->f, "dentist", 2, 19, 3);
+		struct view w = { .per = d, .today = today, .W = 702, .H = 896, .hidden_kind = -1 };
+		view_layout(&w, &ss, &L, cr);
+		const struct vslip *sa = view_slip(&w, a->id);
+		CHECK(sa && sa->nz == 1 && sa->z == 0 && sa->parts && !sa->fan && sa->sh == 0);
+		if (sa) {
+			/* the tab: 26 x 8, 6 px above the top edge, 30 px in from the right; its target 44 x 28 */
+			double r[4];
+			slip_tab(sa, r);
+			CHECK(r[0] == sa->x + sa->w - 56 && r[1] == sa->y - 6 && r[2] == 26 && r[3] == 8);
+			slip_tab_target(sa, r);
+			CHECK(r[0] == sa->x + sa->w - 65 && r[1] == sa->y - 16 && r[2] == 44 && r[3] == 28);
+			/* the folded corner: max(8, min(14, h - 6)), pulled min(22, h - 4); its target 32 x 32 */
+			CHECK(slip_ear(40, false) == 14 && slip_ear(18, false) == 12 && slip_ear(10, false) == 8);
+			CHECK(slip_ear(40, true) == 22 && slip_ear(20, true) == 16);
+			slip_ear_target(sa, r);
+			CHECK(r[0] == sa->x + sa->w - 32 && r[1] == sa->y + sa->h - 32 && r[2] == 32 && r[3] == 32);
+			/* lifted: a shadow its size, 5 px right and down */
+			slip_lift(sa, r);
+			CHECK(r[0] == sa->x + 5 && r[1] == sa->y + 5 && r[2] == sa->w && r[3] == sa->h);
+			/* the corner before the tab before the slip; the tab's target reaches above it */
+			const struct vhit *h = view_hit(&w, sa->x + sa->w - 6, sa->y + sa->h - 6);
+			CHECK(h && h->a == A_EV_EAR && h->id == a->id);
+			h = view_hit(&w, sa->x + sa->w - 43, sa->y - 3);
+			CHECK(h && h->a == A_EV_TAB && h->id == a->id);
+			h = view_hit(&w, sa->x + sa->w - 43, sa->y - 14);
+			CHECK(h && h->a == A_EV_TAB);
+			h = view_hit(&w, sa->x + 40, sa->y + sa->h / 2);
+			CHECK(h && h->a == A_EVENT && h->id == a->id);
+			/* the lower edge still changes the end: the slip's target reaches it */
+			h = view_hit(&w, sa->x + 40, sa->y + sa->h - 3);
+			CHECK(h && h->a == A_EVENT && h->y + h->h - 10 < sa->y + sa->h - 3);
+			/* crossed out: edge to edge (either way) and corner to corner delete; a stroke
+			 * that starts inside the slip, ends inside it, or touches no slip doesn't */
+			struct pl_point q[16];
+			double L0 = sa->x, R0 = sa->x + sa->w, T0 = sa->y, B0 = sa->y + sa->h;
+			int n = line_pts(q, 16, L0 - 16, T0 + sa->h * 0.86, R0 + 10, T0 + sa->h * 0.18, 0);
+			CHECK_INT(view_cross_out(&w, q, n), a->id);
+			n = line_pts(q, 16, R0 + 4, T0 + sa->h * 0.5, L0 - 6, T0 + sa->h * 0.4, 0);
+			CHECK_INT(view_cross_out(&w, q, n), a->id);
+			n = line_pts(q, 16, L0 + 8, T0 - 8, R0 - 8, B0 + 8, 0);
+			CHECK_INT(view_cross_out(&w, q, n), a->id);
+			n = line_pts(q, 16, L0 + 8, B0 + 6, R0 - 6, T0 - 6, 0);
+			CHECK_INT(view_cross_out(&w, q, n), a->id);
+			n = line_pts(q, 16, L0 + 30, T0 + sa->h * 0.5, R0 + 10, T0 + sa->h * 0.5, 0);
+			CHECK_INT(view_cross_out(&w, q, n), 0); /* starts inside: writing */
+			n = line_pts(q, 16, L0 - 16, T0 + sa->h * 0.5, R0 - 30, T0 + sa->h * 0.5, 0);
+			CHECK_INT(view_cross_out(&w, q, n), 0); /* ends inside */
+			n = line_pts(q, 16, L0 - 16, B0 + 60, R0 + 10, B0 + 70, 0);
+			CHECK_INT(view_cross_out(&w, q, n), 0); /* touches no slip */
+			n = line_pts(q, 16, L0 - 16, T0 + 4, L0 + 60, T0 - 40, 0);
+			CHECK_INT(view_cross_out(&w, q, n), 0); /* through a corner only */
+
+			/* the card that deletes it: 340 wide, right-aligned to the slip, 6 px below it;
+			 * Keep, Delete event; a tap outside keeps it; nothing under it takes the pen */
+			w.ov = OV_DELETE, w.title = a->id;
+			view_layout(&w, &ss, &L, cr);
+			sa = view_slip(&w, a->id);
+			CHECK(sa && w.pop_w == 340 && w.pop_x + w.pop_w == sa->x + sa->w + 4 && w.pop_y == sa->y + sa->h + 6);
+			const struct vhit *keep = find(&w, A_DEL_KEEP, -1), *del = find(&w, A_DEL_YES, -1);
+			CHECK(keep && del && keep->x < del->x && del->id == a->id);
+			CHECK(keep && keep->x >= w.pop_x && keep->y >= w.pop_y && keep->y + keep->h <= w.pop_y + w.pop_h);
+			CHECK(del && del->x + del->w <= w.pop_x + w.pop_w && view_hit(&w, del->x + 4, del->y + 4) == del);
+			h = view_hit(&w, w.pop_x + 20, w.pop_y + 20);
+			CHECK(h && h->a == A_NONE);
+			h = view_hit(&w, 30, 700);
+			CHECK(h && h->a == A_DEL_KEEP);
+			int cov = 0;
+			for (int i = 0; i < w.nf; i++)
+				cov += view_covered(&w, &w.f[i]);
+			CHECK_INT(cov, w.nf);
+			/* no room below: above it */
+			a->start = 21 * 60 + 30, a->end = 22 * 60 + 30;
+			view_layout(&w, &ss, &L, cr);
+			sa = view_slip(&w, a->id);
+			CHECK(sa && w.pop_y + w.pop_h + 6 == sa->y);
+			a->start = 10 * 60, a->end = 11 * 60;
+			w.ov = OV_NONE;
+		}
+		/* what a slip's states repaint: only its place (and its shadow, the card) */
+		{
+			cairo_surface_t *s0 = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 702, 896),
+					*s1 = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 702, 896);
+			cairo_t *c0 = cairo_create(s0), *c1 = cairo_create(s1);
+			view_layout(&w, &ss, &L, c0);
+			view_paint(&w, &ss, &L, c0);
+			cairo_surface_flush(s0);
+			sa = view_slip(&w, a->id);
+			struct vslip at = sa ? *sa : (struct vslip){ 0 };
+			double b[4];
+			/* lifted: the shadow, 5 px right and down, ink and paper only (no greys); the
+			 * gutter shows the readout as before */
+			w.drag = a->id, w.drag_s0 = a->start, w.drag_e0 = a->end;
+			view_layout(&w, &ss, &L, c1);
+			view_paint(&w, &ss, &L, c1);
+			cairo_surface_flush(s1);
+			CHECK(diff_box(s0, s1, b) && b[0] >= at.x - 40 && b[1] >= at.y - 12 && b[2] <= at.x + at.w + 6 &&
+			      b[3] <= at.y + at.h + 6);
+			int ink = 0, grey = 0;
+			for (int y = (int)at.y + 8; y < (int)(at.y + at.h); y++)
+				for (int x = (int)(at.x + at.w) + 1; x < (int)(at.x + at.w) + 5; x++) {
+					uint32_t p = px(s1, x, y), was = px(s0, x, y);
+					ink += p == (L.ink & 0xffffff);
+					grey += p != was && p != (L.ink & 0xffffff);
+				}
+			CHECK(ink > 0 && grey == 0);
+			w.drag = 0;
+			/* crumpled: its place */
+			w.crumple = a->id;
+			view_layout(&w, &ss, &L, c1);
+			view_paint(&w, &ss, &L, c1);
+			cairo_surface_flush(s1);
+			CHECK(diff_box(s0, s1, b) && b[0] >= at.x && b[1] >= at.y - 7 && b[2] <= at.x + at.w + 1 &&
+			      b[3] <= at.y + at.h + 1);
+			/* its tab and corner go with it */
+			CHECK(find(&w, A_EV_TAB, -1) == NULL && find(&w, A_EV_EAR, -1) == NULL);
+			/* the card: one rectangle, its shadow below it */
+			w.ov = OV_DELETE, w.title = a->id;
+			view_layout(&w, &ss, &L, c0);
+			view_paint(&w, &ss, &L, c0);
+			cairo_surface_flush(s0);
+			CHECK(diff_box(s1, s0, b) && b[0] >= w.pop_x - 4 && b[1] >= w.pop_y - 4 && b[2] <= w.pop_x + w.pop_w + 4 &&
+			      b[3] <= w.pop_y + w.pop_h + 4);
+			/* deleted: only the slip's place and the card */
+			struct vslip was = at;
+			w.ov = OV_NONE, w.crumple = 0;
+			view_layout(&w, &ss, &L, c1);
+			view_paint(&w, &ss, &L, c1);
+			cairo_surface_flush(s1);
+			store_delete(&ss, a->id);
+			view_layout(&w, &ss, &L, c0);
+			view_paint(&w, &ss, &L, c0);
+			cairo_surface_flush(s0);
+			CHECK(view_slip(&w, a->id) == NULL);
+			CHECK(diff_box(s1, s0, b) && b[0] >= was.x && b[1] >= was.y - 7 && b[2] <= was.x + was.w + 1 &&
+			      b[3] <= was.y + was.h + 1);
+			cairo_destroy(c0), cairo_destroy(c1);
+			cairo_surface_destroy(s0), cairo_surface_destroy(s1);
+		}
+		/* overlapping: shingled, the later on top 14 px right; the one underneath shows its
+		 * top (18 px at least) while the one above starts later, its bottom once it doesn't */
+		{
+			struct entry *x = store_add(&ss, E_EVENT, d), *y = store_add(&ss, E_EVENT, d);
+			x->start = 14 * 60, x->end = 15 * 60;
+			y->start = 14 * 60 + 30, y->end = 15 * 60 + 30;
+			sample_ink(&x->f, "dentist", 2, 19, 4);
+			sample_ink(&y->f, "call the bank", 2, 19, 5);
+			view_layout(&w, &ss, &L, cr);
+			const struct vslip *sx = view_slip(&w, x->id), *sy = view_slip(&w, y->id);
+			CHECK(sx && sy && sx->nz == 2 && sy->nz == 2 && sx->stack == sy->stack);
+			if (sx && sy) {
+				CHECK(sx->z == 0 && sy->z == 1 && sy->x == sx->x + 14 && sy->w == sx->w - 14);
+				CHECK(sy->sh == 0 && sx->sh >= 18 && sx->strip_top && sx->sy == sx->y && sx->sh == sy->y - sx->y);
+				/* the strip is its target, and its field: the top one's takes the pen above it */
+				const struct vhit *h = view_hit(&w, sx->x + 4, sx->y + sx->sh / 2);
+				CHECK(h && h->a == A_EV_STRIP && h->id == x->id && h->arg == 2);
+				h = view_hit(&w, sy->x + 40, sy->y + sy->h / 2);
+				CHECK(h && h->a == A_EVENT && h->id == y->id);
+				const struct vfield *fx = view_field_of(&w, x->id), *fy = view_field_of(&w, y->id);
+				CHECK(fx && fy && fx->layer == 1 && fy->layer == 2 && fx->y == sx->sy && fx->h == sx->sh);
+				CHECK(view_field_at(&w, sy->x + 40, sy->y + 6) == fy);
+				CHECK(view_field_at(&w, sx->x + 40, sx->y + 6) == fx);
+				/* crossed out through both: the one on top */
+				struct pl_point q[16];
+				int n = line_pts(q, 16, sx->x - 16, sy->y + 10, sx->x + sx->w + 10, sy->y + 10, 0);
+				CHECK_INT(view_cross_out(&w, q, n), y->id);
+			}
+			/* a tap on the strip brings it to the top: now it is shifted, the other shows its bottom */
+			view_raise(&w, x->id);
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id), sy = view_slip(&w, y->id);
+			CHECK(sx && sy && sx->z == 1 && sy->z == 0 && sx->x == sy->x + 14);
+			CHECK(sx && sy && !sy->strip_top && sy->sy == sx->y + sx->h && sy->sh >= 18);
+			const struct vfield *fx = view_field_of(&w, x->id), *fy = view_field_of(&w, y->id);
+			CHECK(fx && fy && fx->layer == 2 && fy->layer == 1);
+			/* equal times: still a strip of 18 px */
+			y->start = x->start, y->end = x->end;
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id), sy = view_slip(&w, y->id);
+			CHECK(sx && sy && (sx->sh >= 18 || sy->sh >= 18) && (sx->sh == 0) != (sy->sh == 0));
+			/* nested (starts later, ends earlier) under the longer: its bottom reaches 18 px past */
+			x->start = 14 * 60, x->end = 16 * 60;
+			y->start = 14 * 60 + 30, y->end = 15 * 60;
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id), sy = view_slip(&w, y->id);
+			CHECK(sx && sy && sx->z == 1 && sy->z == 0 && !sy->strip_top && sy->sh >= 18);
+			w.nraise = 0;
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id), sy = view_slip(&w, y->id);
+			CHECK(sx && sy && sx->z == 0 && sy->z == 1 && sx->strip_top && sx->sh >= 18);
+			/* three: a tap on a strip fans them out, each a third, 10 px apart, at their own
+			 * times, no tab or corner; a fanned slip's target brings it to the top */
+			struct entry *z = store_add(&ss, E_EVENT, d);
+			x->start = 14 * 60, x->end = 15 * 60;
+			y->start = 14 * 60 + 30, y->end = 15 * 60 + 30;
+			z->start = 15 * 60, z->end = 16 * 60;
+			sample_ink(&z->f, "keys", 2, 19, 6);
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id);
+			CHECK(sx && sx->nz == 3);
+			const struct vhit *h = find(&w, A_EV_STRIP, 3);
+			CHECK(h != NULL);
+			double x0 = sx ? sx->x : 0, w0 = sx ? sx->w : 0;
+			w.fan = h ? h->id : x->id;
+			view_layout(&w, &ss, &L, cr);
+			const struct vslip *f3[3] = { view_slip(&w, x->id), view_slip(&w, y->id), view_slip(&w, z->id) };
+			CHECK(f3[0] && f3[1] && f3[2]);
+			if (f3[0] && f3[1] && f3[2]) {
+				double fw = floor((w0 - 20) / 3);
+				for (int i = 0; i < 3; i++) {
+					CHECK(f3[i]->fan && !f3[i]->parts && f3[i]->w == fw && f3[i]->x == x0 + i * (fw + 10));
+					const struct vfield *ff = view_field_of(&w, f3[i]->id);
+					CHECK(ff && ff->x == f3[i]->x && ff->w == fw && ff->y == f3[i]->y);
+					const struct vhit *fh = view_hit(&w, f3[i]->x + 10, f3[i]->y + 10);
+					CHECK(fh && fh->a == A_EV_FAN && fh->id == f3[i]->id);
+				}
+				CHECK(f3[1]->y > f3[0]->y && f3[2]->y > f3[1]->y);
+				CHECK(find(&w, A_EV_TAB, -1) == NULL && find(&w, A_EV_EAR, -1) == NULL);
+			}
+			/* a fanned slip tapped: on top, the fan closed */
+			view_raise(&w, x->id);
+			w.fan = 0;
+			view_layout(&w, &ss, &L, cr);
+			sx = view_slip(&w, x->id);
+			CHECK(sx && !sx->fan && sx->z == 2 && sx->sh == 0 && view_field_of(&w, x->id)->layer == 3);
+			/* the stack gone: a fan asked for closes */
+			store_delete(&ss, z->id);
+			w.fan = x->id;
+			view_layout(&w, &ss, &L, cr);
+			CHECK(w.fan == 0);
+			w.nraise = 0;
+		}
+		/* a finger held still: due after 0.5 s, once; moved past 12 px first, it is a drag */
+		{
+			struct hold hd;
+			hold_begin(&hd, 7, 100, 100, 1000);
+			CHECK_INT(hold_left(&hd, 1200), 300);
+			CHECK(hold_move(&hd, 108, 92));
+			CHECK(!hold_fire(&hd, 1499));
+			CHECK(hold_fire(&hd, 1500) && hd.fired && hd.id == 7);
+			CHECK(!hold_fire(&hd, 1600) && hold_left(&hd, 1600) == -1);
+			hold_begin(&hd, 7, 100, 100, 1000);
+			CHECK(!hold_move(&hd, 113, 100));
+			CHECK(!hold_fire(&hd, 2000) && hold_left(&hd, 2000) == -1);
+			hold_end(&hd);
+			CHECK(hd.id == 0);
+		}
+		store_free(&ss);
 	}
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
