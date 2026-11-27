@@ -2895,6 +2895,67 @@ const struct vfield *view_field_of(const struct view *v, uint32_t entry)
 	return NULL;
 }
 
+/* ---- a stroke into the free time (FR-018) ---- */
+
+/* a drawn block: a stroke at least this tall (px; taller than a written letter at the size
+ * ink is written at) over at least an hour, and three times as tall as it is wide */
+#define BLOCK_MIN (3 * INK_SIZE)
+
+bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, int *start, int *end)
+{
+	double x0 = p[0].x, x1 = p[0].x, y0 = p[0].y, y1 = p[0].y;
+	for (int i = 1; i < n; i++)
+		x0 = fmin(x0, p[i].x), x1 = fmax(x1, p[i].x), y0 = fmin(y0, p[i].y), y1 = fmax(y1, p[i].y);
+	double h = y1 - y0;
+	bool block = h >= BLOCK_MIN && h * f->mpp >= 60 && h >= 3 * (x1 - x0);
+	int s = (int)floor((f->min0 + fmax(0, y0) * f->mpp) / 30) * 30;
+	int e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
+	if (!block) /* writing: an hour from the half hour it starts in (its title grows below) */
+		e = s + 60;
+	if (e - s < 30)
+		e = s + 30;
+	if (s < 0)
+		s = 0;
+	if (e > 24 * 60)
+		e = 24 * 60;
+	if (s >= e)
+		s = e - 30;
+	*start = s, *end = e;
+	return block;
+}
+
+struct entry *view_free_stroke(struct view *v, struct store *s, const struct vfield *free_, uint32_t k,
+			       const struct pl_point *p, int n, void (*relayout)(void *ud), void *ud, bool *kept)
+{
+	*kept = false;
+	if (!n)
+		return NULL;
+	struct vfield f = *free_; /* the view's fields are laid out again below */
+	int st, en;
+	bool block = view_free_block(&f, p, n, &st, &en);
+	struct entry *x = store_add(s, E_EVENT, f.per);
+	if (!x)
+		return NULL;
+	x->start = st, x->end = en;
+	uint32_t id = x->id;
+	relayout(ud);
+	x = store_get(s, id);
+	if (block || !x)
+		return x;
+	/* the stroke is the title's first ink, on the pixels it was written on */
+	const struct vfield *t = view_field_of(v, id);
+	double dx = t ? f.x - t->x : 0, dy = t ? f.y - t->y : 0;
+	struct pl_point *q = malloc(n * sizeof *q);
+	if (!q)
+		return x;
+	for (int i = 0; i < n; i++)
+		q[i] = (struct pl_point){ (float)(p[i].x + dx), (float)(p[i].y + dy), p[i].p, p[i].t };
+	field_add_stroke(&x->f, k, q, n);
+	free(q);
+	*kept = true;
+	return x;
+}
+
 /* ---- FR-001: without writing regions (board start.refused) ---- */
 
 void view_paint_refused(const struct look *L, cairo_t *cr, double W, double H, struct vhit *close)
