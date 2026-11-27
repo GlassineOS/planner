@@ -244,6 +244,13 @@ static void relayout_later(void)
 	P.dirty = true;
 }
 
+static void layout(void);
+static void restore(struct region *rg, struct entry *e);
+static void free_relayout(void *ud)
+{
+	layout();
+}
+
 static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct ghw_point *p, size_t n)
 {
 	struct region *rg = region_of(r);
@@ -262,19 +269,26 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 		return;
 	}
 	if (rg->f.k == F_FREE) {
-		/* a block drawn in the free time: an event over that time, in 30-minute steps */
-		double y0 = p[0].y, y1 = p[0].y;
-		for (size_t i = 1; i < n; i++)
-			y0 = fmin(y0, p[i].y), y1 = fmax(y1, p[i].y);
-		int s = (int)floor((rg->f.min0 + y0 * rg->f.mpp) / 30) * 30, e = (int)ceil((rg->f.min0 + y1 * rg->f.mpp) / 30) * 30;
-		if (e - s < 30)
-			e = s + 30;
-		struct entry *x = store_add(&P.s, E_EVENT, rg->f.per);
-		if (x) {
-			x->start = s;
-			x->end = e;
-			save();
+		/* a block drawn in the free time: an event over that time, in 30-minute steps; a
+		 * stroke written there: an event at that time, the stroke its title's first ink, its
+		 * region there at once for the next stroke (FR-018) */
+		struct pl_point *q = malloc(n * sizeof *q);
+		if (!q)
+			return;
+		for (size_t i = 0; i < n; i++)
+			q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
+		bool kept;
+		struct vfield f = rg->f;
+		struct entry *x = view_free_stroke(&P.v, &P.s, &f, k, q, (int)n, free_relayout, NULL, &kept);
+		free(q);
+		if (x && kept) {
+			for (struct region *r2 = P.regions; r2; r2 = r2->next)
+				if (r2->entry == x->id)
+					restore(r2, x); /* read anew: the stroke is its first writing */
 		}
+		if (x)
+			save();
+		P.dirty = true;
 		relayout_later();
 		return;
 	}

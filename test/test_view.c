@@ -23,6 +23,32 @@ static uint32_t px(cairo_surface_t *sf, double x, double y)
 	return ((const uint32_t *)(d + (int)y * cairo_image_surface_get_stride(sf)))[(int)x] & 0xffffff;
 }
 
+/* a stroke for the free time's tests: n points from (x0, y0) to (x1, y1), a zig-zag of
+ * width wob across the line when wob > 0 (writing) */
+static int line_pts(struct pl_point *q, int n, double x0, double y0, double x1, double y1, double wob)
+{
+	for (int i = 0; i < n; i++) {
+		double f = (double)i / (n - 1);
+		q[i] = (struct pl_point){ (float)(x0 + (x1 - x0) * f + (i % 2 ? wob : 0)), (float)(y0 + (y1 - y0) * f), 0.5f,
+					  (uint32_t)(1000 + 7 * i) };
+	}
+	return n;
+}
+
+struct relay {
+	struct view *v;
+	struct store *s;
+	const struct look *L;
+	cairo_t *cr;
+	int n;
+};
+static void relay_out(void *ud)
+{
+	struct relay *r = ud;
+	view_layout(r->v, r->s, r->L, r->cr);
+	r->n++;
+}
+
 int main(void)
 {
 	setenv("GLASSINE_PLANNER_TODAY", SAMPLE_TODAY, 1);
@@ -632,5 +658,66 @@ int main(void)
 	cairo_destroy(cr);
 	cairo_surface_destroy(sf);
 	store_free(&s);
+	/* FR-018: a stroke into the free time. Written (a letter's size): an event from the half
+	 * hour it starts in, an hour long, the stroke its title's first ink on the pixels it was
+	 * written on, and the title's field there at once for the next stroke */
+	{
+		struct store fs;
+		store_init(&fs, NULL);
+		struct view fv = { .per = period_of(P_DAY, today), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		view_layout(&fv, &fs, &L, cr);
+		const struct vfield *ff = NULL;
+		for (int i = 0; i < fv.nf; i++)
+			if (fv.f[i].k == F_FREE)
+				ff = &fv.f[i];
+		CHECK(ff != NULL);
+		if (ff) {
+			struct vfield f = *ff;
+			double pitch = 60 / f.mpp, y = (14 * 60 + 10 - f.min0) / f.mpp;
+			struct relay r = { &fv, &fs, &L, cr, 0 };
+			struct pl_point q[16];
+			/* a tall letter (an l), as tall as a block's least, less a pixel */
+			int n = line_pts(q, 12, 120, y, 122, y + 3 * 19.0 - 1, 0);
+			int st, en;
+			CHECK(!view_free_block(&f, q, n, &st, &en));
+			bool kept;
+			struct entry *e = view_free_stroke(&fv, &fs, &f, 7, q, n, relay_out, &r, &kept);
+			CHECK(e && kept && r.n == 1);
+			if (e) {
+				CHECK_INT(e->start, 14 * 60);
+				CHECK_INT(e->end, 15 * 60);
+				CHECK_INT(e->f.ns, 1);
+				CHECK_INT(e->f.s[0].k, 7);
+				const struct vfield *t = view_field_of(&fv, e->id);
+				CHECK(t && t->layer == 1);
+				if (t && e->f.ns == 1) {
+					/* the same surface pixels, inside the title's field */
+					CHECK(fabs(t->x + e->f.s[0].pt[0].x - (f.x + q[0].x)) < 1e-3);
+					CHECK(fabs(t->y + e->f.s[0].pt[0].y - (f.y + q[0].y)) < 1e-3);
+					CHECK(f.x + q[0].x >= t->x && f.y + q[0].y >= t->y && f.y + q[0].y < t->y + t->h);
+					/* the next stroke beside it lands in the title, not the free time */
+					CHECK(view_field_at(&fv, f.x + q[0].x + 30, f.y + q[0].y + 10) == t);
+				}
+			}
+			/* a written word low in the hour: from that half hour */
+			n = line_pts(q, 12, 120, (14 * 60 + 40 - f.min0) / f.mpp, 200, (14 * 60 + 40 - f.min0) / f.mpp + 14, 6);
+			CHECK(!view_free_block(&f, q, n, &st, &en));
+			CHECK_INT(st, 14 * 60 + 30);
+			CHECK_INT(en, 15 * 60 + 30);
+			/* a block: a narrow stroke down over two hours makes the event over that time and
+			 * leaves no ink */
+			double y16 = (16 * 60 - f.min0) / f.mpp;
+			n = line_pts(q, 16, 300, y16 + 2, 304, y16 + 2 * pitch - 2, 0);
+			CHECK(view_free_block(&f, q, n, &st, &en));
+			e = view_free_stroke(&fv, &fs, &f, 8, q, n, relay_out, &r, &kept);
+			CHECK(e && !kept);
+			if (e) {
+				CHECK_INT(e->start, 16 * 60);
+				CHECK_INT(e->end, 18 * 60);
+				CHECK_INT(e->f.ns, 0);
+			}
+		}
+		store_free(&fs);
+	}
 	return t_done("view");
 }

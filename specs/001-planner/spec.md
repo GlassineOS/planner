@@ -214,9 +214,15 @@ it says that it needs the handwriting service and why, and doesn't start.
 
 - **FR-018**: Times and dates are never written by hand. They are set with widgets made for
   them:
-  - drawing a block with the pen into an agenda's free time creates an event over that time.
-    The free time is a writing region with reading off (handwriting spec 005): what is drawn
-    there is taken as the block, never read as text;
+  - drawing a block with the pen into an agenda's free time creates an event over that time,
+    and writing into the free time creates an event too. The free time is a writing region
+    with reading off (handwriting spec 005): a stroke there is never read as text itself. A
+    stroke taller than a written letter, running down over an hour or more and much taller
+    than wide, is the block: the event covers it in 30-minute steps and the stroke goes. Any
+    other stroke is writing: the event starts at the half hour the stroke starts in and lasts
+    an hour, the stroke stays where it was written as the first ink of the event's title, and
+    the title takes the next stroke at once, so writing into an empty slot is writing from
+    the first stroke;
   - dragging an event's block moves it and dragging its edge changes its length, both in
     steps of 30 minutes. During a drag the view refreshes once per step, only where the
     block leaves and enters. A dragged block looks as it will when released; the only
@@ -535,8 +541,8 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - Autograph, the person's font, always exists (handwriting spec 003); it starts plain and
   grows as the person's letters are learned.
 - A new period with no template chosen gets its kind's default without asking.
-- An event is created by drawing a block over its time in an agenda, or with a date and time
-  picker.
+- An event is created by drawing a block over its time in an agenda, by writing into the
+  agenda's free time, or with a date and time picker.
 - Until the calendar backend exists, the planner keeps its entries on the device itself, as
   standard calendar objects; how is left to the plan.
 - The planner runs in the person's own session; guests see none of its data.
