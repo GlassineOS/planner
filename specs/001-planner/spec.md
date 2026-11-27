@@ -17,10 +17,10 @@ layout. The planner keeps the paper side, the person's own ink in a layout of th
 and makes the calendar side possible from what the handwriting service reads in that ink.
 
 This spec is the planner's handwriting frontend: the views, the fields, the templates and
-widgets, and the data they write. A calendar backend (storage, sync such as CalDAV,
-reminders and notifications, repeat rules) is a separate piece with its own spec later. The
-frontend keeps its data as standard calendar objects so that backend can take them over
-(FR-020).
+widgets, and the data they write. The data live in the system's calendar and contacts
+store (GlassineOS/docs decision 0017), where other apps on the device read and change them
+and from where they are synced (FR-020, FR-025a). Reminders, notifications and repeat rules
+are a separate piece with its own spec later.
 
 It depends on the handwriting work in `GlassineOS/handwriting`: writing regions (spec 005),
 the pen and service interfaces they extend (spec 004), and neatening and the person's font,
@@ -176,7 +176,7 @@ it says that it needs the handwriting service and why, and doesn't start.
   correction pop-up, no candidate list, no peek and no marker of uncertainty.
 - **FR-007**: Each handwriting field is one writing region (handwriting spec 005). Its
   reading is stored with its entry as the entry's text, and is what the planner's data use:
-  search (FR-050) here, and a later calendar backend.
+  search (FR-050) here, and every other app that reads the entry (FR-025a).
 - **FR-008**: A reading is kept up to date when the ink of its field changes (more writing,
   erasing). Reading happens after the person pauses and never delays the ink.
 - **FR-009**: Ink that is not read as text (a drawing, an arrow, a doodle) stays ink and is
@@ -278,7 +278,7 @@ it says that it needs the handwriting service and why, and doesn't start.
   (never, daily, weekly, monthly, yearly) and Remind (none, at its start, 15 minutes, an
   hour or a day before), chosen. Every change is kept as it is made; there is no Save.
   Repeat and Remind are kept with the event as standard calendar properties; repeating it
-  and reminding are the calendar backend's (out of scope).
+  and reminding are not the planner's (out of scope).
 
   An event is deleted only through a card that asks first, "Delete this event?" with the
   title as written, its time and day, Keep and Delete event, which opens in one refresh of
@@ -295,7 +295,7 @@ it says that it needs the handwriting service and why, and doesn't start.
 ### Data belongs to dates
 
 - **FR-020**: The planner's data are standard calendar objects (events, to-dos, journal
-  entries), each tied to dates, so that a later calendar backend can store and sync them.
+  entries), each tied to dates, kept in the system's calendar and contacts store.
   The kinds of entry are:
   - an **event**, on a day and a time or on whole days;
   - a **to-do**, of a day, a week or a month, with a done state;
@@ -317,7 +317,14 @@ it says that it needs the handwriting service and why, and doesn't start.
   changes the one entry.
 - **FR-024**: Entries are kept as soon as they are written; a crash, a power loss or a cut
   battery loses at most the stroke being drawn.
-- **FR-025**: Nothing the person writes leaves the device.
+- **FR-025**: Nothing the person writes leaves the device unless the person sets up syncing
+  for the system's store; the planner itself sends nothing anywhere.
+- **FR-025a**: Other apps share the entries. Every entry carries its reading in the standard
+  text of its kind (title, description, place, participants), so an app that knows nothing of
+  ink shows the entry as text. The ink, slot and template choices travel with the entry, and
+  an app that doesn't know them keeps them. A change another app makes shows in the planner
+  without a restart; where another app has changed the text of a handwritten field, the field
+  shows that text typed, and its earlier ink no longer shows.
 
 ### No template operation loses data
 
@@ -460,7 +467,8 @@ it says that it needs the handwriting service and why, and doesn't start.
 | Interleaf and the voices, the drawing library | consumed | current | `GlassineOS/ui` |
 | System on-screen keyboard | consumed | — | `GlassineOS/shell`, `GlassineOS/wvkbd` |
 | Ink protocol (ink areas, brushes; what a commit is, version 4) | consumed | glassine_ink_v1 | `GlassineOS/protocols` |
-| The planner's entries as standard calendar objects, with ink, slots and template choices | owned, not yet an interface | — | the calendar backend's spec, later |
+| The planner's entries as standard calendar objects, with ink, slots and template choices | owned | 1, draft | this spec (FR-020–FR-025a); the exact properties in the README |
+| The system's calendar and contacts store | consumed | — | `GlassineOS/docs` decision 0017 |
 
 ## Device scope and risk
 
@@ -510,9 +518,8 @@ Hardware: ink latency and refresh counts on a device, supervised.
 
 ## Out of scope
 
-- **Calendar backend**, its own spec later:
-  - storage and its format;
-  - sync, such as CalDAV;
+- The system's calendar and contacts store and its syncing (decision 0017).
+- **Reminders and repeats**, their own spec later:
   - reminders and notifications;
   - repeat rules;
   - what happens to unfinished to-dos when their period ends.
@@ -604,8 +611,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - A new period with no template chosen gets its kind's default without asking.
 - An event is created by drawing a line down an agenda's hour margin, by drawing a block
   over its time or writing into the agenda's free time, or with a date and time picker.
-- Until the calendar backend exists, the planner keeps its entries on the device itself, as
-  standard calendar objects; how is left to the plan.
+- Every image that has the planner has the system's calendar and contacts store.
 - The planner runs in the person's own session; guests see none of its data.
 - One person, one planner: there are no separate calendars to pick from in 001.
 - The 30-minute step is the same for every agenda.
