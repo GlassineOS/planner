@@ -39,6 +39,14 @@ template choices in `templates.conf` beside it, and templates made or edited on 
 `templates/ID.tmpl` (one file each; the format is described in `src/tfile.h`; a file with a
 shipped template's id replaces that template). `GLASSINE_PLANNER_DATA` sets another directory.
 
+The entries are iCalendar objects: events are `VEVENT`, to-dos and priorities `VTODO`, notes and
+habit marks `VJOURNAL` (`X-GLASSINE-KIND` says which). A handwriting field's reading is the
+standard text (`SUMMARY`, `DESCRIPTION`, `LOCATION`); its ink, neatened ink, word layout and
+display state are `X-GLASSINE-<field>INK`, `…NEAT`, `…WORDS`, `…SHOW` and `…STATE`.
+Participants as written are `X-GLASSINE-WITH`, Repeat is `RRULE` and Remind a `VALARM`.
+The file is the planner's own store until it moves to the system's calendar and contacts store
+(GlassineOS/docs decision 0017): the same objects over CalDAV, with a local cache for speed.
+
 `test/device/` holds two tools for a device check: `region-smoke.c`, a window with one
 writing region that prints what reaches it, and `pen-inject.c`, a virtual screen tablet
 (uinput) that draws straight lines.
