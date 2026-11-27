@@ -347,6 +347,17 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 				relayout_later();
 				return;
 			}
+			/* outside every bracket at a time an event holds (the gap between lanes, beside
+			 * a narrow lane): no event's, and it makes none */
+			for (int i = 0; i < P.v.nev; i++) {
+				const struct vev *e = &P.v.ev[i];
+				if (P.xpt[0].y >= e->y && P.xpt[0].y < e->y + fmax(e->h, e->th) && e->spine >= rg->f.x - BK_SPINE - 8 &&
+				    e->spine < rg->f.x + rg->f.w) {
+					PL_TR("stroke beside the events at that time: loose, not kept");
+					P.nxs = 0;
+					return;
+				}
+			}
 			P.nxs = 0;
 		}
 		struct pl_point *q = malloc(n * sizeof *q);
@@ -1689,18 +1700,10 @@ static void pen_focus(double x, double y)
 static void draw_step(void)
 {
 	struct view *v = &P.v;
-	const struct vfield *f = &P.draw_f;
-	double y0 = P.xpt[0].y - f->y, y1 = P.tool_y + v->scroll - f->y;
-	if (y1 < y0) {
-		double t = y0;
-		y0 = y1, y1 = t;
-	}
-	int s = (int)floor((f->min0 + y0 * f->mpp) / 30) * 30, e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
-	s = s < 0 ? 0 : s, e = e > 24 * 60 ? 24 * 60 : e;
-	if (e < s + 30)
-		e = s + 30 <= 24 * 60 ? s + 30 : (s = 24 * 60 - 30) + 30;
+	int s, e;
+	view_margin_span(&P.draw_f, P.xpt[0].y, P.tool_y + v->scroll, &s, &e);
 	if (!v->draw_on || s != v->draw_s || e != v->draw_e) {
-		v->draw_on = true, v->draw_day = f->per.start, v->draw_s = s, v->draw_e = e;
+		v->draw_on = true, v->draw_day = P.draw_f.per.start, v->draw_s = s, v->draw_e = e;
 		P.dirty = true;
 		content_step(&P.said);
 	}
@@ -1768,7 +1771,11 @@ static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 			x->start = P.v.draw_s, x->end = P.v.draw_e;
 			save();
 		}
-		relayout_later();
+		/* laid out at once: its title takes the next stroke, not the free time */
+		settle_done(&P.st);
+		layout();
+		P.dirty = true;
+		content_tap(&P.said);
 	} else if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
 		tap(down_x, down_y, false);
 }

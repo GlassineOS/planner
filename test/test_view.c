@@ -266,7 +266,7 @@ int main(void)
 		}
 		store_free(&t);
 	}
-	/* titles (FR-018): one that fits is whole (a tap opens text mode), a long one in a short
+	/* titles (FR-018): one that fits is whole (a tap opens its card), a long one in a short
 	 * block shrinks to the smallest readable size, then is cut (a tap shows it whole) */
 	{
 		struct period d = period_of(P_DAY, today);
@@ -286,11 +286,12 @@ int main(void)
 				whole = whole < 0 ? w.hit[i].arg : whole;
 		CHECK_INT(cut, 1);
 		CHECK_INT(whole, 0);
-		/* its card shows it whole */
-		w.ov = OV_TITLE;
+		/* its card shows it whole: as wide as the screen allows */
+		w.ov = OV_CARD;
 		w.title = e->id;
 		view_layout(&w, &s, &L, cr);
-		CHECK(find(&w, A_CLOSE, -1) != NULL);
+		CHECK(find(&w, A_CLOSE, -1) != NULL && find(&w, A_EV_OPEN, -1) != NULL);
+		CHECK(w.pop_w > 340 && w.pop_x >= 8 && w.pop_x + w.pop_w <= 702 - 8);
 		store_delete(&s, e->id);
 	}
 	/* events as bracket pairs in lanes (FR-018; boards event.stack, event.delete, event.open) */
@@ -388,6 +389,28 @@ int main(void)
 			CHECK(view_hit(&w, 2, w.H - 4)->a == A_DEL_KEEP);
 			CHECK(view_strike(&w, q, n) == 0);
 		}
+		/* a line down the margin: from the half hour it began in to the one it reached, up or
+		 * down, at least 30 minutes; the margin is where it may start */
+		{
+			const struct vfield *ff = NULL;
+			for (int i = 0; i < w.nf; i++)
+				if (w.f[i].k == F_FREE)
+					ff = &w.f[i];
+			CHECK(ff != NULL);
+			if (ff) {
+				int st, en;
+				double y16 = ff->y + (16 * 60 - ff->min0) / ff->mpp, hr = 60 / ff->mpp;
+				view_margin_span(ff, y16 + 2, y16 + hr - 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 17 * 60);
+				view_margin_span(ff, y16 + hr - 2, y16 + 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 17 * 60);
+				view_margin_span(ff, y16 + 1, y16 + 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 16 * 60 + 30);
+				w.ov = OV_NONE;
+				view_layout(&w, &s, &L, cr);
+				CHECK(view_margin_at(&w, ff->x - 20, y16) != NULL && view_margin_at(&w, ff->x + 4, y16) == NULL);
+			}
+		}
 		/* the event's page: the title and Where, Notes, With written (one region each), the
 		 * times' − and +, the choices, Delete event that asks */
 		w.ov = OV_PAGE, w.title = den->id, w.page_ask = false;
@@ -416,6 +439,20 @@ int main(void)
 		CHECK(find(&w, A_PG_DELETE, 1) && find(&w, A_PG_DELETE, 2));
 		CHECK(pf && view_field_at(&w, pf->x + 5, pf->y + 5) == NULL);
 		store_delete(&s, bank->id), store_delete(&s, cafe->id);
+		/* back to back: the first's end handle and the second's start handle meet halfway */
+		struct entry *a1 = store_add(&s, E_EVENT, d), *a2 = store_add(&s, E_EVENT, d);
+		a1->start = 19 * 60, a1->end = 20 * 60, a2->start = 20 * 60, a2->end = 21 * 60;
+		w.ov = OV_NONE, w.page_ask = false;
+		view_layout(&w, &s, &L, cr);
+		const struct vev *v1 = view_ev(&w, a1->id), *v2 = view_ev(&w, a2->id);
+		CHECK(v1 && v2 && v1->ln.lanes == 1 && v2->ln.lanes == 1);
+		if (v1 && v2) {
+			double mid = (v1->y + v1->h + v2->y) / 2;
+			const struct vhit *h1 = view_hit(&w, v1->spine, mid - 3), *h2 = view_hit(&w, v2->spine, mid + 3);
+			CHECK(h1 && h1->a == A_EV_BOT && h1->id == a1->id);
+			CHECK(h2 && h2->a == A_EV_TOP && h2->id == a2->id);
+		}
+		store_delete(&s, a1->id), store_delete(&s, a2->id);
 	}
 	/* search in the (i) popover (FR-050) */
 	{

@@ -186,7 +186,7 @@ int main(int argc, char **argv)
 					  "bring the blue folder to the office", 2, 19, 14);
 			struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
 			shot(&s, VOICES[vi], &w, "event.title");
-			w.ov = OV_TITLE, w.title = c->id;
+			w.ov = OV_CARD, w.title = c->id;
 			shot(&s, VOICES[vi], &w, "event.title.whole");
 			store_delete(&s, g->id), store_delete(&s, k->id), store_delete(&s, c->id);
 			n += 2;

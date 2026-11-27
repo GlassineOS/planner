@@ -1327,8 +1327,20 @@ static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int 
 		const struct vev *e = &c->evb[i];
 		double hx, hw;
 		lane_end_hit(e->spine, e->ln.lane, &hx, &hw);
-		hit(c, hx, e->y - BK_HIT_H / 2, hw, BK_HIT_H, A_EV_TOP, 0, e->id);
-		hit(c, hx, e->y + e->h - BK_HIT_H / 2, hw, BK_HIT_H, A_EV_BOT, 0, e->id);
+		/* an event that ends where another in its place starts: their handles meet halfway */
+		double t0 = e->y - BK_HIT_H / 2, b1 = e->y + e->h + BK_HIT_H / 2;
+		for (int j = first; j < (*c->nevb); j++) {
+			const struct vev *o = &c->evb[j];
+			if (j == i || fabs(o->spine - e->spine) > 1)
+				continue;
+			double mo = (o->y + o->h + e->y) / 2, me = (e->y + e->h + o->y) / 2;
+			if (o->y + o->h <= e->y + 1 && e->y - (o->y + o->h) < BK_HIT_H)
+				t0 = fmax(t0, mo);
+			if (o->y >= e->y + e->h - 1 && o->y - (e->y + e->h) < BK_HIT_H)
+				b1 = fmin(b1, me);
+		}
+		hit(c, hx, t0, hw, e->y + BK_HIT_H / 2 - t0, A_EV_TOP, 0, e->id);
+		hit(c, hx, e->y + e->h - BK_HIT_H / 2, hw, b1 - (e->y + e->h - BK_HIT_H / 2), A_EV_BOT, 0, e->id);
 	}
 	for (int i = first; i < (*c->nevb); i++) {
 		const struct vev *e = &c->evb[i];
@@ -3309,39 +3321,53 @@ static void event_card(struct ctx *c)
 	const struct vev *ve = view_ev(v, v->title);
 	bool ask = v->ov == OV_DELETE;
 	UiFont qf = fpx(L->h1, 17);
-	double qh = ask ? 20 + 8 : 0, inkh = 30, hgt = 8 + qh + inkh + 8 + 31 + 60;
-	double x = ve ? ve->tx : v->W - 8 - EC_W, y = ve ? ve->y + ve->th + 6 : v->H / 3;
+	/* the whole title, as written: the card as wide as it needs (at most the screen), the ink
+	 * smaller only when even that is too narrow */
+	double r = 0, bt = 0, top = 0, k = 1;
+	if (e) {
+		field_extent(&e->f, &r, &bt);
+		top = ink_top(&e->f);
+	}
+	double CW = fmax(EC_W, fmin(v->W - 16, r + 24));
+	k = r + 24 > CW ? (CW - 24) / fmax(r, 1) : 1;
+	double qh = ask ? 20 + 8 : 0, inkh = fmax(30, (bt - top) * k + 4), hgt = 8 + qh + inkh + 8 + 31 + 60;
+	double x = ve ? ve->tx : v->W - 8 - CW, y = ve ? ve->y + ve->th + 6 : v->H / 3;
 	if (ve && y + hgt > v->H - 8) /* no room below: above the title */
 		y = ve->y - 6 - hgt;
-	x = fmax(8, fmin(x, v->W - 8 - EC_W));
+	x = fmax(8, fmin(x, v->W - 8 - CW));
 	y = fmax(BAR + 4, fmin(y, v->H - 8 - hgt));
-	v->pop_x = x, v->pop_y = y, v->pop_w = EC_W, v->pop_h = hgt;
+	v->pop_x = x, v->pop_y = y, v->pop_w = CW, v->pop_h = hgt;
 	if (ask)
 		xout_paint(c);
-	pop_frame(c, x, y, EC_W, hgt);
+	pop_frame(c, x, y, CW, hgt);
 	double yy = y + 8;
 	if (ask) {
 		double th;
 		ui_text_w(&c->g, &qf, "Delete this event?", &th);
 		if (c->paint)
-			ui_text(&c->g, &qf, "Delete this event?", x + 10, yy - 2, 0, EC_W - 20, L->ink, &th);
+			ui_text(&c->g, &qf, "Delete this event?", x + 10, yy - 2, 0, CW - 20, L->ink, &th);
 		yy += qh;
 	}
-	if (e && c->paint)
-		ink_fit(c, &e->f, x + 10, yy, EC_W - 20, inkh - 2);
+	if (e && c->paint && bt > top) {
+		cairo_save(c->cr);
+		cairo_rectangle(c->cr, x + 8, yy, CW - 16, inkh);
+		cairo_clip(c->cr);
+		ink(c, &e->f, x + 10, yy + 2 - top * k, k);
+		cairo_restore(c->cr);
+	}
 	yy += inkh + 8;
 	if (c->paint)
-		lk_rule(c->cr, x, yy, EC_W, 1.5, L->ink, 2);
+		lk_rule(c->cr, x, yy, CW, 1.5, L->ink, 2);
 	if (e) {
 		char t[80];
 		ev_fact(e, t, sizeof t);
 		UiFont ff = fam(L->mono, 400, 0, 12);
-		tc(c, &ff, t, x + 12, yy + 16, 0, EC_W - 24, L->ink);
+		tc(c, &ff, t, x + 12, yy + 16, 0, CW - 24, L->ink);
 	}
 	yy += 31;
 	if (c->paint)
-		lk_rule(c->cr, x, yy, EC_W, 1.5, L->ink, 2);
-	double bx = x + EC_W - 12;
+		lk_rule(c->cr, x, yy, CW, 1.5, L->ink, 2);
+	double bx = x + CW - 12;
 	if (ask) {
 		bx -= btn_r(c, bx, yy + 10, "Delete event", 1, A_DEL_YES, 0, v->title) + 8;
 		btn_r(c, bx, yy + 10, "Keep", 0, A_DEL_KEEP, 0, v->title);
@@ -3349,7 +3375,7 @@ static void event_card(struct ctx *c)
 		bx -= btn_r(c, bx, yy + 10, "Open", 1, A_EV_OPEN, 0, v->title) + 8;
 		btn_r(c, bx, yy + 10, "Delete event", 0, A_EV_ASK, 0, v->title);
 	}
-	hit(c, x, y, EC_W, hgt, A_NONE, 0, 0);
+	hit(c, x, y, CW, hgt, A_NONE, 0, 0);
 	/* a tap outside closes it, and the asking card keeps the event */
 	hit(c, 0, 0, v->W, v->H + v->scroll, ask ? A_DEL_KEEP : A_CLOSE, 0, v->title);
 }
@@ -3649,6 +3675,21 @@ const struct vfield *view_margin_at(const struct view *v, double x, double y)
 			return f;
 	}
 	return NULL;
+}
+
+void view_margin_span(const struct vfield *f, double y0, double y1, int *start, int *end)
+{
+	y0 -= f->y, y1 -= f->y;
+	if (y1 < y0) {
+		double t = y0;
+		y0 = y1, y1 = t;
+	}
+	int s = (int)floor((f->min0 + y0 * f->mpp) / 30) * 30, e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
+	s = s < 0 ? 0 : s > 24 * 60 - 30 ? 24 * 60 - 30 : s;
+	e = e > 24 * 60 ? 24 * 60 : e;
+	if (e < s + 30)
+		e = s + 30;
+	*start = s, *end = e;
 }
 
 uint32_t view_lane_at(const struct view *v, double x, double y)

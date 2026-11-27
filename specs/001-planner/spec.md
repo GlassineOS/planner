@@ -255,8 +255,9 @@ it says that it needs the handwriting service and why, and doesn't start.
   free at its start, at most three lanes (a fourth at the same time shares the third).
   Each lane holds one event's brackets and its title at its start; neighbours meet as
   `] [` 12 px apart, and the hour lines run on across. A stroke belongs to the event whose
-  lane holds its pen-down point, never to two; ink outside every bracket is loose ink on
-  the day. While the pen writes in a lane, the other brackets of its group are light grey,
+  lane holds its pen-down point, never to two. A stroke that comes down outside every
+  bracket at a time an event already holds (the gap between lanes, beside a narrow lane)
+  belongs to no event and makes none; it is not kept. While the pen writes in a lane, the other brackets of its group are light grey,
   black again about a second after the pen lifts; a pen that reports hover shows the same
   before it touches. The end handles of a lane after the first cover only the gap and the
   serif, so they never take a pen-down from the neighbour's title. A small agenda keeps
@@ -496,8 +497,8 @@ Host level:
   asks; one from inside the title, one that doesn't reach past it and a steep one don't;
 - an event's card offers Open and Delete event; its page has a region each for title,
   place, notes and participants, the times' − and +, the Repeat and Remind choices, and
-  Delete event that asks; place, notes, participants, repeat and reminder survive
-  planner.ics, the journal and a restart;
+  Delete event that asks; place, notes, participants, repeat and reminder are kept as the
+  event's calendar properties and survive a restart;
 - a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
@@ -575,8 +576,8 @@ Hardware: ink latency and refresh counts on a device, supervised.
   the `]`; its card shows it whole.
 - **Four or more events at the same time**: there are three lanes at most; a fourth shares
   the third lane.
-- **A stroke in the gap between two lanes or outside every bracket**: it belongs to no
-  event (in the free time it writes a new event, FR-018).
+- **A stroke in the gap between two lanes**: it belongs to no event, makes none and is not
+  kept; in free time, where no event runs, a stroke writes a new event (FR-018).
 - **A strike-through, then Keep**: the stroke goes and the title is as it was before it.
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
   is removed only by an explicit delete.

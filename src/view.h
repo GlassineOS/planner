@@ -218,6 +218,10 @@ uint32_t view_strike(const struct view *v, const struct pl_point *p, int n);
 const struct vfield *view_margin_at(const struct view *v, double x, double y);
 /* the event whose lane holds x, y (page coordinates) and the field it writes into there, else 0 */
 uint32_t view_lane_at(const struct view *v, double x, double y);
+/* a line drawn down the hour margin of free time f from page y0 to y1 (either way): the
+ * event's minutes, from the half hour it began in to the half hour it reached, at least 30
+ * (board event.draw) */
+void view_margin_span(const struct vfield *f, double y0, double y1, int *start, int *end);
 /* under an overlay: the field takes no strokes */
 bool view_covered(const struct view *v, const struct vfield *f);
 /* the event page's Remind choices, in minutes before its start (-1: none) */
