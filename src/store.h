@@ -100,8 +100,22 @@ struct entry {
 	long long age;     /* when it was made (unix seconds): the oldest open gives way first */
 	char slot[32];     /* note: its slot */
 	uint32_t habit;    /* mark: the habit's id */
-	struct field f;
+	struct field f;    /* its title, its text */
+	/* an event's own page (board event.open): where, notes and with (its participants), each
+	 * a handwriting field like its title */
+	struct field xf[3];
+	/* an event's page's choices, kept and written to the file (RRULE, VALARM) for the calendar
+	 * backend; the planner itself neither repeats an event nor reminds of it (spec 001, out of
+	 * scope): REP_*, and minutes before the start (-1: none) */
+	int repeat;
+	int remind;
 };
+/* an entry's handwriting fields: its title or text, and an event's page's */
+enum { EF_TITLE, EF_WHERE, EF_NOTES, EF_WITH, EF_N };
+enum { REP_NEVER, REP_DAILY, REP_WEEKLY, REP_MONTHLY, REP_YEARLY, REP_N };
+/* field sub of e (EF_*): NULL when e has no such field (only an event has more than its title) */
+struct field *entry_sub(struct entry *e, int sub);
+void entry_fields_free(struct entry *e);
 
 struct choice {
 	struct period from; /* a single period: from == to */
@@ -155,18 +169,19 @@ struct fmake {
 };
 /* a stroke for the field whose entry is *entry (0: none yet): made when there is none, the
  * stroke kept with it; *entry set. NULL when nothing is to be made */
-struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake *mk, uint32_t k,
+struct entry *field_stroke(struct store *s, uint32_t *entry, int sub, const struct fmake *mk, uint32_t k,
 			   const struct pl_point *p, int n);
 /* the region's value: strokes that left (gone), the text and the saved state. An entry other
- * than an event whose ink and text are all gone is deleted, *entry = 0 (true) */
+ * than an event whose ink and text are all gone is deleted, *entry = 0 (true). sub: which of
+ * the entry's fields (EF_*; only an event's title makes or deletes anything) */
 /* the value the region sends is what the field has already (a restored region tells it again) */
-bool field_value_same(struct store *s, uint32_t entry, const char *text, const struct pl_word *w, int nw, size_t ngone,
+bool field_value_same(struct store *s, uint32_t entry, int sub, const char *text, const struct pl_word *w, int nw, size_t ngone,
 		      const void *state, size_t len);
-bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,
+bool field_value(struct store *s, uint32_t *entry, int sub, const char *text, const struct pl_word *w, int nw,
 		 const uint32_t *gone, size_t ngone, const void *state, size_t len);
 /* text typed in text mode into a field with no entry yet (an empty row): its entry, made
  * with the text as its value until the region's value comes. NULL when nothing is made */
-struct entry *field_typed(struct store *s, uint32_t *entry, const struct fmake *mk, const char *text);
+struct entry *field_typed(struct store *s, uint32_t *entry, int sub, const struct fmake *mk, const char *text);
 /* a field's opt-in, its own choice or else the settings' */
 bool field_neaten(const struct store *s, const struct field *f);
 bool field_autograph(const struct store *s, const struct field *f);
@@ -197,7 +212,8 @@ bool store_save_settings(struct store *s);
 char *store_ics(const struct store *s);
 bool store_parse_ics(struct store *s, const char *text);
 
-/* search (FR-050): entries whose current text contains every word of q, newest first */
+/* search (FR-050): entries whose current text (an event's: its title and its page's fields)
+ * contains every word of q, newest first */
 int store_search(struct store *s, const char *q, struct entry **out, int max);
 
 #endif

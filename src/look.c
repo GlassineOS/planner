@@ -185,6 +185,19 @@ void lk_stroke_box(cairo_t *cr, double x, double y, double w, double h, double r
 	cairo_restore(cr);
 }
 
+void lk_bar(cairo_t *cr, double x, double y, double w, double h, ui_col c)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	cairo_save(cr);
+	src(cr, c);
+	if (fractional(cr))
+		snap_box(cr, &x, &y, &w, &h);
+	cairo_rectangle(cr, x, y, w, h);
+	cairo_fill(cr);
+	cairo_restore(cr);
+}
+
 void lk_rule(cairo_t *cr, double x, double y, double w, double lw, ui_col c, int dash)
 {
 	if (lw <= 0 || w <= 0)

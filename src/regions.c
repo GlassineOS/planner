@@ -38,8 +38,8 @@ int regions_display(const struct store *s, const struct region *rg)
 {
 	if (rg->f.k != F_ENTRY && rg->f.k != F_NEW)
 		return 0; /* the free time, the editor's names: never set */
-	struct entry *me = rg->entry ? store_get((struct store *)s, rg->entry) : NULL;
-	return me ? field_autograph(s, &me->f) : s->autograph;
+	struct field *mf = rg->entry ? entry_sub(store_get((struct store *)s, rg->entry), rg->f.sub) : NULL;
+	return mf ? field_autograph(s, mf) : s->autograph;
 }
 
 void regions_sync(struct region **list, const struct region_env *e, const struct region_ops *ops)
@@ -51,7 +51,7 @@ void regions_sync(struct region **list, const struct region_env *e, const struct
 		const struct vfield *f = &v->f[i];
 		struct region *rg = NULL;
 		for (struct region *x = *list; x && !rg; x = x->next)
-			if (!x->live && ((f->k == F_ENTRY && x->entry == f->entry) || !strcmp(x->name, f->name)))
+			if (!x->live && ((f->k == F_ENTRY && x->entry == f->entry && x->f.sub == f->sub) || !strcmp(x->name, f->name)))
 				rg = x;
 		if (rg && f->k == F_NEW && rg->entry) /* an empty row that has become an entry */
 			rg = NULL;

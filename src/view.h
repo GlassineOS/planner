@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "editor.h"
 #include "grid.h"
+#include "lanes.h"
 #include "look.h"
 #include "store.h"
 
@@ -21,7 +22,9 @@
 #define PL_INK_EXP 1.0
 double pl_ink_width(double pressure);
 
-enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE, OV_MOVE };
+/* OV_CARD: an event's card (a tap on its title); OV_DELETE: the card that asks before an event
+ * is deleted; OV_PAGE: the event's own page, the whole screen (board event.open) */
+enum overlay { OV_NONE, OV_INFO, OV_MENU, OV_HIDDEN, OV_PICKER, OV_SETTINGS, OV_TITLE, OV_MOVE, OV_CARD, OV_DELETE, OV_PAGE };
 
 /* a handwriting field: one writing region */
 enum fkind {
@@ -35,6 +38,7 @@ struct vfield {
 	enum fkind k;
 	char name[96];      /* the region's name, unique on the surface */
 	uint32_t entry;     /* F_ENTRY */
+	int sub;            /* F_ENTRY: which of the entry's fields (EF_*: an event's page has more) */
 	enum ekind ekind;   /* F_NEW: what to make */
 	struct period per;  /* F_NEW: its period; F_FREE: the day */
 	char slot[32];
@@ -57,6 +61,16 @@ enum act {
 	A_YEAR_NAV, /* the year's arrows: arg -1/+1 */
 	A_EDIT, /* open the template editor: arg 0 edit, 1 new, 2 copy */
 	A_ED,   /* an editor action: arg enum ed_op, id its argument + 100 (a widget's index for select) */
+	/* an agenda's event (FR-018), id the event: its start's and its end's handle (a finger's
+	 * drag moves that end, held still the card that deletes it) */
+	A_EV_TOP, A_EV_BOT,
+	A_EV_ASK,                /* its card's Delete event: the card that asks */
+	A_EV_OPEN,               /* its card's Open: its page */
+	A_DEL_KEEP, A_DEL_YES,   /* the asking card: Keep (also a tap outside), Delete event */
+	/* the event's page (board event.open): Back, the day (the month to pick from), a time's
+	 * − or + (arg 0 start −, 1 start +, 2 end −, 3 end +), Repeat's and Remind's choices (arg
+	 * the choice), Delete event (it asks first: arg 1 the dialog's Delete event, 2 its Keep) */
+	A_PG_BACK, A_PG_DAY, A_PG_TIME, A_PG_REPEAT, A_PG_REMIND, A_PG_DELETE,
 };
 struct vhit {
 	double x, y, w, h;
@@ -65,6 +79,20 @@ struct vhit {
 	uint32_t id;
 	bool fixed;     /* on the bar above the keyboard: screen coordinates, never scrolled */
 };
+
+/* A timed event of a day agenda as its pair of brackets (FR-018; boards event.stack,
+ * event.drag, event.title): page coordinates, as laid out */
+struct vev {
+	uint32_t id;
+	int s0, e0;            /* its minutes on the agenda's day */
+	struct lane ln;        /* its lane in its cluster */
+	double y, h;           /* the brackets' rows: the top serif at y, the lower at y + h */
+	double spine, w;       /* its "[" (2 px from spine - 1) and its lane's width: "]" at spine + w */
+	double tx, tw, th;     /* its title's field: from tx, tw wide, th tall from y */
+	double ink[4];         /* its title's ink on the page, x, y, w, h (w 0: none) */
+	bool cut;              /* its title cut at the closing bracket */
+};
+#define V_EVS 64
 
 #define V_FIELDS 160
 /* the header bar's height (logical px): 60, and taller by as much as its title and its
@@ -93,7 +121,22 @@ struct view {
 	int nh;
 	int hidden_count;
 	double pop_x, pop_y, pop_w, pop_h; /* the open popover's rectangle */
-	uint32_t drag; int drag_s0, drag_e0; /* an event being dragged: where it was (dashed outline, gutter readout) */
+	uint32_t drag; int drag_s0, drag_e0; /* an event being dragged (its brackets dashed), and where it was */
+	int drag_end;       /* 0 it is moved by its title, 1 its start is held, 2 its end (that serif thickens) */
+	/* the day agendas' events as laid out */
+	struct vev ev[V_EVS];
+	int nev;
+	/* the event the pen writes in, or hovers over: the other brackets of its cluster grey */
+	uint32_t focus;
+	/* a bracket being drawn with the pen down the hour margin (board event.draw): its day, its
+	 * minutes so far (draw_on false: none) */
+	bool draw_on;
+	int draw_day, draw_s, draw_e;
+	/* OV_DELETE: a stroke that struck the title through, page coordinates (owned by the
+	 * caller), shown while the card asks; OV_PAGE: its dialog asking before Delete */
+	const struct pl_point *xout;
+	int nxout;
+	bool page_ask;
 	/* text mode (FR-012 to FR-017): the layout stays; the keyboard covers the screen below
 	 * vis_h and the page moves up by scroll (whole rows) to reach a field under it */
 	int tm;             /* 0 ink mode, 1 one field, 2 the whole view */
@@ -162,6 +205,23 @@ bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, in
  * field, moved into it as the layout placed it, so it stays where it was written. NULL: none */
 struct entry *view_free_stroke(struct view *v, struct store *s, const struct vfield *f, uint32_t k,
 			       const struct pl_point *p, int n, void (*relayout)(void *ud), void *ud, bool *kept);
+/* the laid out event id (NULL: none) */
+const struct vev *view_ev(const struct view *v, uint32_t id);
+/* A pen stroke (page coordinates) that strikes an event's title through (FR-018, board
+ * event.delete): it starts before the title's first letter and runs past its last, along the
+ * title's ink. The event (whose lane holds the stroke's start), else 0: a stroke that starts
+ * inside the title, or doesn't cross all of it, is writing */
+uint32_t view_strike(const struct view *v, const struct pl_point *p, int n);
+/* The day agenda's hour margin at x, y (page coordinates): its free time field there (NULL:
+ * none). A pen stroke down the margin draws a bracket: an event over its rows (board
+ * event.draw) */
+const struct vfield *view_margin_at(const struct view *v, double x, double y);
+/* the event whose lane holds x, y (page coordinates) and the field it writes into there, else 0 */
+uint32_t view_lane_at(const struct view *v, double x, double y);
+/* under an overlay: the field takes no strokes */
+bool view_covered(const struct view *v, const struct vfield *f);
+/* the event page's Remind choices, in minutes before its start (-1: none) */
+extern const int VIEW_REMIND_MIN[5];
 /* a choice of template as the picker and the year list name it: from the period of kind k at
  * day from to the one at day to (to < 0: on from there, to == from: that period only), its year
  * added where it isn't shown_year: "weeks 1–13 · Jan–Mar", "from week 14 on · from Apr",
