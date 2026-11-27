@@ -193,7 +193,7 @@ int main(int argc, char **argv)
 		}
 		/* slips (boards event.drag, event.delete, event.stack): the sample's dentist at
 		 * 14:00 lifted, its corner pulled, crumpled, crossed out, its card; overlapping
-		 * events shingled, one brought to the top, three fanned out */
+		 * events shingled, one brought to the top, three fanned out and one of them picked */
 		{
 			struct entry *ev[16], *dn = NULL;
 			int ne = store_events(&s, d.start, ev, 16);
@@ -246,8 +246,11 @@ int main(int argc, char **argv)
 				shot(&s, VOICES[vi], &u, "event.stack.stack");
 				u.fan = dn->id;
 				shot(&s, VOICES[vi], &u, "event.stack.fanned");
+				view_raise(&u, dn->id); /* a fanned slip tapped: on top, the fan closed */
+				u.fan = 0;
+				shot(&s, VOICES[vi], &u, "event.stack.picked");
 				store_delete(&s, cb->id), store_delete(&s, ks->id);
-				n += 9;
+				n += 10;
 			}
 		}
 		struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_HIDDEN, .hidden_kind = 0 };

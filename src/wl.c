@@ -973,12 +973,12 @@ static void tap_(double x, double y, bool finger)
 			delete_done(h->a == A_DEL_YES);
 		return;
 	}
-	if (v->fan && !(h && h->a == A_EV_FAN)) { /* a tap beside a fanned stack closes it */
+	if (v->fan && v->ov == OV_NONE && !(h && h->a == A_EV_FAN)) { /* a tap beside a fanned stack closes it */
 		v->fan = 0;
 		relayout_later();
 		return;
 	}
-	if (h && (h->a == A_EV_STRIP || h->a == A_EV_FAN)) {
+	if (h && (h->a == A_EV_STRIP || h->a == A_EV_FAN) && v->ov == OV_NONE && !v->tm) {
 		/* a slip underneath: to the top, or a stack of three or more fanned out; a fanned
 		 * slip: to the top, the fan closed */
 		if (h->a == A_EV_STRIP && h->arg >= 3)

@@ -1269,21 +1269,57 @@ static void stack_slips(const struct view *v, struct slipx *sl, int n)
 				struct vslip *s = &o[z]->s;
 				s->x = x0 + SL_SHINGLE * z, s->w = w0 - SL_SHINGLE * z;
 			}
+			/* the one above starting later starts SL_STRIP below the one under it at least */
 			for (int z = 1; z < nz; z++) {
 				struct vslip *u = &o[z]->s, *l = &o[z - 1]->s;
-				if (u->s0 > l->s0) { /* l's top shows: the one above starts SL_STRIP lower at least */
-					if (u->y < l->y + SL_STRIP) {
-						double d = l->y + SL_STRIP - u->y;
-						u->y += d;
-						u->h = fmax(u->h - d, SL_STRIP);
-					}
-					l->sy = l->y, l->sh = fmin(u->y - l->y, l->h), l->strip_top = true;
-				} else { /* l's bottom shows: it reaches SL_STRIP below the one above at least */
-					double ub = u->y + u->h;
-					if (l->y + l->h < ub + SL_STRIP)
-						l->h = ub + SL_STRIP - l->y;
-					l->sy = ub, l->sh = l->y + l->h - ub, l->strip_top = false;
+				if (u->s0 > l->s0 && u->y < l->y + SL_STRIP) {
+					double d = l->y + SL_STRIP - u->y;
+					u->y += d;
+					u->h = fmax(u->h - d, SL_STRIP);
 				}
+			}
+			/* from the top down, what of each shows past all those above it: its top, else
+			 * the lowest band of SL_STRIP px or more; none, and it reaches SL_STRIP below
+			 * the lowest of them. One that none above overlaps shows whole */
+			for (int z = nz - 2; z >= 0; z--) {
+				struct vslip *l = &o[z]->s;
+				double top = l->y, bot = l->y + l->h, maxb = -1e9, best_y = 0, best_h = 0;
+				bool over = false;
+				for (int k = z + 1; k < nz; k++)
+					maxb = fmax(maxb, o[k]->s.y + o[k]->s.h);
+				/* the uncovered bands of [top, bot), walking down */
+				double at = top;
+				while (at < bot) {
+					double next = bot; /* the first cover at or below at */
+					double cover_end = at;
+					for (int k = z + 1; k < nz; k++) {
+						const struct vslip *u = &o[k]->s;
+						if (u->y + u->h <= top || u->y >= bot)
+							continue;
+						over = true;
+						if (u->y <= at && u->y + u->h > at)
+							cover_end = fmax(cover_end, u->y + u->h);
+						else if (u->y > at)
+							next = fmin(next, u->y);
+					}
+					if (cover_end > at) {
+						at = cover_end;
+						continue;
+					}
+					double h = next - at;
+					if (h >= SL_STRIP && (at == top || best_h == 0 || at > best_y))
+						best_y = at, best_h = h;
+					if (at == top && h >= SL_STRIP)
+						break; /* its top shows: that is its strip */
+					at = next;
+				}
+				if (!over)
+					continue; /* nothing lies on it */
+				if (best_h <= 0) {
+					l->h = fmax(l->h, maxb + SL_STRIP - l->y);
+					best_y = maxb, best_h = l->y + l->h - maxb;
+				}
+				l->sy = best_y, l->sh = best_h, l->strip_top = best_y == l->y;
 			}
 		}
 		a = b;
@@ -1457,7 +1493,7 @@ static void slip_hits(struct ctx *c, struct slipx *sl, int n)
 				bool ontop = s->sh <= 0;
 				double r[4];
 				if (pass == 0 && s->parts) {
-					if (ontop || !s->strip_top) {
+					if (ontop || s->sy + s->sh >= s->y + sl[i].gh - 0.5) {
 						struct vslip t = *s;
 						t.h = sl[i].gh;
 						slip_ear_target(&t, r);

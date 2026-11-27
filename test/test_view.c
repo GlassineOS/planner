@@ -36,6 +36,26 @@ static bool diff_box(cairo_surface_t *a, cairo_surface_t *b, double r[4])
 	return r[2] >= 0;
 }
 
+/* every strip of a slip underneath lies inside it and clear of every slip above it in its
+ * stack: the number of strips that don't */
+static int bad_strips(const struct view *v)
+{
+	int bad = 0;
+	for (int i = 0; i < v->nslip; i++) {
+		const struct vslip *l = &v->slip[i];
+		if (l->sh <= 0)
+			continue;
+		if (l->sh < 18 || l->sy < l->y - 1e-6 || l->sy + l->sh > l->y + l->h + 1e-6)
+			bad++;
+		for (int k = 0; k < v->nslip; k++) {
+			const struct vslip *u = &v->slip[k];
+			if (u->stack == l->stack && u->z > l->z && u->y < l->sy + l->sh - 1e-6 && u->y + u->h > l->sy + 1e-6)
+				bad++;
+		}
+	}
+	return bad;
+}
+
 /* a stroke for the free time's tests: n points from (x0, y0) to (x1, y1), a zig-zag of
  * width wob across the line when wob > 0 (writing) */
 static int line_pts(struct pl_point *q, int n, double x0, double y0, double x1, double y1, double wob)
@@ -901,6 +921,29 @@ int main(void)
 			view_layout(&w, &ss, &L, cr);
 			sx = view_slip(&w, x->id);
 			CHECK(sx && !sx->fan && sx->z == 2 && sx->sh == 0 && view_field_of(&w, x->id)->layer == 3);
+			/* whichever of three is on top, each strip shows past every slip above it */
+			CHECK_INT(bad_strips(&w), 0);
+			const struct vslip *sy3 = view_slip(&w, y->id);
+			CHECK(sy3 && sy3->sh >= 18); /* covered by the two others in time: it reaches below them */
+			struct entry *three[3] = { x, y, z };
+			for (int i = 0; i < 3; i++) {
+				view_raise(&w, three[i]->id);
+				view_layout(&w, &ss, &L, cr);
+				CHECK_INT(bad_strips(&w), 0);
+			}
+			w.nraise = 0;
+			/* one that nothing above overlaps shows whole: 14-15, 14:30-16:30, 16-17, the first on top */
+			y->end = 16 * 60 + 30, z->start = 16 * 60, z->end = 17 * 60;
+			view_raise(&w, x->id);
+			view_layout(&w, &ss, &L, cr);
+			const struct vslip *sz = view_slip(&w, z->id);
+			sy3 = view_slip(&w, y->id);
+			CHECK(sz && sz->nz == 3 && sz->sh == 0 && sy3 && sy3->sh >= 18);
+			CHECK_INT(bad_strips(&w), 0);
+			const struct vhit *zh = sz ? view_hit(&w, sz->x + 40, sz->y + sz->h / 2) : NULL;
+			CHECK(zh && zh->a == A_EVENT && zh->id == z->id);
+			w.nraise = 0;
+			y->end = 15 * 60 + 30, z->start = 15 * 60, z->end = 16 * 60;
 			/* the stack gone: a fan asked for closes */
 			store_delete(&ss, z->id);
 			w.fan = x->id;
