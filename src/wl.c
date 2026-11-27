@@ -23,6 +23,7 @@
 
 #include <glassine-handwriting.h>
 #include "frame.h"
+#include "hold.h"
 #include "content.h"
 #include "settle.h"
 #include "trace.h"
@@ -97,8 +98,20 @@ static struct {
 	double tool_x, tool_y;
 	/* dragging an event (finger) */
 	uint32_t drag;
-	int drag_s0, drag_e0, drag_mode; /* 1 move, 2 the lower edge */
+	int drag_s0, drag_e0, drag_mode; /* 1 move (its title), 2 its end, 3 its start (the handles) */
 	double drag_y0, drag_mpp;
+	struct hold hold; /* a finger held still on an event: the card that deletes it (FR-018) */
+	/* the pen outside every field: its points (page coordinates), for a strike-through or
+	 * a bracket drawn down the hour margin */
+	struct pl_point *xpt;
+	int nxs, xs_cap;
+	bool xs_on;
+	struct vfield draw_f; /* the free time whose margin the pen draws down */
+	struct region *strike_rg; /* the title's region whose stroke struck it through: its reading waits */
+	/* the event the pen is in: its cluster's other brackets grey until BK_QUIET_MS after the
+	 * pen lifts or leaves; hover: the pen reports where it is before it touches */
+	long long quiet_ms;
+	bool hover;
 	/* the template editor, and a widget or its edge dragged in it (1 the widget, 2 its edge) */
 	struct editor ed;
 	int ed_drag;
@@ -112,6 +125,7 @@ static struct {
 	struct tedit {
 		char name[96];
 		uint32_t entry;
+		int sub;           /* which of its fields (EF_*) */
 		char *text;
 		uint8_t neaten, autograph; /* the field's own choice made in text mode, SHOW_* */
 	} *tedits;
@@ -230,6 +244,12 @@ static void repaint_region(const struct region *rg, const struct ghw_point *p, s
 		repaint(rg->x + p[i].x - 4, rg->y + p[i].y - 4, 8, 8);
 }
 
+/* the entry's field a region writes into (NULL: none yet) */
+static struct field *rfield(const struct region *rg)
+{
+	return rg->entry ? entry_sub(store_get(&P.s, rg->entry), rg->f.sub) : NULL;
+}
+
 static struct region *region_of(struct ghw_region *r)
 {
 	for (struct region *x = P.regions; x; x = x->next)
@@ -246,6 +266,46 @@ static void relayout_later(void)
 
 static void layout(void);
 static void restore(struct region *rg, struct entry *e);
+static void delete_ask(uint32_t id, bool struck);
+static void delete_done(bool del);
+
+/* a stroke's points in page coordinates, kept in P.xpt (false: no memory) */
+static bool xs_page(const struct ghw_point *p, size_t n, double dx, double dy)
+{
+	if (P.xs_cap < (int)n) {
+		struct pl_point *nx = realloc(P.xpt, n * sizeof *nx);
+		if (!nx)
+			return false;
+		P.xpt = nx, P.xs_cap = (int)n;
+	}
+	for (size_t i = 0; i < n; i++)
+		P.xpt[i] = (struct pl_point){ (float)(p[i].x + dx), (float)(p[i].y + dy), (float)p[i].pressure, p[i].time };
+	P.nxs = (int)n;
+	return true;
+}
+
+/* a stroke whose pen-down lies in an event's lane, outside its title's field: it belongs to
+ * that event (FR-018), its title's ink on the pixels it was written on */
+static bool to_lane(uint32_t k, const struct pl_point *q, int n)
+{
+	uint32_t id = view_lane_at(&P.v, q[0].x, q[0].y);
+	struct entry *e = id ? store_get(&P.s, id) : NULL;
+	const struct vfield *t = e ? view_field_of(&P.v, id) : NULL;
+	if (!t)
+		return false;
+	struct pl_point *r = malloc(n * sizeof *r);
+	if (!r)
+		return false;
+	for (int i = 0; i < n; i++)
+		r[i] = (struct pl_point){ (float)(q[i].x - t->x), (float)(q[i].y - t->y), q[i].p, q[i].t };
+	field_add_stroke(&e->f, k, r, n);
+	free(r);
+	for (struct region *r2 = P.regions; r2; r2 = r2->next)
+		if (r2->entry == id && r2->f.sub == 0)
+			restore(r2, e);
+	note(id);
+	return true;
+}
 static void free_relayout(void *ud)
 {
 	layout();
@@ -272,6 +332,34 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 		/* a block drawn in the free time: an event over that time, in 30-minute steps; a
 		 * stroke written there: an event at that time, the stroke its title's first ink, its
 		 * region there at once for the next stroke (FR-018) */
+		/* a stroke from before an event's title to past its end strikes it through: the card
+		 * asks, no event is made; one that comes down in an event's lane is that event's
+		 * (FR-018) */
+		if (P.v.ov == OV_NONE && xs_page(p, n, rg->f.x, rg->f.y)) {
+			uint32_t id = view_strike(&P.v, P.xpt, P.nxs);
+			if (id) {
+				delete_ask(id, true);
+				return;
+			}
+			if (to_lane(k, P.xpt, P.nxs)) {
+				P.nxs = 0;
+				P.dirty = true;
+				relayout_later();
+				return;
+			}
+			/* outside every bracket at a time an event holds (the gap between lanes, beside
+			 * a narrow lane): no event's, and it makes none */
+			for (int i = 0; i < P.v.nev; i++) {
+				const struct vev *e = &P.v.ev[i];
+				if (P.xpt[0].y >= e->y && P.xpt[0].y < e->y + fmax(e->h, e->th) && e->spine >= rg->f.x - BK_SPINE - 8 &&
+				    e->spine < rg->f.x + rg->f.w) {
+					PL_TR("stroke beside the events at that time: loose, not kept");
+					P.nxs = 0;
+					return;
+				}
+			}
+			P.nxs = 0;
+		}
 		struct pl_point *q = malloc(n * sizeof *q);
 		if (!q)
 			return;
@@ -292,13 +380,25 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 		relayout_later();
 		return;
 	}
+	struct entry *ev = rg->entry && rg->f.sub == 0 ? store_get(&P.s, rg->entry) : NULL;
+	if (ev && ev->kind == E_EVENT && P.v.ov == OV_NONE && xs_page(p, n, rg->f.x, rg->f.y)) {
+		/* the title struck through from before its first letter: the stroke is not kept, the
+		 * card asks; the region's reading of it waits for the card (FR-018) */
+		uint32_t id = view_strike(&P.v, P.xpt, P.nxs);
+		if (id) {
+			P.strike_rg = rg;
+			delete_ask(id, true);
+			return;
+		}
+		P.nxs = 0;
+	}
 	struct pl_point *q = malloc(n * sizeof *q);
 	if (!q)
 		return;
 	for (size_t i = 0; i < n; i++)
 		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
 	bool made = !rg->entry || !store_get(&P.s, rg->entry);
-	struct entry *e = field_stroke(&P.s, &rg->entry, &rg->mk, k, q, (int)n);
+	struct entry *e = field_stroke(&P.s, &rg->entry, rg->f.sub, &rg->mk, k, q, (int)n);
 	free(q);
 	if (!e)
 		return;
@@ -322,7 +422,7 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 		P.dirty = true;
 		return;
 	}
-	if (!rg || !rg->entry || !store_get(&P.s, rg->entry))
+	if (!rg || !rg->entry || !store_get(&P.s, rg->entry) || rg == P.strike_rg)
 		return;
 	/* the word layout: unchanged words' ink moved along the line, edited words set in
 	 * Autograph (FR-014) */
@@ -343,14 +443,14 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 				buf[o++] = (float)w[i].path[j];
 		}
 	}
-	if (field_value_same(&P.s, rg->entry, text, pw, pw ? (int)nw : 0, ngone, state, len)) {
+	if (field_value_same(&P.s, rg->entry, rg->f.sub, text, pw, pw ? (int)nw : 0, ngone, state, len)) {
 		/* nothing new (a restored region tells its value again): nothing to repaint */
 		PL_TR("value of %s unchanged", rg->name);
 		free(pw);
 		free(buf);
 		return;
 	}
-	bool emptied = field_value(&P.s, &rg->entry, text, pw, pw ? (int)nw : 0, gone, ngone, state, len);
+	bool emptied = field_value(&P.s, &rg->entry, rg->f.sub, text, pw, pw ? (int)nw : 0, gone, ngone, state, len);
 	free(pw);
 	free(buf);
 	if (emptied) {
@@ -367,14 +467,15 @@ static void on_neat(void *d, struct ghw_region *r, uint32_t k, int how, const st
 {
 	struct region *rg = region_of(r);
 	struct entry *e = rg && rg->entry ? store_get(&P.s, rg->entry) : NULL;
-	if (!e || !n)
+	struct field *ef = rg ? entry_sub(e, rg->f.sub) : NULL;
+	if (!ef || !n)
 		return;
 	struct pl_point *q = malloc(n * sizeof *q);
 	if (!q)
 		return;
 	for (size_t i = 0; i < n; i++)
 		q[i] = (struct pl_point){ (float)p[i].x, (float)p[i].y, (float)p[i].pressure, p[i].time };
-	bool changed = field_set_neat(&e->f, k, q, (int)n);
+	bool changed = field_set_neat(ef, k, q, (int)n);
 	free(q);
 	if (!changed) {
 		PL_TR("neat stroke %u of %s unchanged", k, rg->name);
@@ -388,39 +489,31 @@ static const struct ghw_region_listener region_listener = { .stroke = on_stroke,
 
 static bool covered(const struct vfield *f)
 {
-	struct view *v = &P.v;
-	if (v->ed)
-		return false; /* the editor's only field is its name */
-	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS)
-		return true;
-	if (v->ov == OV_INFO || v->ov == OV_MENU)
-		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
-	if (v->ov == OV_HIDDEN || v->ov == OV_MOVE)
-		return f->y + f->h > v->H - round((v->H - 60) * 0.66);
-	return false;
+	return view_covered(&P.v, f);
 }
 
 static void restore(struct region *rg, struct entry *e)
 {
-	if (!e->f.ns && !e->f.value)
+	const struct field *f = entry_sub(e, rg->f.sub);
+	if (!f || (!f->ns && !f->value))
 		return;
-	struct ghw_stored_stroke *st = calloc(e->f.ns ? e->f.ns : 1, sizeof *st);
-	struct ghw_point **pts = calloc(e->f.ns ? e->f.ns : 1, sizeof *pts);
+	struct ghw_stored_stroke *st = calloc(f->ns ? f->ns : 1, sizeof *st);
+	struct ghw_point **pts = calloc(f->ns ? f->ns : 1, sizeof *pts);
 	if (!st || !pts) {
 		free(st);
 		free(pts);
 		return;
 	}
-	for (int i = 0; i < e->f.ns; i++) {
-		pts[i] = calloc(e->f.s[i].n ? e->f.s[i].n : 1, sizeof **pts);
-		for (int j = 0; pts[i] && j < e->f.s[i].n; j++) {
-			const struct pl_point *q = &e->f.s[i].pt[j];
+	for (int i = 0; i < f->ns; i++) {
+		pts[i] = calloc(f->s[i].n ? f->s[i].n : 1, sizeof **pts);
+		for (int j = 0; pts[i] && j < f->s[i].n; j++) {
+			const struct pl_point *q = &f->s[i].pt[j];
 			pts[i][j] = (struct ghw_point){ q->x, q->y, q->t, q->p, 0, 0 };
 		}
-		st[i] = (struct ghw_stored_stroke){ e->f.s[i].k, pts[i], pts[i] ? (size_t)e->f.s[i].n : 0 };
+		st[i] = (struct ghw_stored_stroke){ f->s[i].k, pts[i], pts[i] ? (size_t)f->s[i].n : 0 };
 	}
-	ghw_region_restore(rg->r, st, e->f.ns, e->f.value, e->f.state, e->f.state_len);
-	for (int i = 0; i < e->f.ns; i++)
+	ghw_region_restore(rg->r, st, f->ns, f->value, f->state, f->state_len);
+	for (int i = 0; i < f->ns; i++)
 		free(pts[i]);
 	free(pts);
 	free(st);
@@ -434,8 +527,8 @@ static struct ghw_region *region_make(void *ud, struct region *rg)
 		return NULL;
 	ghw_region_set_context(rg->r, GHW_NORMAL, 0, "");
 	if (rg->f.k != F_FREE) {
-		struct entry *ne = rg->entry ? store_get(&P.s, rg->entry) : NULL;
-		bool on = ne ? field_neaten(&P.s, &ne->f) : P.s.neaten;
+		struct field *nf = rfield(rg);
+		bool on = nf ? field_neaten(&P.s, nf) : P.s.neaten;
 		ghw_region_set_neaten(rg->r, on, P.s.strength);
 	}
 	/* Set in Autograph before its ink comes back: one value, in the display asked for */
@@ -566,7 +659,7 @@ static void draw(void)
 static struct region *region_for(const struct vfield *f)
 {
 	for (struct region *x = P.regions; x; x = x->next)
-		if (x->live && ((f->k == F_ENTRY && x->entry == f->entry) || !strcmp(x->name, f->name)))
+		if (x->live && ((f->k == F_ENTRY && x->entry == f->entry && x->f.sub == f->sub) || !strcmp(x->name, f->name)))
 			return x;
 	return NULL;
 }
@@ -585,8 +678,8 @@ static const char *text_of(void *ud, const struct vfield *f)
 	struct tedit *t = edit_of(f->name);
 	if (t)
 		return t->text;
-	struct entry *e = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
-	return e && e->f.value ? e->f.value : "";
+	const struct field *ff = f->k == F_ENTRY ? entry_sub(store_get(&P.s, f->entry), f->sub) : NULL;
+	return ff && ff->value ? ff->value : "";
 }
 
 static const struct vfield *focused(void)
@@ -641,11 +734,12 @@ static void keep_edit(void)
 		memset(t, 0, sizeof *t);
 		snprintf(t->name, sizeof t->name, "%s", f->name);
 		t->entry = f->k == F_ENTRY ? f->entry : 0;
+		t->sub = f->k == F_ENTRY ? f->sub : 0;
 	}
 	free(t->text);
 	t->text = strdup(P.tm_buf);
-	struct entry *e = t->entry ? store_get(&P.s, t->entry) : NULL;
-	bool n = e ? field_neaten(&P.s, &e->f) : P.s.neaten, a = e ? field_autograph(&P.s, &e->f) : P.s.autograph;
+	struct field *tf = t->entry ? entry_sub(store_get(&P.s, t->entry), t->sub) : NULL;
+	bool n = tf ? field_neaten(&P.s, tf) : P.s.neaten, a = tf ? field_autograph(&P.s, tf) : P.s.autograph;
 	if (P.v.tm_neaten != n || t->neaten)
 		t->neaten = P.v.tm_neaten ? SHOW_ON : SHOW_OFF;
 	if (P.v.tm_autograph != a || t->autograph)
@@ -661,9 +755,9 @@ static void tm_focus(const struct vfield *f)
 		struct tedit *t = edit_of(f->name);
 		snprintf(P.tm_buf, sizeof P.tm_buf, "%s", t ? t->text : text_of(NULL, f));
 		P.tm_cur = (int)strlen(P.tm_buf);
-		struct entry *e = f->k == F_ENTRY ? store_get(&P.s, f->entry) : NULL;
-		P.v.tm_neaten = t && t->neaten ? t->neaten == SHOW_ON : e ? field_neaten(&P.s, &e->f) : P.s.neaten;
-		P.v.tm_autograph = t && t->autograph ? t->autograph == SHOW_ON : e ? field_autograph(&P.s, &e->f) : P.s.autograph;
+		struct field *ff = f->k == F_ENTRY ? entry_sub(store_get(&P.s, f->entry), f->sub) : NULL;
+		P.v.tm_neaten = t && t->neaten ? t->neaten == SHOW_ON : ff ? field_neaten(&P.s, ff) : P.s.neaten;
+		P.v.tm_autograph = t && t->autograph ? t->autograph == SHOW_ON : ff ? field_autograph(&P.s, ff) : P.s.autograph;
 		double sc = view_scroll_to(&P.v, f);
 		if (sc != P.v.scroll) {
 			P.v.scroll = sc;
@@ -705,26 +799,27 @@ static void tm_close(void)
 		struct tedit *t = &P.tedits[i];
 		struct region *rg = NULL;
 		for (struct region *x = P.regions; x && !rg; x = x->next)
-			if ((t->entry && x->entry == t->entry) || !strcmp(x->name, t->name))
+			if ((t->entry && x->entry == t->entry && x->f.sub == t->sub) || !strcmp(x->name, t->name))
 				rg = x;
 		struct entry *e = t->entry ? store_get(&P.s, t->entry) : NULL;
-		const char *was = e && e->f.value ? e->f.value : "";
+		struct field *tf = entry_sub(e, t->sub);
+		const char *was = tf && tf->value ? tf->value : "";
 		bool changed = strcmp(was, t->text) != 0;
 		if (!e && rg && *t->text) {
-			e = field_typed(&P.s, &rg->entry, &rg->mk, t->text);
+			e = field_typed(&P.s, &rg->entry, rg->f.sub, &rg->mk, t->text);
 			made = e != NULL;
 		} else if (e && changed)
-			field_typed(&P.s, &t->entry, NULL, t->text); /* search finds it at once */
-		if (e) {
+			field_typed(&P.s, &t->entry, t->sub, NULL, t->text); /* search finds it at once */
+		if ((tf = entry_sub(e, t->sub))) {
 			if (t->neaten)
-				e->f.neaten = t->neaten;
+				tf->neaten = t->neaten;
 			if (t->autograph)
-				e->f.autograph = t->autograph;
+				tf->autograph = t->autograph;
 		}
 		if (rg && changed)
 			ghw_region_edit(rg->r, t->text);
-		if (rg && e)
-			ghw_region_set_neaten(rg->r, field_neaten(&P.s, &e->f), P.s.strength);
+		if (rg && tf)
+			ghw_region_set_neaten(rg->r, field_neaten(&P.s, tf), P.s.strength);
 		free(t->text);
 	}
 	free(P.tedits);
@@ -950,16 +1045,31 @@ static void tap_(double x, double y, bool finger)
 		relayout_later();
 		return;
 	}
-	if (finger && !v->ed && v->ov == OV_NONE && (!h || h->a == A_EVENT || h->a == A_NONE)) {
-		/* a finger tap on a field opens its text mode (FR-012); the pen never does. A cut
-		 * title shows whole first (FR-018) */
-		if (h && h->a == A_EVENT && h->arg) {
-			v->title = h->id;
-			v->back = OV_NONE;
-			v->ov = OV_TITLE;
+	if (v->ov == OV_DELETE) { /* the asking card: Delete event, else (Keep, a tap outside) as it was */
+		if (h && (h->a == A_DEL_YES || h->a == A_DEL_KEEP))
+			delete_done(h->a == A_DEL_YES);
+		return;
+	}
+	if (v->ov == OV_PAGE && v->page_ask) { /* the page's dialog: Delete event, else Keep */
+		if (h && h->a == A_PG_DELETE && h->arg == 1) {
+			v->page_ask = false;
+			delete_done(true);
+		} else if (h && h->a == A_PG_DELETE) {
+			v->page_ask = false;
 			relayout_later();
-			return;
 		}
+		return;
+	}
+	if (v->ov == OV_NONE && !v->ed && h && (h->a == A_EVENT || h->a == A_EV_TOP || h->a == A_EV_BOT)) {
+		/* a tap on an event's title (or an end) opens its card, the whole title in it
+		 * (FR-018; boards event.open, event.title) */
+		v->title = h->id;
+		v->ov = OV_CARD;
+		relayout_later();
+		return;
+	}
+	if (finger && !v->ed && (v->ov == OV_NONE || v->ov == OV_PAGE) && (!h || h->a == A_NONE)) {
+		/* a finger tap on a field opens its text mode (FR-012); the pen never does */
 		const struct vfield *f = view_field_at(v, x, y);
 		if (f) {
 			tm_open(f);
@@ -987,9 +1097,9 @@ static void tap_(double x, double y, bool finger)
 			P.s.strength = P.s.strength < 0.5f ? 0.65f : P.s.strength < 0.85f ? 1.0f : 0.35f;
 		store_save_settings(&P.s);
 		for (struct region *x = P.regions; x; x = x->next) {
-			struct entry *re = x->entry ? store_get(&P.s, x->entry) : NULL;
+			struct field *rf = rfield(x);
 			if (x->f.k != F_FREE)
-				ghw_region_set_neaten(x->r, re ? field_neaten(&P.s, &re->f) : P.s.neaten, P.s.strength);
+				ghw_region_set_neaten(x->r, rf ? field_neaten(&P.s, rf) : P.s.neaten, P.s.strength);
 		}
 		P.dirty = true;
 		relayout_later();
@@ -1082,9 +1192,62 @@ static void tap_(double x, double y, bool finger)
 			relayout_later();
 		}
 		break;
+	case A_EV_OPEN: /* the card's Open: the event's own page */
+		v->ov = OV_PAGE, v->page_ask = false;
+		relayout_later();
+		break;
+	case A_EV_ASK: /* the card's Delete event: it asks */
+		delete_ask(h->id, false);
+		break;
+	case A_PG_BACK: /* to the day the event is on */
+		v->ov = OV_NONE;
+		if ((e = store_get(&P.s, h->id)) && !(v->per.kind == P_DAY && v->per.start == e->per.start) &&
+		    !(e->per.start >= v->per.start && e->per.start <= period_end(v->per)))
+			choose_period((struct period){ P_DAY, e->per.start });
+		relayout_later();
+		break;
+	case A_PG_DAY: /* the day: picked in the month */
+		if ((e = store_get(&P.s, h->id))) {
+			v->move = e->id, v->move_at = e->per.start, v->back = OV_PAGE, v->ov = OV_MOVE;
+			relayout_later();
+		}
+		break;
+	case A_PG_TIME: /* − and + move the start or the end by 30 minutes, at least 30 apart */
+		if ((e = store_get(&P.s, h->id))) {
+			int d = h->arg & 1 ? 30 : -30;
+			if (h->arg < 2 && e->start + d >= 0 && e->start + d <= e->end - 30)
+				e->start += d;
+			else if (h->arg >= 2 && e->end + d <= 24 * 60 && e->end + d >= e->start + 30)
+				e->end += d;
+			else
+				break;
+			save();
+			relayout_later();
+		}
+		break;
+	case A_PG_REPEAT:
+	case A_PG_REMIND:
+		if ((e = store_get(&P.s, h->id)) && h->arg >= 0 && h->arg < 5) {
+			if (h->a == A_PG_REPEAT)
+				e->repeat = h->arg;
+			else
+				e->remind = VIEW_REMIND_MIN[h->arg];
+			save();
+			relayout_later();
+		}
+		break;
+	case A_PG_DELETE: /* the page's Delete event: it asks first */
+		v->page_ask = true;
+		relayout_later();
+		break;
 	case A_MOVE_TO:
 		if (store_move(&P.s, v->move, h->arg))
 			save();
+		if (v->back == OV_PAGE) { /* the event page's day */
+			v->ov = OV_PAGE, v->back = OV_NONE;
+			relayout_later();
+			break;
+		}
 		v->ov = OV_HIDDEN, v->back = OV_NONE;
 		{
 			struct hidden_group g[16];
@@ -1217,6 +1380,43 @@ static void tap(double x, double y, bool finger)
 		content_tap(&P.said);
 }
 
+/* the card that deletes event id (FR-018; board event.delete), after a strike-through (its
+ * stroke: P.xpt), a finger held still, or the card's Delete event; laid out at once, not
+ * after the pen's pause */
+static void delete_ask(uint32_t id, bool struck)
+{
+	struct view *v = &P.v;
+	v->ov = OV_DELETE;
+	v->title = id;
+	v->xout = struck ? P.xpt : NULL;
+	v->nxout = struck ? P.nxs : 0;
+	settle_done(&P.st);
+	layout();
+	P.dirty = true;
+	content_tap(&P.said);
+}
+
+/* the card closed: kept (the stroke goes, the title as it was), or the event deleted */
+static void delete_done(bool del)
+{
+	struct view *v = &P.v;
+	struct region *rg = P.strike_rg;
+	P.strike_rg = NULL;
+	struct entry *e = store_get(&P.s, v->title);
+	if (del && e) {
+		store_delete(&P.s, v->title);
+		save(); /* a delete is never journalled */
+	} else if (rg && e) {
+		for (struct region *r = P.regions; r; r = r->next)
+			if (r == rg)
+				restore(rg, e); /* the region's ink again without the stroke */
+	}
+	v->ov = OV_NONE;
+	v->xout = NULL, v->nxout = 0;
+	P.nxs = 0;
+	relayout_later();
+}
+
 /* the free time field of the agenda an event is in: its minutes per px */
 static double mpp_of(uint32_t id)
 {
@@ -1245,8 +1445,11 @@ static void finger_down(double x, double y)
 		P.ed_x0 = x, P.ed_y0 = y;
 		return;
 	}
+	hold_end(&P.hold);
 	const struct vhit *h = P.refused || P.v.tm ? NULL : view_hit(&P.v, x, y);
-	if (h && h->a == A_EVENT && P.v.ov == OV_NONE) {
+	if (h && (h->a == A_EVENT || h->a == A_EV_TOP || h->a == A_EV_BOT) && P.v.ov == OV_NONE) {
+		/* an event: by its title it moves, by a handle at its "[" that end; held still it
+		 * asks to be deleted (FR-018; boards event.drag, event.delete) */
 		struct entry *e = store_get(&P.s, h->id);
 		double mpp = mpp_of(h->id);
 		if (e && mpp > 0) {
@@ -1254,9 +1457,26 @@ static void finger_down(double x, double y)
 			P.drag_s0 = e->start, P.drag_e0 = e->end;
 			P.drag_y0 = y;
 			P.drag_mpp = mpp;
-			P.drag_mode = y > h->y + h->h - 10 ? 2 : 1;
+			P.drag_mode = h->a == A_EV_BOT ? 2 : h->a == A_EV_TOP ? 3 : 1;
 		}
+		if (e)
+			hold_begin(&P.hold, e->id, x, y, now_ms());
 	}
+}
+
+/* the finger held still on an event: the card that asks (board event.delete) */
+static void hold_due(void)
+{
+	if (!hold_fire(&P.hold, now_ms()))
+		return;
+	struct entry *e = store_get(&P.s, P.hold.id);
+	if (!e || P.v.drag || (P.drag && (e->start != P.drag_s0 || e->end != P.drag_e0))) {
+		hold_end(&P.hold); /* it was moved: a drag */
+		return;
+	}
+	P.drag = 0;
+	P.v.drag = 0;
+	delete_ask(e->id, false);
 }
 
 static void finger_motion(double x, double y)
@@ -1273,24 +1493,38 @@ static void finger_motion(double x, double y)
 		}
 		return;
 	}
-	if (!P.drag)
+	if (P.hold.fired || !P.drag)
 		return;
 	struct entry *e = store_get(&P.s, P.drag);
 	if (!e)
+		return;
+	hold_move(&P.hold, x, y);
+	int mode = P.drag_mode == 1 ? 0 : P.drag_mode == 3 ? 1 : 2;
+	if (P.v.drag != P.drag && (fabs(x - P.tx) > HOLD_SLOP || fabs(y - P.ty) > HOLD_SLOP)) {
+		/* past the slop: a drag; moved, its brackets turn dashed, an end held, its serifs
+		 * thicken */
+		P.v.drag = P.drag, P.v.drag_end = mode;
+		P.v.drag_s0 = P.drag_s0, P.v.drag_e0 = P.drag_e0;
+		relayout_later();
+		content_step(&P.said);
+	}
+	if (P.v.drag != P.drag)
 		return;
 	int steps = (int)lround((y - P.drag_y0) * P.drag_mpp / 30);
 	int s = P.drag_s0, en = P.drag_e0;
 	if (P.drag_mode == 1)
 		s += steps * 30, en += steps * 30;
-	else
+	else if (P.drag_mode == 2)
 		en = en + steps * 30 > s + 30 ? en + steps * 30 : s + 30;
+	else
+		s = s + steps * 30 < en - 30 ? s + steps * 30 : en - 30;
 	if (s < 0)
-		en -= s, s = 0;
+		en -= P.drag_mode == 1 ? s : 0, s = 0;
+	if (en > 24 * 60)
+		s -= P.drag_mode == 1 ? en - 24 * 60 : 0, en = 24 * 60;
 	if (s != e->start || en != e->end) {
 		e->start = s, e->end = en;
-		P.v.drag = P.drag;
-		P.v.drag_s0 = P.drag_s0, P.v.drag_e0 = P.drag_e0;
-		relayout_later(); /* once per step, only where the block leaves and enters */
+		relayout_later(); /* once per step, only where the brackets leave and enter */
 		content_step(&P.said);
 	}
 }
@@ -1330,13 +1564,21 @@ static void finger_up(double x, double y)
 		P.ed.drop_target = NULL;
 		editor_relayout();
 	}
+	bool fired = P.hold.fired;
+	hold_end(&P.hold);
+	if (fired)
+		return; /* held: the card is open */
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
-		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0);
+		bool moved = e && (e->start != P.drag_s0 || e->end != P.drag_e0), lifted = P.v.drag != 0;
 		P.drag = 0;
-		P.v.drag = 0;
+		P.v.drag = 0, P.v.drag_end = 0;
 		if (moved) {
 			save();
+			relayout_later();
+			return;
+		}
+		if (lifted) { /* put down where it was: solid again */
 			relayout_later();
 			return;
 		}
@@ -1375,12 +1617,13 @@ static void t_cancel(void *d, struct wl_touch *t)
 {
 	P.touch_id = -1;
 	content_end(&P.said);
+	hold_end(&P.hold);
 	if (P.drag) {
 		struct entry *e = store_get(&P.s, P.drag);
 		if (e)
 			e->start = P.drag_s0, e->end = P.drag_e0;
 		P.drag = 0;
-		P.v.drag = 0;
+		P.v.drag = 0, P.v.drag_end = 0;
 		relayout_later();
 	}
 }
@@ -1425,17 +1668,66 @@ static bool in_field(double x, double y)
 	}
 	return false;
 }
+/* a point of the pen's stroke outside the fields, screen coordinates */
+static void xs_add(double x, double y)
+{
+	if (P.nxs == P.xs_cap) {
+		int cap = P.xs_cap ? 2 * P.xs_cap : 256;
+		struct pl_point *n = realloc(P.xpt, cap * sizeof *n);
+		if (!n)
+			return;
+		P.xpt = n, P.xs_cap = cap;
+	}
+	P.xpt[P.nxs++] = (struct pl_point){ (float)x, (float)(y + P.v.scroll), 0.5f, 0 };
+}
+
+/* the event the pen is in (down, or hovering): the other brackets of its cluster grey; none,
+ * black again BK_QUIET_MS later (FR-018, board event.stack) */
+static void pen_focus(double x, double y)
+{
+	struct view *v = &P.v;
+	uint32_t id = v->ov == OV_NONE && !v->ed && !v->tm ? view_lane_at(v, x, y + v->scroll) : 0;
+	if (id) {
+		P.quiet_ms = 0;
+		if (id != v->focus)
+			v->focus = id, P.dirty = true;
+	} else if (v->focus && !P.quiet_ms)
+		P.quiet_ms = now_ms() + BK_QUIET_MS;
+}
+
+/* the bracket drawn down the hour margin so far: from the half hour it began in to the half
+ * hour the pen is at, at least 30 minutes (board event.draw) */
+static void draw_step(void)
+{
+	struct view *v = &P.v;
+	int s, e;
+	view_margin_span(&P.draw_f, P.xpt[0].y, P.tool_y + v->scroll, &s, &e);
+	if (!v->draw_on || s != v->draw_s || e != v->draw_e) {
+		v->draw_on = true, v->draw_day = P.draw_f.per.start, v->draw_s = s, v->draw_e = e;
+		P.dirty = true;
+		content_step(&P.said);
+	}
+}
+
 static void tt_type(void *d, struct zwp_tablet_tool_v2 *t, uint32_t type) {}
 static void tt_serial(void *d, struct zwp_tablet_tool_v2 *t, uint32_t hi, uint32_t lo) {}
 static void tt_wacom(void *d, struct zwp_tablet_tool_v2 *t, uint32_t hi, uint32_t lo) {}
-static void tt_cap(void *d, struct zwp_tablet_tool_v2 *t, uint32_t c) {}
+static void tt_cap(void *d, struct zwp_tablet_tool_v2 *t, uint32_t c)
+{
+	if (c == ZWP_TABLET_TOOL_V2_CAPABILITY_DISTANCE)
+		P.hover = true; /* it reports where it is above the screen */
+}
 static void tt_done(void *d, struct zwp_tablet_tool_v2 *t) {}
 static void tt_removed(void *d, struct zwp_tablet_tool_v2 *t)
 {
 	zwp_tablet_tool_v2_destroy(t);
 }
 static void tt_in(void *d, struct zwp_tablet_tool_v2 *t, uint32_t s, struct zwp_tablet_v2 *tab, struct wl_surface *sf) {}
-static void tt_out(void *d, struct zwp_tablet_tool_v2 *t) {}
+static void tt_out(void *d, struct zwp_tablet_tool_v2 *t)
+{
+	if (!P.tool_down && P.v.focus && !P.quiet_ms)
+		P.quiet_ms = now_ms() + BK_QUIET_MS;
+}
 static double down_x, down_y;
 static void tt_down(void *d, struct zwp_tablet_tool_v2 *t, uint32_t s)
 {
@@ -1444,6 +1736,16 @@ static void tt_down(void *d, struct zwp_tablet_tool_v2 *t, uint32_t s)
 	P.tool_down = true;
 	P.pen_down = true;
 	down_x = P.tool_x, down_y = P.tool_y;
+	pen_focus(down_x, down_y);
+	/* outside every field: no region takes the stroke, so it comes only here; kept for a
+	 * strike-through, or a bracket drawn down the hour margin (FR-018) */
+	P.nxs = 0;
+	P.v.draw_on = false;
+	P.xs_on = !P.v.tm && P.v.ov == OV_NONE && !P.v.ed && !in_field(down_x, down_y);
+	const struct vfield *mf = P.xs_on ? view_margin_at(&P.v, down_x, down_y + P.v.scroll) : NULL;
+	P.draw_f = mf ? *mf : (struct vfield){ 0 };
+	if (P.xs_on)
+		xs_add(P.tool_x, P.tool_y);
 }
 static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 {
@@ -1451,12 +1753,47 @@ static void tt_up(void *d, struct zwp_tablet_tool_v2 *t)
 	P.pen_down = false;
 	P.pen_up_ms = now_ms();
 	PL_TR("pen up %.0f,%.0f", P.tool_x, P.tool_y);
-	if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
+	if (P.v.focus && !P.quiet_ms)
+		P.quiet_ms = now_ms() + BK_QUIET_MS;
+	bool xs = P.xs_on, drawn = P.v.draw_on;
+	P.xs_on = false;
+	P.v.draw_on = false;
+	uint32_t id = xs && P.nxs > 1 ? view_strike(&P.v, P.xpt, P.nxs) : 0;
+	if (id) {
+		PL_TR("stroke outside the fields, %d points: strikes %u through", P.nxs, id);
+		delete_ask(id, true);
+	} else if (drawn) {
+		/* drawn down the margin: a new event over that time, a dotted line where its title
+		 * goes (board event.draw) */
+		struct entry *x = store_add(&P.s, E_EVENT, P.draw_f.per);
+		PL_TR("bracket drawn %d-%d", P.v.draw_s, P.v.draw_e);
+		if (x) {
+			x->start = P.v.draw_s, x->end = P.v.draw_e;
+			save();
+		}
+		/* laid out at once: its title takes the next stroke, not the free time */
+		settle_done(&P.st);
+		layout();
+		P.dirty = true;
+		content_tap(&P.said);
+	} else if (fabs(P.tool_x - down_x) < 8 && fabs(P.tool_y - down_y) < 8 && !in_field(down_x, down_y) && !P.v.tm)
 		tap(down_x, down_y, false);
 }
 static void tt_motion(void *d, struct zwp_tablet_tool_v2 *t, wl_fixed_t x, wl_fixed_t y)
 {
 	P.tool_x = wl_fixed_to_double(x), P.tool_y = wl_fixed_to_double(y);
+	if (!P.tool_down) {
+		if (P.hover)
+			pen_focus(P.tool_x, P.tool_y); /* hover: the same before it touches */
+		return;
+	}
+	if (P.xs_on) {
+		xs_add(P.tool_x, P.tool_y);
+		/* down the margin, more down than across: a bracket being drawn */
+		double dy = fabs(P.tool_y - down_y), dx = fabs(P.tool_x - down_x);
+		if (P.draw_f.k == F_FREE && P.draw_f.mpp > 0 && (P.v.draw_on || (dy >= 12 && dy > 2 * dx)))
+			draw_step();
+	}
 }
 static void tt_pressure(void *d, struct zwp_tablet_tool_v2 *t, uint32_t p) {}
 static void tt_distance(void *d, struct zwp_tablet_tool_v2 *t, uint32_t p) {}
@@ -1898,6 +2235,12 @@ int main(int argc, char **argv)
 					}
 			}
 		}
+		hold_due();
+		if (P.quiet_ms && !P.pen_down && now_ms() >= P.quiet_ms) { /* the cluster black again */
+			P.quiet_ms = 0;
+			P.v.focus = 0;
+			P.dirty = true;
+		}
 		if (P.save_due && !P.pen_down && now_ms() >= P.save_due)
 			save(); /* the journal into planner.ics, idle */
 		if (P.dirty || P.part.w > 0)
@@ -1916,6 +2259,14 @@ int main(int argc, char **argv)
 		}
 		if (P.tm_left_ms) {
 			long long left = KBD_GONE_MS - (now_ms() - P.tm_left_ms);
+			int t2 = left > 0 ? (int)left + 5 : 5;
+			timeout = timeout < 0 || t2 < timeout ? t2 : timeout;
+		}
+		long long hl = hold_left(&P.hold, now_ms());
+		if (hl >= 0)
+			timeout = timeout < 0 || hl + 1 < timeout ? (int)hl + 1 : timeout;
+		if (P.quiet_ms) {
+			long long left = P.quiet_ms - now_ms();
 			int t2 = left > 0 ? (int)left + 5 : 5;
 			timeout = timeout < 0 || t2 < timeout ? t2 : timeout;
 		}

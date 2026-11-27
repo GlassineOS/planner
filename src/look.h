@@ -42,6 +42,8 @@ void lk_rect(cairo_t *cr, double x, double y, double w, double h, double r);
 void lk_fill(cairo_t *cr, ui_col c);
 void lk_stroke_box(cairo_t *cr, double x, double y, double w, double h, double r, double lw, ui_col c);
 void lk_rule(cairo_t *cr, double x, double y, double w, double lw, ui_col c, int dash);
+/* a filled box at whole device pixels (a bracket's line) */
+void lk_bar(cairo_t *cr, double x, double y, double w, double h, ui_col c);
 /* the design's line icons (24-unit SVG path data), px square at x, y, stroke 1.6 */
 void lk_icon(cairo_t *cr, const char *path, double x, double y, double px, ui_col c, double sw);
 extern const char *const IC_CHEV_L, *const IC_CHEV_R, *const IC_COG, *const IC_INFO, *const IC_HIDDEN,

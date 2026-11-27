@@ -20,7 +20,7 @@ PREFIX ?= /usr
 DESTDIR ?=
 
 O := out
-CORE := store grid tfile editor settle content
+CORE := store grid tfile editor settle content lanes hold
 CORE_OBJ := $(CORE:%=$(O)/%.o)
 SCREEN := look view frame regions
 SCREEN_OBJ := $(SCREEN:%=$(O)/%.o)
@@ -98,6 +98,9 @@ $(O)/sample.o: test/sample.c test/sample.h src/store.h | $(O)
 $(O)/test_settle: test/test_settle.c $(CORE_OBJ) test/t.h | $(O)
 	$(CC) $(CFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS)
 
+$(O)/test_lanes: test/test_lanes.c $(CORE_OBJ) test/t.h | $(O)
+	$(CC) $(CFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS)
+
 $(O)/test_content: test/test_content.c $(CORE_OBJ) $(PROTO_H) test/t.h | $(O)
 	$(CC) $(CFLAGS) -I$(O)/proto -o $@ $< $(CORE_OBJ) $(LDLIBS)
 
@@ -122,9 +125,10 @@ $(O)/test_scale: test/test_scale.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) test/
 $(O)/render: test/render.c $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) | $(O)
 	$(CC) $(CFLAGS) $(SCREEN_CFLAGS) -o $@ $< $(O)/sample.o $(SCREEN_OBJ) $(CORE_OBJ) $(SCREEN_LIBS) $(LDLIBS) $(UI_RPATH)
 
-check: $(O)/test_store $(O)/test_settle $(O)/test_content $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test_regions $(O)/test_scale $(O)/render all
+check: $(O)/test_store $(O)/test_settle $(O)/test_lanes $(O)/test_content $(O)/test_view $(O)/test_editor $(O)/test_frame $(O)/test_regions $(O)/test_scale $(O)/render all
 	./$(O)/test_store
 	./$(O)/test_settle
+	./$(O)/test_lanes
 	./$(O)/test_content
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_frame
 	FONTCONFIG_FILE=$$(sh test/fonts.sh) ./$(O)/test_regions

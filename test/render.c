@@ -186,10 +186,96 @@ int main(int argc, char **argv)
 					  "bring the blue folder to the office", 2, 19, 14);
 			struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
 			shot(&s, VOICES[vi], &w, "event.title");
-			w.ov = OV_TITLE, w.title = c->id;
+			w.ov = OV_CARD, w.title = c->id;
 			shot(&s, VOICES[vi], &w, "event.title.whole");
 			store_delete(&s, g->id), store_delete(&s, k->id), store_delete(&s, c->id);
 			n += 2;
+		}
+		/* the events as bracket pairs (boards event.stack, event.drag, event.draw, event.delete,
+		 * event.open) */
+		{
+			struct entry *ev[64], *den = NULL;
+			int ne = store_list(&s, E_EVENT, d, NULL, ev, 64);
+			for (int i = 0; i < ne; i++)
+				if (ev[i]->start == 14 * 60)
+					den = ev[i];
+			struct view w = { .per = d, .today = today, .W = 702, .H = 896 };
+			int ds = den->start, de = den->end;
+			/* overlapping: two lanes, then three, the pen writing in the second */
+			struct entry *bank = store_add(&s, E_EVENT, d);
+			bank->start = 14 * 60 + 30, bank->end = 15 * 60 + 30;
+			sample_ink(&bank->f, "call the bank", 2, 19, 21);
+			shot(&s, VOICES[vi], &w, "event.stack.two");
+			w.focus = bank->id;
+			shot(&s, VOICES[vi], &w, "event.stack.writing");
+			w.focus = 0;
+			struct entry *cafe = store_add(&s, E_EVENT, d);
+			cafe->start = 13 * 60, cafe->end = 16 * 60;
+			sample_ink(&cafe->f, "work from the café", 2, 19, 22);
+			shot(&s, VOICES[vi], &w, "event.stack.three");
+			store_delete(&s, bank->id), store_delete(&s, cafe->id);
+			/* moved by its title (dashed), its end and its start held, held past the first hour */
+			den->start = 15 * 60, den->end = 16 * 60;
+			w.drag = den->id, w.drag_s0 = ds, w.drag_e0 = de, w.drag_end = 0;
+			shot(&s, VOICES[vi], &w, "event.drag.moved");
+			den->start = ds, den->end = de + 60, w.drag_end = 2;
+			shot(&s, VOICES[vi], &w, "event.drag.end");
+			den->start = ds - 60, den->end = de, w.drag_end = 1;
+			shot(&s, VOICES[vi], &w, "event.drag.start");
+			den->start = 5 * 60, den->end = 6 * 60, w.drag_end = 0;
+			shot(&s, VOICES[vi], &w, "event.drag.edge");
+			den->start = ds, den->end = de, w.drag = 0;
+			/* drawn down the margin: drawing, drawn, titled */
+			w.draw_on = true, w.draw_day = d.start, w.draw_s = 16 * 60, w.draw_e = 17 * 60;
+			shot(&s, VOICES[vi], &w, "event.draw.draw");
+			w.draw_on = false;
+			struct entry *nw = store_add(&s, E_EVENT, d);
+			nw->start = 16 * 60, nw->end = 17 * 60;
+			shot(&s, VOICES[vi], &w, "event.draw.drawn");
+			sample_ink(&nw->f, "piano lesson", 2, 19, 23);
+			shot(&s, VOICES[vi], &w, "event.draw.titled");
+			store_delete(&s, nw->id);
+			/* struck through: the card asks, the stroke shown; held: the same without it; Delete
+			 * event: the time free again */
+			shot(&s, VOICES[vi], &w, "tmp");
+			const struct vev *ve = view_ev(&w, den->id);
+			static struct pl_point xs[32];
+			for (int i = 0; i < 32; i++)
+				xs[i] = (struct pl_point){ (float)(ve->tx - 4 + i * (ve->ink[2] + 14) / 31.0),
+							   (float)(ve->ink[1] + ve->ink[3] * 0.55 + (i % 5) * 0.4), 0.6f, 0 };
+			w.ov = OV_DELETE, w.title = den->id, w.xout = xs, w.nxout = 32;
+			shot(&s, VOICES[vi], &w, "event.delete.struck");
+			w.xout = NULL, w.nxout = 0;
+			shot(&s, VOICES[vi], &w, "event.delete.confirm");
+			/* its card, its page, the page's dialog */
+			w.ov = OV_CARD;
+			shot(&s, VOICES[vi], &w, "event.open.card");
+			w.ov = OV_PAGE;
+			sample_ink(&den->xf[EF_WHERE - 1], "the practice by the station", 2, 25, 24);
+			sample_ink(&den->xf[EF_NOTES - 1], "bring the insurance card", 2, 25, 25);
+			sample_ink(&den->xf[EF_WITH - 1], "the dentist", 2, 25, 26);
+			den->remind = 60;
+			shot(&s, VOICES[vi], &w, "event.open.page");
+			w.page_ask = true;
+			shot(&s, VOICES[vi], &w, "event.open.page-confirm");
+			w.page_ask = false, w.ov = OV_NONE;
+			struct entry keep = *den;
+			den->per.start += 1; /* as if deleted, without losing it for the next voice */
+			shot(&s, VOICES[vi], &w, "event.delete.deleted");
+			den->per = keep.per;
+			for (int k = 0; k < 3; k++)
+				field_free(&den->xf[k]), den->xf[k] = (struct field){ 0 };
+			den->remind = -1;
+			n += 16;
+		}
+		/* a small agenda beside other widgets: its hours at the smallest pitch, the titles on
+		 * one line (board widget.agenda) */
+		{
+			store_choose(&s, d, d.start, "day-diary");
+			struct view w = { .per = d, .today = today, .W = 936, .H = 420 };
+			shot(&s, VOICES[vi], &w, "widget.agenda.small");
+			store_choose(&s, d, d.start, "day-agenda");
+			n++;
 		}
 		struct view v = { .per = d, .today = today, .W = 702, .H = 896, .ov = OV_HIDDEN, .hidden_kind = 0 };
 		shot(&s, VOICES[vi], &v, "hidden.list");

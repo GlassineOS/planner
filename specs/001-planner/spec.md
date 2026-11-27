@@ -48,25 +48,32 @@ Terms used below:
 
 ### Scenario 1 – Write an event into the day (Priority: P1)
 
-**Given** today's view with a day agenda, **When** the person draws a block over 14:00–15:00
-with the pen in the agenda's free time and writes "dentist" in it, **Then** an event from
-14:00 to 15:00 exists, its title shows as the person's ink exactly as written, and a moment
-later searching for "dentist" finds it. No converted text appears anywhere on the page.
-**When** the title is longer than the hour holds, **Then** its title field grows into the
-free time below the block and the event still ends at 15:00. **When** another event later
-takes that free time, **Then** the title shrinks evenly to fit, and if even its smallest
-readable size doesn't fit, it is cut at the block's edge and a tap on it shows the whole
-title.
+**Given** today's view with a day agenda, **When** the person draws a line down the hour
+margin from 14:00 to 15:00 with the pen and writes "dentist" between the brackets that
+appear, **Then** an event from 14:00 to 15:00 exists, shown as a pair of brackets, `[` in the
+hour margin and `]` at the agenda's right end, its title the person's ink exactly as
+written, and a moment later searching for "dentist" finds it. No converted text appears
+anywhere on the page. **When** the title is longer than the hour holds, **Then** its title
+field grows into the free time below the brackets and the event still ends at 15:00.
+**When** another event later takes that free time, **Then** the title shrinks evenly to fit,
+and if even its smallest readable size doesn't fit, it is cut before the `]`; a tap on it
+opens the event's card, which shows the whole title. **When** a call to the bank from 14:30
+to 15:30 is added, **Then** both events stand side by side in two equal lanes for as long as
+either runs, the dentist in the first, and a stroke belongs to the lane its pen-down point is
+in.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
-**Given** that event, **When** the person drags the block down, **Then** it moves in steps of
-30 minutes with a dashed outline at its old place while the hour gutter shows the time it
-would land on, the page refreshing once per step and only where the block moves, and lands
-at 14:30–15:30, its ink unchanged. **When** the person
-drags its lower edge, **Then** its length changes in 30-minute steps. **When** the person
-opens its date and picks another day, **Then** the event moves there with its ink and its
-reading.
+**Given** that event, **When** the person drags its title down with a finger, **Then** its
+brackets turn dashed and it moves in steps of 30 minutes while the hour margin shows its
+start, the page refreshing once per step and only where the brackets leave and enter, and
+it lands at 14:30–15:30 with solid brackets, its ink unchanged. **When** the person drags the
+handle at the bottom of its `[`, **Then** its end changes in 30-minute steps, the held
+serifs thicker. **When** the person taps its title, opens its page and picks another day,
+**Then** the event moves there with its ink and its reading. **When** the person strikes its
+title through with the pen from before its first letter to past its last, **Then** a card
+asks "Delete this event?"; Keep brings it back as it was, Delete event leaves the time
+free.
 
 ### Scenario 3 – Write to-dos into the week (Priority: P1)
 
@@ -189,8 +196,9 @@ it says that it needs the handwriting service and why, and doesn't start.
 
 ### Text mode
 
-- **FR-012**: A tap with a finger on a handwriting field opens that field's text mode; a tap
-  outside the field leaves it. The pen writes and never opens text mode. In text mode a
+- **FR-012**: A tap with a finger on a handwriting field opens that field's text mode (the
+  title of an event in an agenda opens its card instead, FR-018; its page's title opens text
+  mode); a tap outside the field leaves it. The pen writes and never opens text mode. In text mode a
   field shows its current text (FR-014) as an ordinary text field, edited with the system
   on-screen keyboard; the bar above the keyboard holds the field's Neaten and Set in
   Autograph switches (FR-011). Opening or leaving a field's text mode lays nothing out
@@ -214,33 +222,72 @@ it says that it needs the handwriting service and why, and doesn't start.
 
 - **FR-018**: Times and dates are never written by hand. They are set with widgets made for
   them:
-  - drawing a block with the pen into an agenda's free time creates an event over that time,
-    and writing into the free time creates an event too. The free time is a writing region
-    with reading off (handwriting spec 005): a stroke there is never read as text itself. A
-    stroke taller than a written letter, running down over an hour or more and much taller
-    than wide, is the block: the event covers it in 30-minute steps and the stroke goes. Any
-    other stroke is writing: the event starts at the half hour the stroke starts in and lasts
-    an hour, the stroke stays where it was written as the first ink of the event's title, and
-    the title takes the next stroke at once, so writing into an empty slot is writing from
-    the first stroke;
-  - dragging an event's block moves it and dragging its edge changes its length, both in
-    steps of 30 minutes. During a drag the view refreshes once per step, only where the
-    block leaves and enters. A dragged block looks as it will when released; the only
-    other marks during a drag are a dashed outline at the block's old place and, in the
-    agenda's hour gutter, the time the block would land on. That readout is part of the
-    gutter, not of the block's look; it changes with each step and goes on release. A block
-    held past the agenda's first or last hour scrolls its hours one step per step, with the
-    readout pinned at that edge of the gutter; on release the agenda shows its own hours
-    again. The release refreshes only the old place, where the outline goes, and the gutter;
-  - date pickers set or change the day, week or month an entry belongs to.
+  - drawing a line with the pen down an agenda's hour margin creates an event over that
+    time, in 30-minute steps from the half hour it starts in, at least 30 minutes; while it
+    is drawn, a dashed bracket and the start and end in the margin show what it covers.
+    Drawing a block into the free time creates an event too, and so does writing into it.
+    The free time is a writing region with reading off (handwriting spec 005): a stroke
+    there is never read as text itself. A stroke taller than a written letter, running down
+    over an hour or more and much taller than wide, is the block: the event covers it in
+    30-minute steps and the stroke goes. Any other stroke is writing: the event starts at the
+    half hour the stroke starts in and lasts an hour, the stroke stays where it was written
+    as the first ink of the event's title, and the title takes the next stroke at once, so
+    writing into an empty slot is writing from the first stroke;
+  - a finger on an event's title that moves more than 8 px moves the event, and one on the
+    handle at the top or the bottom of its `[` moves that end, both in steps of 30 minutes
+    and at least 30 minutes long. While moved, the brackets are dashed; while an end is
+    held, its serifs are thicker. During a drag the view refreshes once per step, only
+    where the brackets leave and enter. The only other mark during a drag is, in the
+    agenda's hour margin, the time of the end that moves (the start when moved); that
+    readout is part of the margin, changes with each step and goes on release. An event
+    held past the agenda's first or last hour scrolls its hours one step per step, with
+    the readout pinned at that edge of the margin; on release the agenda shows its own
+    hours again, and the release refreshes only the brackets' place and the margin;
+  - date pickers set or change the day, week or month an entry belongs to; on an event's
+    page the day is picked from a month and − and + move the start or the end by 30
+    minutes.
 
-  When an event's title needs more room than its block, the title field grows past the
-  block into the free time below it; the event's start and end stay as set. A title that
-  no longer fits its space (the event is shortened, another event takes the free time
-  below, the view is smaller, or the title is set in the person's font) shrinks evenly to
-  fit, down to a smallest readable size; below that size it is cut at the block's edge. A
-  tap on a cut title shows the whole title; a tap on a title that is not cut opens its text
-  mode (FR-012). No title is cut with an ellipsis.
+  Every timed event in a day agenda is a pair of brackets: `[` in the hour margin and `]` at
+  the agenda's right end, from its start to its end, their ends turned in as serifs, with no
+  box and no fill; its title is written between them. Events that overlap, one through the
+  next, split the width into equal lanes for the whole span of the group, the first start
+  in the first lane (the longer one first at the same start), each taking the first lane
+  free at its start, at most three lanes (a fourth at the same time shares the third).
+  Each lane holds one event's brackets and its title at its start; neighbours meet as
+  `] [` 12 px apart, and the hour lines run on across. A stroke belongs to the event whose
+  lane holds its pen-down point, never to two. A stroke that comes down outside every
+  bracket at a time an event already holds (the gap between lanes, beside a narrow lane)
+  belongs to no event and makes none; it is not kept. While the pen writes in a lane, the other brackets of its group are light grey,
+  black again about a second after the pen lifts; a pen that reports hover shows the same
+  before it touches. The end handles of a lane after the first cover only the gap and the
+  serif, so they never take a pen-down from the neighbour's title. A small agenda keeps
+  each title to one line beside its event.
+
+  When an event's title needs more room than its brackets, the title field grows into the
+  free time below them, never over another title; the event's start and end stay as set.
+  A title that no longer fits its space (the event is shortened, another event takes the
+  free time below, the view is smaller, or the title is set in the person's font) shrinks
+  evenly to fit, down to a smallest readable size; below that size it is cut before the
+  `]`. No title is cut with an ellipsis.
+
+  A tap on an event's title opens its card under the title (above it when there is no
+  room): the title as written, its time and day, Delete event and Open; a tap outside
+  closes it. Open turns the screen into the event's page, whose bar holds only Back, to the
+  event's day: its title, written with the pen (a finger tap types it, FR-012), its day and
+  times, picked, its place (Where), notes and participants (With), written, and Repeat
+  (never, daily, weekly, monthly, yearly) and Remind (none, at its start, 15 minutes, an
+  hour or a day before), chosen. Every change is kept as it is made; there is no Save.
+  Repeat and Remind are kept with the event as standard calendar properties; repeating it
+  and reminding are the calendar backend's (out of scope).
+
+  An event is deleted only through a card that asks first, "Delete this event?" with the
+  title as written, its time and day, Keep and Delete event, which opens in one refresh of
+  its rectangle: after a pen stroke across the title that starts before its first letter
+  and runs past its last (a stroke that starts inside the title or doesn't cross all of it
+  is writing, and the stroke itself is not kept), after a finger held still on the title or
+  an end handle for 0.5 s, or from Delete event on its card. The event page's Delete event
+  asks the same in a dialog. Keep, or a tap outside, closes the card and the event is as it
+  was; Delete event removes the brackets and the title, and the time is free again.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
   not set the entry's time or date. An event is timed (a start and an end, which may cross
   midnight; it shows on each day it covers) or all-day (one or more whole days).
@@ -308,7 +355,8 @@ it says that it needs the handwriting service and why, and doesn't start.
 ### Widgets
 
 - **FR-040**: Widgets are reusable across templates. The planner ships at least:
-  - **day agenda**: the hours of a day with its timed events as blocks, all-day events above;
+  - **day agenda**: the hours of a day with its timed events as bracket pairs in lanes,
+    all-day events above;
   - **to-do list**: the to-dos of a period, to write, tick and reorder;
   - **free notes**: an open writing area for the notes of a period, in a named slot;
   - **habit tracker**: the person's habits against the days of the period, a tap marks a day;
@@ -436,13 +484,21 @@ Host level:
   raises "+n more", done rows give way first, then the oldest open, and one empty row stays;
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
-  block leaves and enters and the hour gutter, which shows the time the block would land
-  on, and the release refreshes only the old place, where the dashed outline goes, and the
-  gutter;
-- a long title in a short event grows its title field into the free time below the block
+  brackets leave and enter and the hour margin, which shows the time of the end that moves,
+  and an end handle moves only that end;
+- overlapping events split the width into equal lanes (first start first, at most three),
+  each title's field in its own lane, the end handles of later lanes only over the gap and
+  the serif, and a pen-down point belonging to one lane; while the pen is in a lane the
+  rest of its group is grey;
+- a long title in a short event grows its title field into the free time below its brackets
   without changing the event's times; a title that no longer fits shrinks evenly down to
-  the smallest readable size, then is cut at the block's edge, and a tap on a cut title
-  shows the whole title while a tap on an uncut one opens text mode;
+  the smallest readable size, then is cut before the `]`;
+- a strike-through from before an event's first letter to past its last opens the card that
+  asks; one from inside the title, one that doesn't reach past it and a steep one don't;
+- an event's card offers Open and Delete event; its page has a region each for title,
+  place, notes and participants, the times' − and +, the Repeat and Remind choices, and
+  Delete event that asks; place, notes, participants, repeat and reminder are kept as the
+  event's calendar properties and survive a restart;
 - a finger tap on a field opens its text mode and a tap outside leaves it, with no relayout;
 - without writing regions the planner refuses to start with its message;
 - offscreen renders of every shipped template in each voice.
@@ -516,8 +572,13 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - **A title that no longer fits**: it can't overflow while written, since its field grows
   into the free time below. When its space shrinks later (the event is shortened, another
   event takes the free time below, a smaller view, or a typed title set in the person's
-  font), it shrinks evenly to fit down to the smallest readable size, then is cut at the
-  block's edge; a tap on a cut title shows it whole.
+  font), it shrinks evenly to fit down to the smallest readable size, then is cut before
+  the `]`; its card shows it whole.
+- **Four or more events at the same time**: there are three lanes at most; a fourth shares
+  the third lane.
+- **A stroke in the gap between two lanes**: it belongs to no event, makes none and is not
+  kept; in free time, where no event runs, a stroke writes a new event (FR-018).
+- **A strike-through, then Keep**: the stroke goes and the title is as it was before it.
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
   is removed only by an explicit delete.
 - **A reading that fails** (the service is busy, a script it can't read): the ink is kept,
@@ -541,8 +602,8 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - Autograph, the person's font, always exists (handwriting spec 003); it starts plain and
   grows as the person's letters are learned.
 - A new period with no template chosen gets its kind's default without asking.
-- An event is created by drawing a block over its time in an agenda, by writing into the
-  agenda's free time, or with a date and time picker.
+- An event is created by drawing a line down an agenda's hour margin, by drawing a block
+  over its time or writing into the agenda's free time, or with a date and time picker.
 - Until the calendar backend exists, the planner keeps its entries on the device itself, as
   standard calendar objects; how is left to the plan.
 - The planner runs in the person's own session; guests see none of its data.

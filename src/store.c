@@ -160,6 +160,27 @@ void field_free(struct field *f)
 	memset(f, 0, sizeof *f);
 }
 
+struct field *entry_sub(struct entry *e, int sub)
+{
+	if (!e || sub < 0 || sub >= EF_N || (sub && e->kind != E_EVENT))
+		return NULL;
+	return sub ? &e->xf[sub - 1] : &e->f;
+}
+
+void entry_fields_free(struct entry *e)
+{
+	field_free(&e->f);
+	for (int i = 0; i < EF_N - 1; i++)
+		field_free(&e->xf[i]);
+}
+
+/* the fields of x now belong to another entry (a copy of x) */
+static void entry_fields_given(struct entry *x)
+{
+	memset(&x->f, 0, sizeof x->f);
+	memset(x->xf, 0, sizeof x->xf);
+}
+
 static void strokes_remove(struct pl_stroke *s, int *n, uint32_t k)
 {
 	for (int i = 0; i < *n; i++)
@@ -329,7 +350,7 @@ void store_init(struct store *s, const char *dir)
 void store_free(struct store *s)
 {
 	for (int i = 0; i < s->n; i++) {
-		field_free(&s->e[i]->f);
+		entry_fields_free(s->e[i]);
 		free(s->e[i]);
 	}
 	free(s->e);
@@ -366,6 +387,7 @@ struct entry *store_add(struct store *s, enum ekind k, struct period per)
 	x->kind = k;
 	x->per = per;
 	x->age = (long long)time(NULL);
+	x->remind = -1;
 	static unsigned salt;
 	snprintf(x->uid, sizeof x->uid, "%llx-%x-%x@planner.glassine", (long long)time(NULL), (unsigned)getpid() & 0xffff,
 		 ++salt * 2654435761u ^ x->id);
@@ -389,7 +411,7 @@ void store_delete(struct store *s, uint32_t id)
 				s->deleted = d;
 				snprintf(d[s->ndel++], 48, "%s", s->e[i]->uid);
 			}
-			field_free(&s->e[i]->f);
+			entry_fields_free(s->e[i]);
 			free(s->e[i]);
 			memmove(&s->e[i], &s->e[i + 1], (s->n - i - 1) * sizeof *s->e);
 			s->n--;
@@ -461,12 +483,12 @@ int store_events(struct store *s, int day, struct entry **out, int max)
 
 /* ---- a field's region ---- */
 
-struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake *mk, uint32_t k,
+struct entry *field_stroke(struct store *s, uint32_t *entry, int sub, const struct fmake *mk, uint32_t k,
 			   const struct pl_point *p, int n)
 {
 	struct entry *e = *entry ? store_get(s, *entry) : NULL;
 	if (!e) {
-		if (!mk || mk->kind >= E_NKINDS)
+		if (sub || !mk || mk->kind >= E_NKINDS)
 			return NULL;
 		e = store_add(s, mk->kind, mk->per);
 		if (!e)
@@ -475,7 +497,10 @@ struct entry *field_stroke(struct store *s, uint32_t *entry, const struct fmake 
 		snprintf(e->slot, sizeof e->slot, "%s", mk->slot);
 		*entry = e->id;
 	}
-	field_add_stroke(&e->f, k, p, n);
+	struct field *f = entry_sub(e, sub);
+	if (!f)
+		return NULL;
+	field_add_stroke(f, k, p, n);
 	return e;
 }
 
@@ -494,29 +519,30 @@ static bool words_same(const struct field *f, const struct pl_word *w, int n)
 	return true;
 }
 
-bool field_value_same(struct store *s, uint32_t entry, const char *text, const struct pl_word *w, int nw, size_t ngone,
-		      const void *state, size_t len)
+bool field_value_same(struct store *s, uint32_t entry, int sub, const char *text, const struct pl_word *w, int nw,
+		      size_t ngone, const void *state, size_t len)
 {
 	struct entry *e = entry ? store_get(s, entry) : NULL;
-	if (!e || ngone)
+	const struct field *f = entry_sub(e, sub);
+	if (!f || ngone)
 		return false;
-	const struct field *f = &e->f;
 	const char *was = f->value ? f->value : "", *now = text ? text : "";
 	return !strcmp(was, now) && f->state_len == (state ? len : 0) && (!f->state_len || !memcmp(f->state, state, len)) &&
 	       words_same(f, w, nw);
 }
 
-bool field_value(struct store *s, uint32_t *entry, const char *text, const struct pl_word *w, int nw,
+bool field_value(struct store *s, uint32_t *entry, int sub, const char *text, const struct pl_word *w, int nw,
 		 const uint32_t *gone, size_t ngone, const void *state, size_t len)
 {
 	struct entry *e = *entry ? store_get(s, *entry) : NULL;
-	if (!e)
+	struct field *f = entry_sub(e, sub);
+	if (!f)
 		return false;
 	for (size_t i = 0; i < ngone; i++)
-		field_remove_stroke(&e->f, gone[i]);
-	field_set_value(&e->f, text, state, len);
-	field_set_words(&e->f, w, nw);
-	if (e->kind != E_EVENT && field_empty(&e->f)) {
+		field_remove_stroke(f, gone[i]);
+	field_set_value(f, text, state, len);
+	field_set_words(f, w, nw);
+	if (!sub && e->kind != E_EVENT && field_empty(f)) {
 		/* all its ink went (struck out): the row is empty again, not an entry */
 		store_delete(s, e->id);
 		*entry = 0;
@@ -525,11 +551,11 @@ bool field_value(struct store *s, uint32_t *entry, const char *text, const struc
 	return false;
 }
 
-struct entry *field_typed(struct store *s, uint32_t *entry, const struct fmake *mk, const char *text)
+struct entry *field_typed(struct store *s, uint32_t *entry, int sub, const struct fmake *mk, const char *text)
 {
 	struct entry *e = *entry ? store_get(s, *entry) : NULL;
 	if (!e) {
-		if (!mk || mk->kind >= E_NKINDS || !text || !*text)
+		if (sub || !mk || mk->kind >= E_NKINDS || !text || !*text)
 			return NULL;
 		e = store_add(s, mk->kind, mk->per);
 		if (!e)
@@ -538,8 +564,11 @@ struct entry *field_typed(struct store *s, uint32_t *entry, const struct fmake *
 		snprintf(e->slot, sizeof e->slot, "%s", mk->slot);
 		*entry = e->id;
 	}
-	free(e->f.value);
-	e->f.value = *text ? strdup(text) : NULL;
+	struct field *f = entry_sub(e, sub);
+	if (!f)
+		return NULL;
+	free(f->value);
+	f->value = *text ? strdup(text) : NULL;
 	return e;
 }
 
@@ -899,6 +928,70 @@ static void fmt_time(char *o, size_t n, int day, int min)
 }
 
 static const char *KIND[] = { "event", "todo", "note", "priority", "habit", "habit-mark" };
+static const char *REP_FREQ[] = { "", "DAILY", "WEEKLY", "MONTHLY", "YEARLY" };
+
+/* a handwriting field: its text as txt, its ink, neat ink, words, display and state as
+ * X-GLASSINE-<pre>INK and so on (pre "" for an entry's own field) */
+static void field_ics(struct buf *b, const struct field *f, const char *txt, const char *pre)
+{
+	char n[48], v[64];
+	if (f->value) {
+		char *t = esc_text(f->value);
+		line(b, txt, t);
+		free(t);
+	}
+	if (f->ns) {
+		char *t = ink_b64(f->s, f->ns);
+		snprintf(n, sizeof n, "X-GLASSINE-%sINK", pre);
+		line(b, n, t);
+		free(t);
+	}
+	if (f->nneat) {
+		char *t = ink_b64(f->neat, f->nneat);
+		snprintf(n, sizeof n, "X-GLASSINE-%sNEAT", pre);
+		line(b, n, t);
+		free(t);
+	}
+	if (f->nw) {
+		char *t = words_b64(f);
+		snprintf(n, sizeof n, "X-GLASSINE-%sWORDS", pre);
+		line(b, n, t);
+		free(t);
+	}
+	if (f->neaten || f->autograph) {
+		static const char *SH[] = { "follow", "off", "on" };
+		snprintf(v, sizeof v, "neaten=%s;autograph=%s", SH[f->neaten % 3], SH[f->autograph % 3]);
+		snprintf(n, sizeof n, "X-GLASSINE-%sSHOW", pre);
+		line(b, n, v);
+	}
+	if (f->state_len) {
+		char *t = b64(f->state, f->state_len);
+		snprintf(n, sizeof n, "X-GLASSINE-%sSTATE", pre);
+		line(b, n, t);
+		free(t);
+	}
+}
+
+/* a field's property (name without the X-GLASSINE- and any prefix) parsed into f; false: none of them */
+static bool field_prop(struct field *f, const char *name, const char *val)
+{
+	if (!strcmp(name, "INK"))
+		ink_parse(f, val, false);
+	else if (!strcmp(name, "NEAT"))
+		ink_parse(f, val, true);
+	else if (!strcmp(name, "WORDS"))
+		words_parse(f, val);
+	else if (!strcmp(name, "SHOW")) {
+		const char *a = strstr(val, "neaten="), *g = strstr(val, "autograph=");
+		f->neaten = a ? (!strncmp(a + 7, "on", 2) ? SHOW_ON : !strncmp(a + 7, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
+		f->autograph = g ? (!strncmp(g + 10, "on", 2) ? SHOW_ON : !strncmp(g + 10, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
+	} else if (!strcmp(name, "STATE")) {
+		free(f->state);
+		f->state = unb64(val, &f->state_len);
+	} else
+		return false;
+	return true;
+}
 
 static void entry_ics(struct buf *b, const struct entry *x)
 {
@@ -938,35 +1031,32 @@ static void entry_ics(struct buf *b, const struct entry *x)
 		snprintf(v, sizeof v, "%u", x->habit);
 		line(b, "X-GLASSINE-HABIT", v);
 	}
-	if (x->f.value) {
-		char *t = esc_text(x->f.value);
-		line(b, x->kind == E_NOTE ? "DESCRIPTION" : "SUMMARY", t);
-		free(t);
-	}
-	if (x->f.ns) {
-		char *t = ink_b64(x->f.s, x->f.ns);
-		line(b, "X-GLASSINE-INK", t);
-		free(t);
-	}
-	if (x->f.nneat) {
-		char *t = ink_b64(x->f.neat, x->f.nneat);
-		line(b, "X-GLASSINE-NEAT", t);
-		free(t);
-	}
-	if (x->f.nw) {
-		char *t = words_b64(&x->f);
-		line(b, "X-GLASSINE-WORDS", t);
-		free(t);
-	}
-	if (x->f.neaten || x->f.autograph) {
-		static const char *SH[] = { "follow", "off", "on" };
-		snprintf(v, sizeof v, "neaten=%s;autograph=%s", SH[x->f.neaten % 3], SH[x->f.autograph % 3]);
-		line(b, "X-GLASSINE-SHOW", v);
-	}
-	if (x->f.state_len) {
-		char *t = b64(x->f.state, x->f.state_len);
-		line(b, "X-GLASSINE-STATE", t);
-		free(t);
+	field_ics(b, &x->f, x->kind == E_NOTE ? "DESCRIPTION" : "SUMMARY", "");
+	if (x->kind == E_EVENT) {
+		/* its page: where (LOCATION), notes (DESCRIPTION), with (X-GLASSINE-WITH: the
+		 * participants as written, no addresses), each with its own ink */
+		static const char *TXT[] = { "LOCATION", "DESCRIPTION", "X-GLASSINE-WITH" }, *PRE[] = { "WHERE-", "NOTES-", "WITH-" };
+		for (int i = 0; i < EF_N - 1; i++)
+			field_ics(b, &x->xf[i], TXT[i], PRE[i]);
+		if (x->repeat > REP_NEVER && x->repeat < REP_N) {
+			snprintf(v, sizeof v, "FREQ=%s", REP_FREQ[x->repeat]);
+			line(b, "RRULE", v);
+		}
+		if (x->remind >= 0) {
+			line(b, "BEGIN", "VALARM");
+			line(b, "ACTION", "DISPLAY");
+			line(b, "DESCRIPTION", "Reminder");
+			if (x->remind == 0)
+				snprintf(v, sizeof v, "PT0S");
+			else if (x->remind % 1440 == 0)
+				snprintf(v, sizeof v, "-P%dD", x->remind / 1440);
+			else if (x->remind % 60 == 0)
+				snprintf(v, sizeof v, "-PT%dH", x->remind / 60);
+			else
+				snprintf(v, sizeof v, "-PT%dM", x->remind);
+			line(b, "TRIGGER", v);
+			line(b, "END", "VALARM");
+		}
 	}
 	line(b, "END", comp);
 }
@@ -1047,6 +1137,7 @@ bool store_parse_ics(struct store *s, const char *text)
 	struct mark { struct entry *e; char uid[48]; } *marks = NULL;
 	int nm = 0;
 	int sday = 0, smin = 0, stimed = 0, eday = 0, emin = 0, etimed = -1;
+	bool alarm = false; /* inside an event's VALARM */
 	for (char *l = strtok(u.p, "\n"); l; l = strtok(NULL, "\n")) {
 		char *c = strchr(l, ':');
 		if (!c)
@@ -1061,12 +1152,47 @@ bool store_parse_ics(struct store *s, const char *text)
 				break;
 			x->kind = !strcmp(val, "VEVENT") ? E_EVENT : !strcmp(val, "VTODO") ? E_TODO : E_NOTE;
 			x->per.kind = P_DAY;
+			x->remind = -1;
 			rel[0] = 0;
 			etimed = -1;
+			alarm = false;
 			continue;
 		}
 		if (!x)
 			continue;
+		if (!strcmp(name, "BEGIN") && !strcmp(val, "VALARM")) {
+			alarm = true;
+			continue;
+		}
+		if (alarm) { /* its reminder: minutes before the start */
+			if (!strcmp(name, "END"))
+				alarm = false;
+			else if (!strcmp(name, "TRIGGER")) {
+				const char *t = val;
+				bool before = *t == '-';
+				t += *t == '-' || *t == '+';
+				int m = 0, nn = 0;
+				if (*t == 'P') {
+					t++;
+					while (*t) {
+						if (*t == 'T') {
+							t++;
+							continue;
+						}
+						if (*t < '0' || *t > '9')
+							break;
+						nn = atoi(t);
+						while (*t >= '0' && *t <= '9')
+							t++;
+						m += *t == 'W' ? nn * 10080 : *t == 'D' ? nn * 1440 : *t == 'H' ? nn * 60 : *t == 'M' ? nn : 0;
+						if (*t)
+							t++;
+					}
+					x->remind = before || !m ? m : 0;
+				}
+			}
+			continue;
+		}
 		if (!strcmp(name, "END")) {
 			if (x->kind == E_EVENT) {
 				x->per = (struct period){ P_DAY, sday };
@@ -1116,23 +1242,36 @@ bool store_parse_ics(struct store *s, const char *text)
 			snprintf(x->slot, sizeof x->slot, "%s", val);
 		else if (!strcmp(name, "RELATED-TO"))
 			snprintf(rel, sizeof rel, "%s", val);
-		else if (!strcmp(name, "SUMMARY") || !strcmp(name, "DESCRIPTION")) {
-			free(x->f.value);
-			x->f.value = unesc_text(val);
-		} else if (!strcmp(name, "X-GLASSINE-INK"))
-			ink_parse(&x->f, val, false);
-		else if (!strcmp(name, "X-GLASSINE-NEAT"))
-			ink_parse(&x->f, val, true);
-		else if (!strcmp(name, "X-GLASSINE-WORDS"))
-			words_parse(&x->f, val);
-		else if (!strcmp(name, "X-GLASSINE-SHOW")) {
-			const char *a = strstr(val, "neaten="), *g = strstr(val, "autograph=");
-			x->f.neaten = a ? (!strncmp(a + 7, "on", 2) ? SHOW_ON : !strncmp(a + 7, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
-			x->f.autograph = g ? (!strncmp(g + 10, "on", 2) ? SHOW_ON : !strncmp(g + 10, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
-		}
-		else if (!strcmp(name, "X-GLASSINE-STATE")) {
-			free(x->f.state);
-			x->f.state = unb64(val, &x->f.state_len);
+		else if (!strcmp(name, "SUMMARY") || !strcmp(name, "DESCRIPTION") || !strcmp(name, "LOCATION") ||
+			 !strcmp(name, "X-GLASSINE-WITH")) {
+			/* an event's DESCRIPTION is its page's notes; a note's is its text */
+			int sub = EF_TITLE;
+			if (x->kind == E_EVENT)
+				sub = !strcmp(name, "SUMMARY") ? EF_TITLE : !strcmp(name, "LOCATION") ? EF_WHERE
+				      : !strcmp(name, "DESCRIPTION")                            ? EF_NOTES
+										: EF_WITH;
+			else if (strcmp(name, "SUMMARY") && strcmp(name, "DESCRIPTION"))
+				sub = -1;
+			struct field *f = entry_sub(x, sub);
+			if (f) {
+				free(f->value);
+				f->value = unesc_text(val);
+			}
+		} else if (!strcmp(name, "RRULE")) {
+			const char *fq = strstr(val, "FREQ=");
+			for (int r = REP_DAILY; fq && r < REP_N; r++)
+				if (!strncmp(fq + 5, REP_FREQ[r], strlen(REP_FREQ[r])))
+					x->repeat = r;
+		} else if (!strncmp(name, "X-GLASSINE-", 11)) {
+			static const char *PRE[] = { "WHERE-", "NOTES-", "WITH-" };
+			const char *rest = name + 11;
+			struct field *f = &x->f;
+			for (int i = 0; i < EF_N - 1; i++)
+				if (!strncmp(rest, PRE[i], strlen(PRE[i]))) {
+					f = &x->xf[i];
+					rest += strlen(PRE[i]);
+				}
+			field_prop(f, rest, val);
 		}
 	}
 	for (int i = 0; i < nm; i++)
@@ -1247,7 +1386,7 @@ static void take_foreign(struct store *s, struct store *o)
 			*y = *x;
 			y->id = id;
 			y->habit = habit;
-			memset(&x->f, 0, sizeof x->f); /* the field now belongs to y */
+			entry_fields_given(x); /* the fields now belong to y */
 		}
 }
 
@@ -1278,11 +1417,11 @@ static void replay(struct store *s, const char *text)
 		if (!y && !(y = store_put(s)))
 			break;
 		uint32_t id = y->id;
-		field_free(&y->f);
+		entry_fields_free(y);
 		*y = *x;
 		y->id = id;
 		y->habit = 0;
-		memset(&x->f, 0, sizeof x->f); /* the field now belongs to y */
+		entry_fields_given(x); /* the fields now belong to y */
 	}
 	store_free(&o);
 }
@@ -1583,9 +1722,29 @@ int store_search(struct store *s, const char *q, struct entry **out, int max)
 {
 	int n = 0;
 	for (int i = s->n - 1; i >= 0 && n < max; i--) {
-		const char *v = s->e[i]->f.value;
-		if (!v || !*q)
+		const struct entry *x = s->e[i];
+		/* an event's page counts too: its words found in its title, where, notes or with */
+		char *all_ = NULL;
+		const char *v = x->f.value;
+		if (x->kind == E_EVENT && (x->xf[0].value || x->xf[1].value || x->xf[2].value)) {
+			size_t len = 4;
+			for (int j = 0; j < EF_N; j++) {
+				const struct field *f = j ? &x->xf[j - 1] : &x->f;
+				len += f->value ? strlen(f->value) + 1 : 0;
+			}
+			if ((all_ = calloc(1, len))) {
+				for (int j = 0; j < EF_N; j++) {
+					const struct field *f = j ? &x->xf[j - 1] : &x->f;
+					if (f->value)
+						strcat(strcat(all_, f->value), " ");
+				}
+				v = all_;
+			}
+		}
+		if (!v || !*q) {
+			free(all_);
 			continue;
+		}
 		bool all = true;
 		const char *w = q;
 		while (*w) {
@@ -1598,6 +1757,7 @@ int store_search(struct store *s, const char *q, struct entry **out, int max)
 			}
 			w += len;
 		}
+		free(all_);
 		if (all)
 			out[n++] = s->e[i];
 	}

@@ -36,6 +36,10 @@ struct ctx {
 	cairo_t *cr;
 	UiGc g;
 	int paint;
+	/* the day agendas' events as this pass lays them out (into the view's after a layout) */
+	struct vev *evb;
+	int *nevb;
+	bool *evs_out;
 };
 
 /* ---- small helpers ---- */
@@ -1121,6 +1125,263 @@ static void w_weekov(struct ctx *c, struct wbox *b)
 	}
 }
 
+/* ---- an agenda's events as bracket pairs (FR-018; boards event.stack, event.drag) ---- */
+
+/* the box of a field's ink, in field coordinates (x1 <= x0: none) */
+static void ink_box(const struct field *f, double *x0, double *y0, double *x1, double *y1)
+{
+	double l = 1e9, t = 1e9, r, b;
+	for (int i = 0; i < f->ns; i++) {
+		int wi = field_word_of(f, f->s[i].k);
+		if (wi >= 0 && f->w[wi].set && f->w[wi].npath)
+			continue;
+		double dx = wi >= 0 ? f->w[wi].dx : 0, dy = wi >= 0 ? f->w[wi].dy : 0;
+		for (int j = 0; j < f->s[i].n; j++)
+			l = fmin(l, f->s[i].pt[j].x + dx), t = fmin(t, f->s[i].pt[j].y + dy);
+	}
+	for (int i = 0; i < f->nw; i++)
+		if (f->w[i].set)
+			l = fmin(l, f->w[i].box[0]), t = fmin(t, f->w[i].box[1]);
+	field_extent(f, &r, &b);
+	if (l > r) {
+		*x0 = *y0 = *x1 = *y1 = 0;
+		return;
+	}
+	*x0 = l, *y0 = t, *x1 = r, *y1 = b;
+}
+
+/* a line of a bracket, solid or dashed along its length (planner.css .pl-bk: 3 on 3 off, the
+ * stationery's 2 on 2 off) */
+static void bk_line(struct ctx *c, double x, double y, double w, double h, bool dashed, ui_col cl)
+{
+	if (!dashed) {
+		lk_bar(c->cr, x, y, w, h, cl);
+		return;
+	}
+	double on = c->L->voice == V_STATIONERY ? 2 : 3;
+	if (h > w)
+		for (double p = y; p < y + h; p += 2 * on)
+			lk_bar(c->cr, x, p, w, fmin(on, y + h - p), cl);
+	else
+		for (double p = x; p < x + w; p += 2 * on)
+			lk_bar(c->cr, p, y, fmin(on, x + w - p), h, cl);
+}
+
+/* an event's brackets: "[" at spine, "]" at spine + w, from row y to y + h, the ends turned in
+ * as serifs; in the ink at whole pixels, 2 px (the stationery's 1 px); dashed while the event
+ * is moved or drawn; held 1: the upper serifs thicken (its start held), 2 the lower ones */
+static void brackets(struct ctx *c, double spine, double w, double y, double h, bool dashed, int held, ui_col cl)
+{
+	if (!c->paint)
+		return;
+	double lw = c->L->voice == V_STATIONERY ? 1 : 2;
+	for (int side = 0; side < 2; side++) {
+		double lx = side ? spine + w : spine, vx = lx - floor(lw / 2);
+		double sx = side ? lx - BK_SERIF - 1 : lx - 1, sw = BK_SERIF + 2;
+		double tl = held == 1 ? lw + 1 : lw, bl = held == 2 ? lw + 1 : lw;
+		bk_line(c, vx, y, lw, h, dashed, cl);
+		bk_line(c, sx, y, sw, tl, dashed, cl);
+		bk_line(c, sx, y + h - bl, sw, bl, dashed, cl);
+	}
+}
+
+/* the time readout in the hour margin while an event is drawn or dragged (.pl-readout): its
+ * box's top at y */
+static void readout(struct ctx *c, double x, double y, const char *t)
+{
+	if (!c->paint)
+		return;
+	const struct look *L = c->L;
+	UiFont rf = fam(L->mono, 600, 0, 10);
+	double th, w = ui_text_w(&c->g, &rf, t, &th);
+	lk_rect(c->cr, x + 2, y, w + 6, th + 4, 3);
+	lk_fill(c->cr, L->ink);
+	ui_text(&c->g, &rf, t, x + 5, y + 2, 0, 0, L->paper, &th);
+}
+
+const struct vev *view_ev(const struct view *v, uint32_t id)
+{
+	for (int i = 0; id && i < v->nev; i++)
+		if (v->ev[i].id == id)
+			return &v->ev[i];
+	return NULL;
+}
+
+/* The timed events of a day agenda that show between its hours ws and we, as bracket pairs in
+ * lanes (FR-018): the agenda's box b, its hours' top y0 and their pitch; edge 1 or 2: its hours
+ * scrolled up or down while an event is held past them */
+static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int ne, int day, int ws, int we, double y0,
+			  double pitch, int edge, int *before, int *after)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *vis[64];
+	int s0[64], e0[64], nv = 0;
+	for (int i = 0; i < ne && nv < 64; i++) {
+		struct entry *x = ev[i];
+		if (x->allday)
+			continue;
+		int s = (x->per.start - day) * 1440 + x->start, e = (x->per.start - day) * 1440 + x->end;
+		if (e <= ws * 60) {
+			(*before)++;
+			continue;
+		}
+		if (s >= we * 60) {
+			(*after)++;
+			continue;
+		}
+		vis[nv] = x, s0[nv] = s, e0[nv] = e, nv++;
+	}
+	struct lane ln[64];
+	lanes_assign(s0, e0, nv, ln);
+	double x0 = b->x + BK_SPINE, x1 = b->x + b->w - BK_RIGHT, ybot = y0 + (we - ws) * pitch;
+	int focus_cl = -1;
+	for (int i = 0; i < nv; i++)
+		if (v->focus && vis[i]->id == v->focus)
+			focus_cl = ln[i].cluster;
+	double sp[64], lw[64], yy[64], hh[64];
+	for (int i = 0; i < nv; i++) {
+		double y1 = y0 + (fmax(s0[i], ws * 60) / 60.0 - ws) * pitch, y2 = y0 + (fmin(e0[i], we * 60) / 60.0 - ws) * pitch;
+		yy[i] = round(y1) + 1, hh[i] = fmax(8, round(y2 - y1) - 2);
+		lane_x(x0, x1, ln[i].lane, ln[i].lanes, &sp[i], &lw[i]);
+	}
+	UiFont wf = L->voice == V_WHITE ? fam(L->mono, 400, 0, 10) : fam(L->text, 400, 1, 12);
+	int first = (*c->nevb);
+	for (int i = 0; i < nv; i++) {
+		struct entry *x = vis[i];
+		double tx = sp[i] + BK_TITLE, tw_ = sp[i] + lw[i] - BK_SERIF - 3 - tx;
+		/* the time at the right of its first line, before the "]" */
+		char when[20] = "";
+		double whw = 0, th;
+		{
+			char w1[8], w2[8];
+			hm(w1, sizeof w1, s0[i] < 0 ? 0 : s0[i]);
+			hm(w2, sizeof w2, e0[i]);
+			snprintf(when, sizeof when, "%s–%s", w1, w2);
+			whw = ui_text_w(&c->g, &wf, when, &th);
+		}
+		double fw = tw_ - (whw > 0 ? whw + 6 + 4 : 0);
+		/* the title's room (FR-018, board event.title): its rows, and the free time below them
+		 * down to the next event that stands under it or the agenda's end. A title that needs
+		 * more grows its field into that room (a dotted lower edge); one that doesn't fit
+		 * shrinks evenly down to the smallest readable size, then is cut before the "]" */
+		double limit = ybot;
+		for (int j = 0; j < nv; j++)
+			if (j != i && s0[j] >= e0[i] && sp[j] < sp[i] + lw[i] && sp[j] + lw[j] > sp[i])
+				limit = fmin(limit, y0 + (s0[j] / 60.0 - ws) * pitch);
+		double room = fmax(hh[i], round(limit) - yy[i] - 1), r, bt, gh = hh[i], k = 1, fh = hh[i];
+		bool cut = false, grown = false;
+		field_extent(&x->f, &r, &bt);
+		double needw = r + 4, needh = bt + 4;
+		if (pitch < 30) {
+			/* a small agenda (a widget at its smallest): the title keeps to one line beside
+			 * its event, cut before the "]" */
+			gh = fmin(room, fmax(hh[i], pitch));
+			k = fmax(TITLE_MIN / INK_SIZE, fmin(1, gh / fmax(needh, 1)));
+			cut = needw * k > fw;
+			fh = gh;
+		} else if (needw > fw || needh > hh[i]) {
+			k = fmin(1, fmin(fw / fmax(needw, 1), room / fmax(needh, 1)));
+			if (k < TITLE_MIN / INK_SIZE) {
+				k = TITLE_MIN / INK_SIZE;
+				cut = true;
+			}
+			gh = fmin(room, fmax(hh[i], ceil(needh * k)));
+			grown = gh > hh[i];
+		}
+		/* while written, the field reaches a line below its ink, into the room */
+		if (pitch >= 30)
+			fh = k < 1 ? gh : fmin(room, fmax(gh, bt > hh[i] - 6 ? bt + PL_ROW : hh[i]));
+		bool quiet = focus_cl >= 0 && ln[i].cluster == focus_cl && x->id != v->focus;
+		bool moved = v->drag == x->id && !v->drag_end;
+		brackets(c, sp[i], lw[i], yy[i], hh[i], moved, v->drag == x->id ? v->drag_end : 0, quiet ? L->rule : L->ink);
+		if (grown && c->paint) /* the grown part's lower edge is dotted */
+			lk_rule(c->cr, tx, yy[i] + gh - 1.5, fw, 1.5, L->ink, 2);
+		if (when[0] && c->paint)
+			ui_text(&c->g, &wf, when, tx + tw_ - 4, yy[i] + 4, 2, 0, L->ink, &th);
+		struct vfield *ef = entry_field(c, x, tx, yy[i], fw, fh, 0, 0);
+		if (ef)
+			ef->layer = 1;
+		if (field_empty(&x->f) && c->paint) /* a new event: a dotted line where its title goes */
+			lk_rule(c->cr, tx, yy[i] + fmin(hh[i], PL_ROW) - 1.5, fw, 1.5, L->ink, 2);
+		if (c->paint) {
+			cairo_save(c->cr);
+			cairo_rectangle(c->cr, tx, yy[i], fw, gh);
+			cairo_clip(c->cr);
+			ink(c, &x->f, tx, yy[i], k);
+			cairo_restore(c->cr);
+		}
+		if (c->evb && (*c->nevb) < V_EVS) {
+			struct vev *e = &c->evb[(*c->nevb)++];
+			*e = (struct vev){ x->id, s0[i], e0[i], ln[i], yy[i], hh[i], sp[i], lw[i], tx, fw, fmax(gh, hh[i]), { 0 }, cut };
+			double a0, b0, a1, b1;
+			ink_box(&x->f, &a0, &b0, &a1, &b1);
+			if (a1 > a0)
+				e->ink[0] = tx + a0 * k, e->ink[1] = yy[i] + b0 * k, e->ink[2] = fmin((a1 - a0) * k, fw - a0 * k),
+				e->ink[3] = (b1 - b0) * k;
+		}
+	}
+	/* the touch targets: each event's ends first (they lie over the title's corners), then its
+	 * title, which takes its lane between the brackets */
+	for (int i = first; i < (*c->nevb); i++) {
+		const struct vev *e = &c->evb[i];
+		double hx, hw;
+		lane_end_hit(e->spine, e->ln.lane, &hx, &hw);
+		/* an event that ends where another in its place starts: their handles meet halfway */
+		double t0 = e->y - BK_HIT_H / 2, b1 = e->y + e->h + BK_HIT_H / 2;
+		for (int j = first; j < (*c->nevb); j++) {
+			const struct vev *o = &c->evb[j];
+			if (j == i || fabs(o->spine - e->spine) > 1)
+				continue;
+			double mo = (o->y + o->h + e->y) / 2, me = (e->y + e->h + o->y) / 2;
+			if (o->y + o->h <= e->y + 1 && e->y - (o->y + o->h) < BK_HIT_H)
+				t0 = fmax(t0, mo);
+			if (o->y >= e->y + e->h - 1 && o->y - (e->y + e->h) < BK_HIT_H)
+				b1 = fmin(b1, me);
+		}
+		hit(c, hx, t0, hw, e->y + BK_HIT_H / 2 - t0, A_EV_TOP, 0, e->id);
+		hit(c, hx, e->y + e->h - BK_HIT_H / 2, hw, b1 - (e->y + e->h - BK_HIT_H / 2), A_EV_BOT, 0, e->id);
+	}
+	for (int i = first; i < (*c->nevb); i++) {
+		const struct vev *e = &c->evb[i];
+		hit(c, e->spine + 2, e->y, e->w - 4, e->th, A_EVENT, e->cut, e->id);
+	}
+	/* an event being moved or stretched: the margin's readout at the end that moves (above the
+	 * start, below the end); one held past the first or last hour, at that edge */
+	const struct vev *dg = NULL;
+	for (int i = first; v->drag && i < (*c->nevb); i++)
+		if (c->evb[i].id == v->drag)
+			dg = &c->evb[i];
+	if (dg) {
+		char t[16];
+		bool end = v->drag_end == 2;
+		int m = end ? dg->e0 : dg->s0;
+		hm(t, sizeof t, m < 0 ? 0 : m);
+		double ry = end ? dg->y + dg->h + 3 : dg->y - 1 - 17;
+		if (edge == 1) {
+			snprintf(t + strlen(t), sizeof t - strlen(t), " ↑");
+			ry = y0 - 1;
+		} else if (edge == 2) {
+			snprintf(t + strlen(t), sizeof t - strlen(t), " ↓");
+			ry = ybot - 15;
+		}
+		readout(c, b->x, ry, t);
+	}
+	/* a bracket being drawn down the margin: dashed, the whole width, its start's and its
+	 * end's readouts (board event.draw) */
+	if (v->draw_on && v->draw_day == day) {
+		double y1 = y0 + (v->draw_s / 60.0 - ws) * pitch, y2 = y0 + (v->draw_e / 60.0 - ws) * pitch;
+		double sx, sw;
+		lane_x(x0, x1, 0, 1, &sx, &sw);
+		brackets(c, sx, sw, round(y1) + 1, fmax(8, round(y2 - y1) - 2), true, 0, L->ink);
+		char t[8];
+		hm(t, sizeof t, v->draw_s);
+		readout(c, b->x, round(y1) - 17, t);
+		hm(t, sizeof t, v->draw_e);
+		readout(c, b->x, round(y2) + 3, t);
+	}
+}
+
 static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 {
 	const struct look *L = c->L;
@@ -1139,10 +1400,6 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		snprintf(t, sizeof t, "%s %d", DOW2[day_weekday(day)], d);
 		head(c, b, t, "", hh);
 		hit(c, b->x, b->y, b->w, hh, A_DAY, day, 0);
-	} else {
-		char tag[32];
-		snprintf(tag, sizeof tag, "%02d:00–%02d:00", b->n->from, b->n->to);
-		head(c, b, "Agenda", tag, hh);
 	}
 	double top = !compact && nad ? 30 : 6;
 	double minp = compact ? 16 : 20, avail = b->h - hh - top - 6;
@@ -1153,6 +1410,27 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		int vis = (int)fmax(1, floor(avail / minp));
 		ws = b->n->from > (b->n->to - vis < 13 ? b->n->to - vis : 13) ? b->n->from : (b->n->to - vis < 13 ? b->n->to - vis : 13);
 		we = ws + vis;
+	}
+	/* an event held past the first or last hour: the hours scroll with it, a step per step
+	 * (board event.drag edge); on release they go back */
+	int edge = 0;
+	struct entry *held = !compact && v->drag ? store_get(c->s, v->drag) : NULL;
+	if (held && held->per.start == day && !held->allday) {
+		int sh = 0;
+		if (held->start < ws * 60)
+			sh = -((ws * 60 - held->start + 59) / 60), edge = 1;
+		else if (held->end > we * 60)
+			sh = (held->end - we * 60 + 59) / 60, edge = 2;
+		if (ws + sh < 0)
+			sh = -ws;
+		if (we + sh > 24)
+			sh = 24 - we;
+		ws += sh, we += sh;
+	}
+	if (!compact) { /* its hours, as they show while an event is held past them */
+		char tag[32];
+		snprintf(tag, sizeof tag, "%02d:00–%02d:00", edge ? ws : b->n->from, edge ? we : b->n->to);
+		head(c, b, "Agenda", tag, hh);
 	}
 	double by = b->y + hh, gut = compact ? 16 : GUTTER;
 	if (c->paint) {
@@ -1232,9 +1510,11 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			}
 		}
 	}
-	/* timed events as blocks */
+	/* timed events: a compact agenda's as blocks, a full one's as bracket pairs in lanes */
 	int before = 0, after = 0;
-	for (int i = 0; i < ne; i++) {
+	if (!compact)
+		agenda_events(c, b, ev, ne, day, ws, we, by + top, pitch, edge, &before, &after);
+	for (int i = 0; compact && i < ne; i++) {
 		struct entry *x = ev[i];
 		if (x->allday)
 			continue;
@@ -1248,97 +1528,13 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			continue;
 		}
 		double y1 = by + top + (fmax(s0, ws * 60) / 60.0 - ws) * pitch, y2 = by + top + (fmin(e0, we * 60) / 60.0 - ws) * pitch;
-		double bx = b->x + gut, bw = b->w - gut - (compact ? 2 : 6), byy = round(y1) + 1, bh = fmax(8, round(y2 - y1) - 2);
-		/* the title's room (FR-018): its block, and the free time below it down to the next
-		 * event or the agenda's end. A title that needs more grows its block into that room
-		 * (a dotted lower edge); one that doesn't fit shrinks evenly down to the smallest
-		 * readable size, then is cut at the block's edge */
-		double gh = bh, k = 1, fh = bh;
-		bool cut = false, grown = false;
-		if (!compact) {
-			double limit = by + top + (we - ws) * pitch;
-			for (int j = 0; j < ne; j++) {
-				if (j == i || ev[j]->allday)
-					continue;
-				int sj = (ev[j]->per.start - day) * 1440 + ev[j]->start;
-				if (sj >= e0 && sj < we * 60)
-					limit = fmin(limit, by + top + (sj / 60.0 - ws) * pitch);
-			}
-			double room = fmax(bh, round(limit) - byy - 1), r, bt;
-			field_extent(&x->f, &r, &bt);
-			double needw = r + 4, needh = bt + 4;
-			if (needw > bw || needh > bh) {
-				k = fmin(1, fmin(bw / fmax(needw, 1), room / fmax(needh, 1)));
-				if (k < TITLE_MIN / INK_SIZE) {
-					k = TITLE_MIN / INK_SIZE;
-					cut = true;
-				}
-				gh = fmin(room, fmax(bh, ceil(needh * k)));
-				grown = gh > bh;
-			}
-			/* while written, the field reaches a line below its ink, into the room */
-			fh = k < 1 ? gh : fmin(room, fmax(gh, bt > bh - 6 ? bt + PL_ROW : bh));
-		}
-		box(c, bx, byy, bw, gh, compact ? fmin(L->ui_r, 8) : L->ui_r, L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
+		double bx = b->x + gut, bw = b->w - gut - 2, byy = round(y1) + 1, bh = fmax(8, round(y2 - y1) - 2);
+		box(c, bx, byy, bw, bh, fmin(L->ui_r, 8), L->voice == V_STATIONERY ? 1 : L->voice == V_EDITORIAL ? 1 : 1.5,
 		    L->voice == V_STATIONERY ? L->soft : L->ink, L->paper);
-		if (grown && c->paint) { /* the grown part's lower edge is dotted */
-			double lw = L->voice == V_STATIONERY || L->voice == V_EDITORIAL ? 1 : 1.5;
-			cairo_rectangle(c->cr, bx, byy + gh - 3, bw, 3);
-			lk_fill(c->cr, L->paper);
-			lk_rule(c->cr, bx, byy + gh - 2, bw, 2, L->ink, 2);
-			cairo_rectangle(c->cr, bx, byy + gh - 3, lw, 3);
-			cairo_rectangle(c->cr, bx + bw - lw, byy + gh - 3, lw, 3);
-			lk_fill(c->cr, L->voice == V_STATIONERY ? L->soft : L->ink);
-		}
 		if (L->ev_bar)
-			box(c, bx, byy, 3, gh, 0, 0, 0, L->ink);
-		if (!compact && y2 - y1 >= 24) {
-			char w1[8], w2[8], when[20];
-			hm(w1, sizeof w1, s0 < 0 ? 0 : s0);
-			hm(w2, sizeof w2, e0);
-			snprintf(when, sizeof when, "%s–%s", w1, w2);
-			UiFont wf = fam(L->mono, 400, 0, 10);
-			double th;
-			ui_text_w(&c->g, &wf, when, &th);
-			if (c->paint)
-				ui_text(&c->g, &wf, when, bx + bw - 6, byy + 3, 2, 0, L->soft, &th);
-		}
-		if (compact) {
-			ink_fit(c, &x->f, bx + 3, byy + 1, bw - 4, fmin(bh - 2, 15));
-			hit(c, bx, byy, bw, bh, A_DAY, day, 0);
-		} else {
-			struct vfield *ef = entry_field(c, x, bx, byy, bw, fh, 0, 0);
-			if (ef)
-				ef->layer = 1;
-			if (c->paint) {
-				cairo_save(c->cr);
-				cairo_rectangle(c->cr, bx + 1, byy, bw - 2, gh);
-				cairo_clip(c->cr);
-				ink(c, &x->f, bx, byy, k);
-				cairo_restore(c->cr);
-			}
-			hit(c, bx, byy, bw, gh, A_EVENT, cut, x->id);
-		}
-	}
-	/* an event being dragged (FR-018): a dashed outline where it was, and in the gutter the
-	 * time it would land on */
-	struct entry *dg = v->drag && !compact ? store_get(c->s, v->drag) : NULL;
-	if (dg && dg->per.start == day && c->paint) {
-		double y1 = by + top + (v->drag_s0 / 60.0 - ws) * pitch, y2 = by + top + (v->drag_e0 / 60.0 - ws) * pitch;
-		double bx = b->x + gut, bw = b->w - gut - 6;
-		cairo_save(c->cr);
-		double dash[] = { 4, 3 };
-		cairo_set_dash(c->cr, dash, 2, 0);
-		lk_stroke_box(c->cr, bx, round(y1) + 1, bw, fmax(8, round(y2 - y1) - 2), L->ui_r, 1, L->soft);
-		cairo_restore(c->cr);
-		char t[8];
-		hm(t, sizeof t, dg->start);
-		UiFont rf = fam(L->mono, 600, 0, 10);
-		double th, w = ui_text_w(&c->g, &rf, t, &th);
-		double ry = by + top + (dg->start / 60.0 - ws) * pitch;
-		lk_rect(c->cr, b->x + 2, ry - th / 2 - 2, w + 6, th + 4, 3);
-		lk_fill(c->cr, L->ink);
-		ui_text(&c->g, &rf, t, b->x + 5, ry - th / 2, 0, 0, L->paper, &th);
+			box(c, bx, byy, 3, bh, 0, 0, 0, L->ink);
+		ink_fit(c, &x->f, bx + 3, byy + 1, bw - 4, fmin(bh - 2, 15));
+		hit(c, bx, byy, bw, bh, A_DAY, day, 0);
 	}
 	if (before || after) {
 		char t[24];
@@ -1393,8 +1589,10 @@ static void page(struct ctx *c)
 {
 	struct view *v = c->v;
 	double pw = v->W - 2 * PAD, ph = v->H - BAR - 2 * PAD;
-	if (!c->paint)
+	if (!c->paint) {
 		grid_solve(v->t, pw, ph, v->land, need_of, c, &v->g);
+		*c->evs_out = true; /* the agendas' events laid out anew */
+	}
 	if (c->paint) {
 		cairo_rectangle(c->cr, 0, BAR, v->W, v->H - BAR);
 		lk_fill(c->cr, c->L->paper);
@@ -1820,8 +2018,8 @@ static const char *text_of(struct ctx *c, const struct vfield *f)
 	struct view *v = c->v;
 	if (v->text_of)
 		return v->text_of(v->text_ud, f);
-	struct entry *e = f->k == F_ENTRY ? store_get(c->s, f->entry) : NULL;
-	return e && e->f.value ? e->f.value : "";
+	const struct field *ff = f->k == F_ENTRY ? entry_sub(store_get(c->s, f->entry), f->sub) : NULL;
+	return ff && ff->value ? ff->value : "";
 }
 
 /* wrapped lines of t in w: byte start and length of each */
@@ -2752,9 +2950,30 @@ static void picker(struct ctx *c)
 
 static void ed_run(struct ctx *c);
 
+static void run_(struct ctx *c);
+static void event_card(struct ctx *c);
+static void event_page(struct ctx *c);
+static void page_ask(struct ctx *c);
 static void run(struct view *v, struct store *s, const struct look *L, cairo_t *cr, int paint)
 {
-	struct ctx c = { v, s, L, cr, { cr, paint, L->uv }, paint };
+	static struct vev evb[V_EVS];
+	int nevb = 0;
+	bool out = false;
+	struct ctx c = { v, s, L, cr, { cr, paint, L->uv }, paint, evb, &nevb, &out };
+	run_(&c);
+	if (!paint && out) {
+		memcpy(v->ev, evb, nevb * sizeof *evb);
+		v->nev = nevb;
+	}
+}
+
+static void run_(struct ctx *c_)
+{
+	struct ctx c = *c_;
+	struct view *v = c.v;
+	struct store *s = c.s;
+	cairo_t *cr = c.cr;
+	int paint = c.paint;
 	if (!paint) {
 		v->nf = 0;
 		v->nh = 0;
@@ -2777,10 +2996,37 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 		picker(&c);
 		return;
 	}
+	if (v->ov == OV_PAGE || (v->ov == OV_MOVE && v->back == OV_PAGE)) { /* an event's page: the whole screen */
+		if (!paint) {
+			if (v->tm)
+				tbar(&c);
+			if (v->ov == OV_MOVE)
+				sheet_move(&c);
+			else if (v->page_ask)
+				page_ask(&c);
+			event_page(&c);
+			return;
+		}
+		cairo_save(cr);
+		cairo_translate(cr, 0, -v->scroll);
+		event_page(&c);
+		if (v->ov == OV_MOVE)
+			sheet_move(&c);
+		else if (v->page_ask)
+			page_ask(&c);
+		if (v->tm)
+			text_fields(&c);
+		cairo_restore(cr);
+		if (v->tm)
+			tbar(&c);
+		return;
+	}
 	if (!paint) {
 		/* the overlays' targets first: they lie on top */
 		if (v->tm)
 			tbar(&c);
+		if (v->ov == OV_CARD || v->ov == OV_DELETE)
+			event_card(&c);
 		if (v->ov == OV_TITLE)
 			title_card(&c);
 		if (v->ov == OV_MOVE)
@@ -2809,6 +3055,8 @@ static void run(struct view *v, struct store *s, const struct look *L, cairo_t *
 		title_card(&c);
 	if (v->ov == OV_MOVE)
 		sheet_move(&c);
+	if (v->ov == OV_CARD || v->ov == OV_DELETE)
+		event_card(&c);
 	if (v->tm)
 		text_fields(&c);
 	cairo_restore(cr);
@@ -2859,7 +3107,7 @@ const struct vhit *view_hit(const struct view *v, double x, double y)
 
 const struct vfield *view_field_at(const struct view *v, double x, double y)
 {
-	if (v->ov != OV_NONE)
+	if (v->ov != OV_NONE && !(v->ov == OV_PAGE && !v->page_ask))
 		return NULL;
 	if (v->tm && y >= vis_of(v) - TBAR)
 		return NULL;
@@ -3009,6 +3257,465 @@ static const char *const W_NAME[W_NWIDGETS] = { "Day agenda", "Day agenda (compa
 	"Mini month", "Week overview", "Priorities" };
 static const char *const W_SUB[W_NWIDGETS] = { "compresses · min 200 w", "compresses · min 84 w", "truncates · min 180 w",
 	"a named slot · min 200 w", "truncates · min 240 w", "compresses · min 170 w", "truncates · min 260 w", "ranked · min 180 w" };
+
+/* ---- an event's card, the card that asks before it is deleted (boards event.open, event.delete) ---- */
+
+#define EC_W 340
+
+/* a button (.pl-btn), its right edge at x: 0 plain, 1 primary; its width */
+static double btn_r(struct ctx *c, double x, double y, const char *label, int style, enum act a, int arg, uint32_t id)
+{
+	const struct look *L = c->L;
+	UiFont bf = btn_font(L);
+	double w = tw(c, &bf, label) + 28;
+	x -= w;
+	if (style == 1)
+		box(c, x, y, w, 40, L->ui_r, 0, 0, L->ink);
+	else
+		box(c, x, y, w, 40, L->ui_r, L->edge, L->ink, L->paper);
+	tc(c, &bf, label, x + w / 2, y + 20, 1, 0, style == 1 ? L->paper : L->ink);
+	hit(c, x, y, w, 40, a, arg, id);
+	return w;
+}
+
+/* the stroke that struck the title through, as the pen drew it */
+static void xout_paint(struct ctx *c)
+{
+	struct view *v = c->v;
+	if (!v->xout || v->nxout < 2 || !c->paint)
+		return;
+	cairo_t *cr = c->cr;
+	cairo_save(cr);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+	col(cr, c->L->pen);
+	for (int i = 1; i < v->nxout; i++) {
+		const struct pl_point *a = &v->xout[i - 1], *b = &v->xout[i];
+		cairo_set_line_width(cr, pl_ink_width((a->p + b->p) / 2));
+		cairo_move_to(cr, a->x, a->y);
+		cairo_line_to(cr, b->x, b->y);
+		cairo_stroke(cr);
+	}
+	cairo_restore(cr);
+}
+
+/* "14:00–15:00 · Thursday 11 March" */
+static void ev_fact(const struct entry *e, char *o, size_t n)
+{
+	char w1[8], w2[8];
+	int y, m, d;
+	day_to_ymd(e->per.start, &y, &m, &d);
+	hm(w1, sizeof w1, e->start);
+	hm(w2, sizeof w2, e->end);
+	snprintf(o, n, "%s–%s · %s %d %s", w1, w2, DOW[day_weekday(e->per.start)], d, MON[m - 1]);
+}
+
+/* OV_CARD: the title as written, its time and day, Delete event and Open; OV_DELETE: "Delete
+ * this event?" above the same, Keep and Delete event. Under the title, above it when there is
+ * no room below; a tap outside closes it (the asking card: Keep) */
+static void event_card(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *e = store_get(c->s, v->title);
+	const struct vev *ve = view_ev(v, v->title);
+	bool ask = v->ov == OV_DELETE;
+	UiFont qf = fpx(L->h1, 17);
+	/* the whole title, as written: the card as wide as it needs (at most the screen), the ink
+	 * smaller only when even that is too narrow */
+	double r = 0, bt = 0, top = 0, k = 1;
+	if (e) {
+		field_extent(&e->f, &r, &bt);
+		top = ink_top(&e->f);
+	}
+	double CW = fmax(EC_W, fmin(v->W - 16, r + 24));
+	k = r + 24 > CW ? (CW - 24) / fmax(r, 1) : 1;
+	double qh = ask ? 20 + 8 : 0, inkh = fmax(30, (bt - top) * k + 4), hgt = 8 + qh + inkh + 8 + 31 + 60;
+	double x = ve ? ve->tx : v->W - 8 - CW, y = ve ? ve->y + ve->th + 6 : v->H / 3;
+	if (ve && y + hgt > v->H - 8) /* no room below: above the title */
+		y = ve->y - 6 - hgt;
+	x = fmax(8, fmin(x, v->W - 8 - CW));
+	y = fmax(BAR + 4, fmin(y, v->H - 8 - hgt));
+	v->pop_x = x, v->pop_y = y, v->pop_w = CW, v->pop_h = hgt;
+	if (ask)
+		xout_paint(c);
+	pop_frame(c, x, y, CW, hgt);
+	double yy = y + 8;
+	if (ask) {
+		double th;
+		ui_text_w(&c->g, &qf, "Delete this event?", &th);
+		if (c->paint)
+			ui_text(&c->g, &qf, "Delete this event?", x + 10, yy - 2, 0, CW - 20, L->ink, &th);
+		yy += qh;
+	}
+	if (e && c->paint && bt > top) {
+		cairo_save(c->cr);
+		cairo_rectangle(c->cr, x + 8, yy, CW - 16, inkh);
+		cairo_clip(c->cr);
+		ink(c, &e->f, x + 10, yy + 2 - top * k, k);
+		cairo_restore(c->cr);
+	}
+	yy += inkh + 8;
+	if (c->paint)
+		lk_rule(c->cr, x, yy, CW, 1.5, L->ink, 2);
+	if (e) {
+		char t[80];
+		ev_fact(e, t, sizeof t);
+		UiFont ff = fam(L->mono, 400, 0, 12);
+		tc(c, &ff, t, x + 12, yy + 16, 0, CW - 24, L->ink);
+	}
+	yy += 31;
+	if (c->paint)
+		lk_rule(c->cr, x, yy, CW, 1.5, L->ink, 2);
+	double bx = x + CW - 12;
+	if (ask) {
+		bx -= btn_r(c, bx, yy + 10, "Delete event", 1, A_DEL_YES, 0, v->title) + 8;
+		btn_r(c, bx, yy + 10, "Keep", 0, A_DEL_KEEP, 0, v->title);
+	} else {
+		bx -= btn_r(c, bx, yy + 10, "Open", 1, A_EV_OPEN, 0, v->title) + 8;
+		btn_r(c, bx, yy + 10, "Delete event", 0, A_EV_ASK, 0, v->title);
+	}
+	hit(c, x, y, CW, hgt, A_NONE, 0, 0);
+	/* a tap outside closes it, and the asking card keeps the event */
+	hit(c, 0, 0, v->W, v->H + v->scroll, ask ? A_DEL_KEEP : A_CLOSE, 0, v->title);
+}
+
+/* ---- the event's own page (board event.open) ---- */
+
+static const char *const REPEAT[] = { "Never", "Daily", "Weekly", "Monthly", "Yearly" };
+static const char *const REMIND[] = { "None", "At start", "15 min", "1 h", "1 day" };
+const int VIEW_REMIND_MIN[5] = { -1, 0, 15, 60, 1440 };
+
+/* a row's label (.pl-evp-r .k) */
+static void pg_key(struct ctx *c, const char *t, double x, double y)
+{
+	const struct look *L = c->L;
+	UiFont k = L->label;
+	if (L->voice == V_WHITE)
+		k = fam(L->mono, 600, 0, 11), k.tcase = UI_CASE_UPPER, k.ls = 0.08f;
+	double th;
+	ui_text_w(&c->g, &k, t, &th);
+	if (c->paint)
+		ui_text(&c->g, &k, t, x, y, 0, 74, L->ink, &th);
+}
+
+/* a handwriting field of the page: lines rows of 36 px (the title's one of 46), each on a
+ * dotted rule in the ink */
+static void pg_field(struct ctx *c, struct entry *e, int sub, double x, double y, double w, int lines, double row)
+{
+	const struct look *L = c->L;
+	for (int i = 1; i <= lines && c->paint; i++)
+		lk_rule(c->cr, x, y + i * row - 1.5, w, 1.5, L->ink, 2);
+	struct field *f = entry_sub(e, sub);
+	struct vfield *vf = field(c, F_ENTRY, x, y, w, lines * row);
+	if (vf) {
+		static const char *const NM[] = { "title", "where", "notes", "with" };
+		vf->entry = e->id;
+		vf->sub = sub;
+		snprintf(vf->name, sizeof vf->name, "%s:%s", NM[sub], e->uid);
+		if (lines > 1)
+			vf->guide = row, vf->first = row - 6;
+	}
+	if (f && c->paint) {
+		cairo_save(c->cr);
+		cairo_rectangle(c->cr, x, y, w, lines * row);
+		cairo_clip(c->cr);
+		ink(c, f, x, y, 1);
+		cairo_restore(c->cr);
+	}
+}
+
+/* a row of choices (.pl-evp-seg), the one on filled */
+static void pg_seg(struct ctx *c, const char *const *t, int n, int on, double x, double y, double w, enum act a)
+{
+	const struct look *L = c->L;
+	UiFont bf = btn_font(L);
+	double lw = L->voice == V_WHITE ? 1.5 : 1, sw = w / n;
+	if (c->paint) {
+		cairo_save(c->cr);
+		lk_rect(c->cr, x, y, w, 40, L->ui_r);
+		cairo_clip(c->cr);
+	}
+	for (int i = 0; i < n; i++) {
+		double sx = x + i * sw;
+		if (c->paint && i == on) {
+			cairo_rectangle(c->cr, sx, y, sw, 40);
+			lk_fill(c->cr, L->ink);
+		}
+		if (c->paint && i)
+			lk_bar(c->cr, sx, y, lw, 40, L->ink);
+		tc(c, &bf, t[i], sx + sw / 2, y + 20, 1, sw - 8, i == on ? L->paper : L->ink);
+		hit(c, sx, y, sw, 40, a, i, c->v->title);
+	}
+	if (c->paint) {
+		cairo_restore(c->cr);
+		lk_stroke_box(c->cr, x, y, w, 40, L->ui_r, lw, L->ink);
+	}
+}
+
+/* a square button of the times (− or +) */
+static void pg_step(struct ctx *c, const char *t, double x, double y, int arg)
+{
+	const struct look *L = c->L;
+	box(c, x, y, 40, 40, L->ui_r, L->edge, L->ink, L->paper);
+	tc(c, &(UiFont){ L->mono, 600, 0, 18, 0, 0, UI_CASE_NONE }, t, x + 20, y + 20, 1, 0, L->ink);
+	hit(c, x, y, 40, 40, A_PG_TIME, arg, c->v->title);
+}
+
+static void event_page(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *e = store_get(c->s, v->title);
+	double W = v->W;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, 0, W, v->H);
+		lk_fill(c->cr, L->paper);
+	}
+	/* the bar: only Back, the page's name and its day */
+	ui_col fg = L->bar_fg;
+	if (c->paint) {
+		cairo_rectangle(c->cr, 0, 0, W, BAR);
+		lk_fill(c->cr, L->bar_bg);
+		if (L->bar_rule == 3) {
+			lk_rule(c->cr, 0, BAR - 3, W, 1, L->ink, 0);
+			lk_rule(c->cr, 0, BAR - 1, W, 1, L->ink, 0);
+		} else if (L->bar_rule > 0)
+			lk_rule(c->cr, 0, BAR - L->bar_rule, W, L->bar_rule, L->ink, 0);
+		else
+			lk_rule(c->cr, 0, BAR - 1.5, W, 1.5, L->gilt, 0);
+	}
+	double cy = BAR / 2.0;
+	UiFont bf = btn_font(L);
+	double bw = tw(c, &bf, "Back") + 28 + 14;
+	box(c, 16, cy - 20, bw, 40, L->ui_r, L->edge, fg, 0);
+	icon(c, IC_CHEV_L, 16 + 15, cy, 16, fg);
+	tc(c, &bf, "Back", 16 + 24 + (bw - 24) / 2 - 2, cy, 1, 0, fg);
+	hit(c, 16, cy - 20, bw, 40, A_PG_BACK, 0, v->title);
+	char sub[64] = "";
+	int yr = 0, mo = 1, dd = 1;
+	if (e) {
+		day_to_ymd(e->per.start, &yr, &mo, &dd);
+		snprintf(sub, sizeof sub, "%s %d %s", DOW[day_weekday(e->per.start)], dd, MON[mo - 1]);
+	}
+	{
+		double h1, h2;
+		UiFont f1 = L->h1, f2 = L->sub;
+		ui_text_w(&c->g, &f1, "Event", &h1);
+		ui_text_w(&c->g, &f2, sub, &h2);
+		double top = cy - (h1 + 1 + h2) / 2, tx = 16 + bw + 12;
+		if (c->paint) {
+			ui_text(&c->g, &f1, "Event", tx, top, 0, W - tx - 16, fg, &h1);
+			ui_text(&c->g, &f2, sub, tx, top + h1 + 1, 0, W - tx - 16, fg, &h2);
+		}
+	}
+	if (!e)
+		return;
+	/* the rows (.pl-evp): a label 74 px wide, 14 px to the value */
+	double x0 = 18, kx = x0 + 2, vx = x0 + 74 + 14, vw = W - 18 - vx, y = BAR + 4;
+	/* Title: written with the pen, a finger types it (text mode) */
+	pg_key(c, "Title", kx, y + 6 + 18);
+	pg_field(c, e, EF_TITLE, vx, y + 6, vw, 1, 46);
+	y += 6 + 46 + 12;
+	/* When: the day (a tap: the month), the start and the end, 30 minutes a step */
+	pg_key(c, "When", kx, y + 6 + 16);
+	{
+		double wy = y + 6 + 4;
+		char t[40];
+		snprintf(t, sizeof t, "%s %d %s", DOW3[day_weekday(e->per.start)], dd, MON[mo - 1]);
+		double dw = tw(c, &bf, t) + 50;
+		box(c, vx, wy, dw, 40, L->ui_r, L->edge, L->ink, L->paper);
+		icon(c, IC_CAL, vx + 14 + 9, wy + 20, 18, L->ink);
+		tc(c, &bf, t, vx + dw / 2 + 11, wy + 20, 1, 0, L->ink);
+		hit(c, vx, wy, dw, 40, A_PG_DAY, 0, v->title);
+		double ty = wy + 40 + 8, tx = vx;
+		UiFont lf = L->voice == V_WHITE ? fam(L->mono, 400, 0, 12) : fam(L->text, 400, 1, 15);
+		UiFont nf = fam(L->mono, 600, 0, 18);
+		for (int k = 0; k < 2; k++) {
+			tx += tc(c, &lf, k ? "to" : "from", tx, ty + 20, 0, 0, L->ink) + 6;
+			pg_step(c, "−", tx, ty, k * 2);
+			tx += 40 + 6;
+			hm(t, sizeof t, k ? e->end : e->start);
+			double nw = fmax(54, tw(c, &nf, t));
+			tc(c, &nf, t, tx + nw / 2, ty + 20, 1, 0, L->ink);
+			tx += nw + 6;
+			pg_step(c, "+", tx, ty, k * 2 + 1);
+			tx += 40 + 14;
+		}
+		int dur = e->end - e->start;
+		if (dur >= 60 && dur % 60)
+			snprintf(t, sizeof t, "%d h %d min", dur / 60, dur % 60);
+		else if (dur >= 60)
+			snprintf(t, sizeof t, "%d h", dur / 60);
+		else
+			snprintf(t, sizeof t, "%d min", dur);
+		tc(c, &(UiFont){ L->mono, 400, 0, 12, 0, 0, UI_CASE_NONE }, t, tx, ty + 20, 0, 0, L->ink);
+		y = ty + 40 + 12;
+	}
+	/* Where, Notes, With (the participants): written */
+	pg_key(c, "Where", kx, y + 6 + 16);
+	pg_field(c, e, EF_WHERE, vx, y + 6, vw, 1, 36);
+	y += 6 + 36 + 12;
+	pg_key(c, "Notes", kx, y + 6 + 16);
+	pg_field(c, e, EF_NOTES, vx, y + 6, vw, 4, 36);
+	y += 6 + 4 * 36 + 12;
+	pg_key(c, "With", kx, y + 6 + 16);
+	pg_field(c, e, EF_WITH, vx, y + 6, vw, 2, 36);
+	y += 6 + 2 * 36 + 12;
+	/* Repeat and Remind: choices */
+	pg_key(c, "Repeat", kx, y + 6 + 16);
+	pg_seg(c, REPEAT, 5, e->repeat >= 0 && e->repeat < 5 ? e->repeat : 0, vx, y + 6 + 4, vw, A_PG_REPEAT);
+	y += 6 + 44 + 12;
+	int ri = 0;
+	for (int i = 0; i < 5; i++)
+		if (VIEW_REMIND_MIN[i] == e->remind)
+			ri = i;
+	pg_key(c, "Remind", kx, y + 6 + 16);
+	pg_seg(c, REMIND, 5, ri, vx, y + 6 + 4, vw, A_PG_REMIND);
+	y += 6 + 44 + 12;
+	/* Delete event, at its foot: it asks first */
+	{
+		double dw = tw(c, &bf, "Delete event") + 50;
+		box(c, x0, y + 14, dw, 40, L->ui_r, L->edge, L->ink, L->paper);
+		icon(c, IC_TRASH, x0 + 14 + 9, y + 34, 18, L->ink);
+		tc(c, &bf, "Delete event", x0 + dw / 2 + 11, y + 34, 1, 0, L->ink);
+		hit(c, x0, y + 14, dw, 40, A_PG_DELETE, 0, v->title);
+	}
+}
+
+/* the page's dialog before Delete: what goes with the event, Keep and Delete event */
+static void page_ask(struct ctx *c)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	struct entry *e = store_get(c->s, v->title);
+	double w = v->W - 2 * 40, x = 40, y = BAR + 200, h = 196;
+	v->pop_x = x, v->pop_y = y, v->pop_w = w, v->pop_h = h;
+	pop_frame(c, x, y, w, h);
+	UiFont hf = fpx(L->h1, 20), bf = L->body, sf = fpx(L->body, 13);
+	double th;
+	ui_text_w(&c->g, &hf, "Delete this event?", &th);
+	if (c->paint)
+		ui_text(&c->g, &hf, "Delete this event?", x + 20, y + 18, 0, w - 40, L->ink, &th);
+	char t[200] = "", w1[8], w2[8];
+	if (e) {
+		int yr, m, d;
+		day_to_ymd(e->per.start, &yr, &m, &d);
+		hm(w1, sizeof w1, e->start);
+		hm(w2, sizeof w2, e->end);
+		snprintf(t, sizeof t, "This event, %s–%s on %s %d %s, leaves the planner, with its place, notes and participants.",
+			 w1, w2, DOW[day_weekday(e->per.start)], d, MON[m - 1]);
+	}
+	struct tline ln[4];
+	int n = wrap(c, &bf, t, w - 40, ln, 4);
+	double ly = y + 18 + th + 10;
+	for (int i = 0; i < n; i++) {
+		char line_[200];
+		snprintf(line_, sizeof line_, "%.*s", ln[i].n, t + ln[i].s);
+		double lh;
+		ui_text_w(&c->g, &bf, line_, &lh);
+		if (c->paint)
+			ui_text(&c->g, &bf, line_, x + 20, ly, 0, w - 40, L->ink, &lh);
+		ly += lh + 2;
+	}
+	ly += 8;
+	{
+		double lh;
+		ui_text_w(&c->g, &sf, "Nothing else changes.", &lh);
+		if (c->paint)
+			ui_text(&c->g, &sf, "Nothing else changes.", x + 20, ly, 0, w - 40, L->soft, &lh);
+	}
+	double bx = x + w - 20;
+	bx -= btn_r(c, bx, y + h - 20 - 40, "Delete event", 1, A_PG_DELETE, 1, v->title) + 10;
+	btn_r(c, bx, y + h - 20 - 40, "Keep", 0, A_PG_DELETE, 2, v->title);
+	hit(c, x, y, w, h, A_NONE, 0, 0);
+	hit(c, 0, 0, v->W, v->H, A_PG_DELETE, 2, v->title); /* a tap outside keeps it */
+}
+
+/* ---- the pen on an agenda's events (FR-018) ---- */
+
+uint32_t view_strike(const struct view *v, const struct pl_point *p, int n)
+{
+	if (n < 2 || v->ov != OV_NONE)
+		return 0;
+	double x0 = p[0].x, x1 = p[0].x, y0 = p[0].y, y1 = p[0].y, my = 0;
+	for (int i = 0; i < n; i++) {
+		x0 = fmin(x0, p[i].x), x1 = fmax(x1, p[i].x), y0 = fmin(y0, p[i].y), y1 = fmax(y1, p[i].y);
+		my += p[i].y;
+	}
+	my /= n;
+	/* along a line: much wider than tall */
+	if (x1 - x0 < 24 || y1 - y0 > fmax(16, 0.35 * (x1 - x0)))
+		return 0;
+	for (int i = 0; i < v->nev; i++) {
+		const struct vev *e = &v->ev[i];
+		if (e->ink[2] <= 0)
+			continue;
+		double l = e->ink[0], r = e->ink[0] + e->ink[2], t = e->ink[1], b = e->ink[1] + e->ink[3];
+		/* its pen-down in this event's lane (the first's reaches over the hour margin),
+		 * before the first letter */
+		double lane0 = e->ln.lane ? e->spine - BK_GAP : e->spine - BK_SPINE;
+		if (p[0].x >= l || p[0].x < lane0 || p[0].y < t - 8 || p[0].y > b + 8)
+			continue;
+		/* past the last letter, through the ink */
+		if (x1 <= r + 2 || my < t - 4 || my > b + 4)
+			continue;
+		return e->id;
+	}
+	return 0;
+}
+
+const struct vfield *view_margin_at(const struct view *v, double x, double y)
+{
+	if (v->ov != OV_NONE || v->tm || v->ed)
+		return NULL;
+	for (int i = 0; i < v->nf; i++) {
+		const struct vfield *f = &v->f[i];
+		if (f->k == F_FREE && x >= f->x - GUTTER && x < f->x && y >= f->y && y < f->y + f->h)
+			return f;
+	}
+	return NULL;
+}
+
+void view_margin_span(const struct vfield *f, double y0, double y1, int *start, int *end)
+{
+	y0 -= f->y, y1 -= f->y;
+	if (y1 < y0) {
+		double t = y0;
+		y0 = y1, y1 = t;
+	}
+	int s = (int)floor((f->min0 + y0 * f->mpp) / 30) * 30, e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
+	s = s < 0 ? 0 : s > 24 * 60 - 30 ? 24 * 60 - 30 : s;
+	e = e > 24 * 60 ? 24 * 60 : e;
+	if (e < s + 30)
+		e = s + 30;
+	*start = s, *end = e;
+}
+
+uint32_t view_lane_at(const struct view *v, double x, double y)
+{
+	for (int i = 0; i < v->nev; i++) {
+		const struct vev *e = &v->ev[i];
+		if (x >= e->spine - 1 && x < e->spine + e->w + 1 && y >= e->y && y < e->y + fmax(e->h, e->th))
+			return e->id;
+	}
+	return 0;
+}
+
+bool view_covered(const struct view *v, const struct vfield *f)
+{
+	if (v->ed)
+		return false; /* the editor's only field is its name */
+	if (v->ov == OV_PICKER || v->ov == OV_TITLE || v->ov == OV_SETTINGS || v->ov == OV_DELETE || v->ov == OV_CARD)
+		return true;
+	if (v->ov == OV_PAGE)
+		return v->page_ask;
+	if (v->ov == OV_INFO || v->ov == OV_MENU)
+		return f->x < v->pop_x + v->pop_w && f->x + f->w > v->pop_x && f->y < v->pop_y + v->pop_h + 4 && f->y + f->h > v->pop_y;
+	if (v->ov == OV_HIDDEN || v->ov == OV_MOVE)
+		return f->y + f->h > v->H - round((v->H - 60) * 0.66);
+	return false;
+}
 
 static void ed_hit(struct ctx *c, double x, double y, double w, double h, enum ed_op op, int arg)
 {

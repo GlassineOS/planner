@@ -199,7 +199,7 @@ int main(void)
 			{ 9, 4, true, NULL, 0, 0, 0, { 120, 8, 30, 18 }, path, 13 },
 		};
 		uint32_t ent = e->id;
-		field_value(&t, &ent, "call the bank", wd, 3, NULL, 0, NULL, 0);
+		field_value(&t, &ent, 0, "call the bank", wd, 3, NULL, 0, NULL, 0);
 		struct view w = { .per = period_of(P_DAY, d0), .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
 		view_layout(&w, &t, &L, cr);
 		const struct vfield *f = view_field_of(&w, ent);
@@ -237,7 +237,7 @@ int main(void)
 		float path[] = { 0, 120, 8, 1, 150, 8, 1, 150, 26, 1, 120, 26, 4 };
 		struct pl_word wd[1] = { { 0, 4, true, &k0, 1, 0, 0, { 120, 8, 30, 18 }, path, 13 } };
 		uint32_t ent = e->id;
-		field_value(&t, &ent, "call", wd, 1, NULL, 0, NULL, 0);
+		field_value(&t, &ent, 0, "call", wd, 1, NULL, 0, NULL, 0);
 		CHECK(e->f.ns == 1 && e->f.nw == 1 && e->f.w[0].nks == 1); /* the strokes stay */
 		for (int on = 0; on < 2; on++) {
 			t.autograph = on;
@@ -266,7 +266,7 @@ int main(void)
 		}
 		store_free(&t);
 	}
-	/* titles (FR-018): one that fits is whole (a tap opens text mode), a long one in a short
+	/* titles (FR-018): one that fits is whole (a tap opens its card), a long one in a short
 	 * block shrinks to the smallest readable size, then is cut (a tap shows it whole) */
 	{
 		struct period d = period_of(P_DAY, today);
@@ -286,12 +286,173 @@ int main(void)
 				whole = whole < 0 ? w.hit[i].arg : whole;
 		CHECK_INT(cut, 1);
 		CHECK_INT(whole, 0);
-		/* its card shows it whole */
-		w.ov = OV_TITLE;
+		/* its card shows it whole: as wide as the screen allows */
+		w.ov = OV_CARD;
 		w.title = e->id;
 		view_layout(&w, &s, &L, cr);
-		CHECK(find(&w, A_CLOSE, -1) != NULL);
+		CHECK(find(&w, A_CLOSE, -1) != NULL && find(&w, A_EV_OPEN, -1) != NULL);
+		CHECK(w.pop_w > 340 && w.pop_x >= 8 && w.pop_x + w.pop_w <= 702 - 8);
 		store_delete(&s, e->id);
+	}
+	/* events as bracket pairs in lanes (FR-018; boards event.stack, event.delete, event.open) */
+	{
+		struct period d = period_of(P_DAY, today);
+		store_choose(&s, d, d.start, "day-agenda");
+		struct entry *ev[64], *den = NULL;
+		int ne = store_list(&s, E_EVENT, d, NULL, ev, 64);
+		for (int i = 0; i < ne; i++)
+			if (ev[i]->start == 14 * 60)
+				den = ev[i];
+		CHECK(den != NULL);
+		struct entry *bank = store_add(&s, E_EVENT, d), *cafe = store_add(&s, E_EVENT, d);
+		bank->start = 14 * 60 + 30, bank->end = 15 * 60 + 30;
+		sample_ink(&bank->f, "call the bank", 2, 19, 21);
+		cafe->start = 13 * 60, cafe->end = 16 * 60;
+		sample_ink(&cafe->f, "work from the café", 2, 19, 22);
+		struct view w = { .per = d, .today = today, .W = 702, .H = 884, .hidden_kind = -1 };
+		view_layout(&w, &s, &L, cr);
+		const struct vev *vd = view_ev(&w, den->id), *vb = view_ev(&w, bank->id), *vc = view_ev(&w, cafe->id);
+		CHECK(vd && vb && vc);
+		if (vd && vb && vc) {
+			/* the café first, then the dentist, then the bank; three equal lanes, ] [ 12 px apart */
+			CHECK(vc->ln.lane == 0 && vd->ln.lane == 1 && vb->ln.lane == 2);
+			CHECK(vc->ln.lanes == 3 && vd->ln.lanes == 3 && vb->ln.lanes == 3);
+			CHECK(vc->w == vd->w && vd->w == vb->w);
+			CHECK(fabs(vd->spine - (vc->spine + vc->w) - BK_GAP) < 1e-9 && fabs(vb->spine - (vd->spine + vd->w) - BK_GAP) < 1e-9);
+			CHECK(vc->h > vd->h && vd->y < vb->y);
+			/* each title's field in its own lane, none over another's */
+			const struct vfield *fd = view_field_of(&w, den->id), *fb = view_field_of(&w, bank->id), *fc = view_field_of(&w, cafe->id);
+			CHECK(fd && fb && fc);
+			if (fd && fb && fc) {
+				CHECK(fc->x + fc->w <= vc->spine + vc->w && fd->x >= vd->spine && fd->x + fd->w <= vd->spine + vd->w);
+				CHECK(fb->x >= vb->spine && fb->x + fb->w <= vb->spine + vb->w);
+			}
+			/* the ends' handles before the titles; a later lane's end handle only over the gap
+			 * and the serif: a pen-down just inside the neighbour's "]" is its title's */
+			int top = -1, ttl = -1;
+			for (int i = 0; i < w.nh; i++) {
+				if (w.hit[i].id == bank->id && w.hit[i].a == A_EV_TOP && top < 0)
+					top = i;
+				if (w.hit[i].id == bank->id && w.hit[i].a == A_EVENT && ttl < 0)
+					ttl = i;
+			}
+			CHECK(top >= 0 && ttl > top);
+			const struct vhit *h = view_hit(&w, vb->spine + 2, vb->y + 1);
+			CHECK(h && h->a == A_EV_TOP && h->id == bank->id);
+			h = view_hit(&w, vb->spine - BK_GAP - 4, vb->y + 1); /* the dentist's lane, left of the gap */
+			CHECK(h && h->id == den->id);
+			h = view_hit(&w, vb->spine + BK_TITLE + 4, vb->y + 1); /* the bank's title, right of its "[" */
+			CHECK(h && h->a == A_EVENT && h->id == bank->id);
+			h = view_hit(&w, vc->spine - 20, vc->y + 2); /* the first lane's: over the hour margin */
+			CHECK(h && h->a == A_EV_TOP && h->id == cafe->id);
+			CHECK(view_hit(&w, vb->spine + vb->w / 2, vb->y + vb->h / 2)->id == bank->id);
+			/* a pen-down point belongs to one lane, never two */
+			CHECK(view_lane_at(&w, vd->spine + 3, vb->y + 5) == den->id);
+			CHECK(view_lane_at(&w, vb->spine + 3, vb->y + 5) == bank->id);
+			CHECK(view_lane_at(&w, vb->spine - BK_GAP / 2, vb->y + 5) == 0); /* the gap: loose ink */
+			CHECK(view_lane_at(&w, vc->spine + 5, vc->y + vc->h - 4) == cafe->id);
+			/* the pen in the bank's lane: the café's and the dentist's brackets grey, the bank's
+			 * and the run's (another cluster) in the ink */
+			w.focus = bank->id;
+			view_paint(&w, &s, &L, cr);
+			cairo_surface_flush(sf);
+			uint32_t ink = px(sf, vb->spine, vb->y + vb->h / 2), quiet = px(sf, vc->spine, vc->y + vc->h / 2);
+			CHECK(ink < 0x404040 && quiet > 0x808080 && quiet < 0xf0f0f0);
+			CHECK(px(sf, vd->spine, vd->y + vd->h / 2) == quiet);
+			w.focus = 0;
+			view_paint(&w, &s, &L, cr);
+			cairo_surface_flush(sf);
+			CHECK(px(sf, vc->spine, vc->y + vc->h / 2) < 0x404040);
+			/* struck through: from before the first letter to past the last, through it */
+			struct pl_point q[24];
+			double my = vd->ink[1] + vd->ink[3] / 2;
+			int n = line_pts(q, 24, vd->tx - 3, my, vd->ink[0] + vd->ink[2] + 8, my + 2, 0);
+			CHECK(view_strike(&w, q, n) == den->id);
+			n = line_pts(q, 24, vd->ink[0] + 4, my, vd->ink[0] + vd->ink[2] + 8, my + 2, 0); /* from inside: writing */
+			CHECK(view_strike(&w, q, n) == 0);
+			n = line_pts(q, 24, vd->tx - 3, my, vd->ink[0] + vd->ink[2] * 0.6, my, 0); /* not across all of it */
+			CHECK(view_strike(&w, q, n) == 0);
+			n = line_pts(q, 24, vd->tx - 3, my, vd->ink[0] + vd->ink[2] + 8, my + 40, 0); /* steep: writing */
+			CHECK(view_strike(&w, q, n) == 0);
+			n = line_pts(q, 24, vd->tx - 3, vd->ink[1] - 30, vd->ink[0] + vd->ink[2] + 8, vd->ink[1] - 30, 0); /* above it */
+			CHECK(view_strike(&w, q, n) == 0);
+			/* its card: Delete event and Open; the asking card: Keep and Delete event; no field
+			 * open under either */
+			w.ov = OV_CARD, w.title = den->id;
+			view_layout(&w, &s, &L, cr);
+			CHECK(find(&w, A_EV_OPEN, -1) && find(&w, A_EV_ASK, -1) && find(&w, A_CLOSE, -1));
+			CHECK(view_covered(&w, fd) && view_field_at(&w, fd->x + 4, fd->y + 4) == NULL);
+			w.ov = OV_DELETE;
+			view_layout(&w, &s, &L, cr);
+			CHECK(find(&w, A_DEL_YES, -1) && find(&w, A_DEL_KEEP, -1));
+			/* a tap outside the asking card keeps the event */
+			CHECK(view_hit(&w, 2, w.H - 4)->a == A_DEL_KEEP);
+			CHECK(view_strike(&w, q, n) == 0);
+		}
+		/* a line down the margin: from the half hour it began in to the one it reached, up or
+		 * down, at least 30 minutes; the margin is where it may start */
+		{
+			const struct vfield *ff = NULL;
+			for (int i = 0; i < w.nf; i++)
+				if (w.f[i].k == F_FREE)
+					ff = &w.f[i];
+			CHECK(ff != NULL);
+			if (ff) {
+				int st, en;
+				double y16 = ff->y + (16 * 60 - ff->min0) / ff->mpp, hr = 60 / ff->mpp;
+				view_margin_span(ff, y16 + 2, y16 + hr - 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 17 * 60);
+				view_margin_span(ff, y16 + hr - 2, y16 + 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 17 * 60);
+				view_margin_span(ff, y16 + 1, y16 + 2, &st, &en);
+				CHECK(st == 16 * 60 && en == 16 * 60 + 30);
+				w.ov = OV_NONE;
+				view_layout(&w, &s, &L, cr);
+				CHECK(view_margin_at(&w, ff->x - 20, y16) != NULL && view_margin_at(&w, ff->x + 4, y16) == NULL);
+			}
+		}
+		/* the event's page: the title and Where, Notes, With written (one region each), the
+		 * times' − and +, the choices, Delete event that asks */
+		w.ov = OV_PAGE, w.title = den->id, w.page_ask = false;
+		view_layout(&w, &s, &L, cr);
+		int subs = 0;
+		for (int i = 0; i < w.nf; i++)
+			if (w.f[i].k == F_ENTRY && w.f[i].entry == den->id)
+				subs |= 1 << w.f[i].sub;
+		CHECK_INT(subs, 0xf);
+		for (int i = 0; i < w.nf; i++)
+			for (int j = 0; j < i; j++)
+				CHECK(strcmp(w.f[i].name, w.f[j].name));
+		for (int k = 0; k < 4; k++)
+			CHECK(find(&w, A_PG_TIME, k) != NULL);
+		for (int k = 0; k < 5; k++)
+			CHECK(find(&w, A_PG_REPEAT, k) && find(&w, A_PG_REMIND, k));
+		CHECK(find(&w, A_PG_BACK, -1) && find(&w, A_PG_DAY, -1) && find(&w, A_PG_DELETE, 0));
+		CHECK(!find(&w, A_VIEW, -1)); /* its bar: only Back */
+		const struct vfield *pf = NULL;
+		for (int i = 0; i < w.nf; i++)
+			if (w.f[i].sub == EF_NOTES)
+				pf = &w.f[i];
+		CHECK(pf && view_field_at(&w, pf->x + 5, pf->y + 5) == pf && pf->guide == 36);
+		w.page_ask = true;
+		view_layout(&w, &s, &L, cr);
+		CHECK(find(&w, A_PG_DELETE, 1) && find(&w, A_PG_DELETE, 2));
+		CHECK(pf && view_field_at(&w, pf->x + 5, pf->y + 5) == NULL);
+		store_delete(&s, bank->id), store_delete(&s, cafe->id);
+		/* back to back: the first's end handle and the second's start handle meet halfway */
+		struct entry *a1 = store_add(&s, E_EVENT, d), *a2 = store_add(&s, E_EVENT, d);
+		a1->start = 19 * 60, a1->end = 20 * 60, a2->start = 20 * 60, a2->end = 21 * 60;
+		w.ov = OV_NONE, w.page_ask = false;
+		view_layout(&w, &s, &L, cr);
+		const struct vev *v1 = view_ev(&w, a1->id), *v2 = view_ev(&w, a2->id);
+		CHECK(v1 && v2 && v1->ln.lanes == 1 && v2->ln.lanes == 1);
+		if (v1 && v2) {
+			double mid = (v1->y + v1->h + v2->y) / 2;
+			const struct vhit *h1 = view_hit(&w, v1->spine, mid - 3), *h2 = view_hit(&w, v2->spine, mid + 3);
+			CHECK(h1 && h1->a == A_EV_BOT && h1->id == a1->id);
+			CHECK(h2 && h2->a == A_EV_TOP && h2->id == a2->id);
+		}
+		store_delete(&s, a1->id), store_delete(&s, a2->id);
 	}
 	/* search in the (i) popover (FR-050) */
 	{
