@@ -64,7 +64,10 @@ title.
 30 minutes with a dashed outline at its old place while the hour gutter shows the time it
 would land on, the page refreshing once per step and only where the block moves, and lands
 at 14:30–15:30, its ink unchanged. **When** the person
-drags its lower edge, **Then** its length changes in 30-minute steps. **When** the person
+drags its folded corner, **Then** its length changes in 30-minute steps. **When** the person
+crosses its slip out with one pen stroke from the hour gutter to past its right edge, or
+holds a finger still on it until it crumples, **Then** a card asks before it is deleted, and
+Keep leaves it as it was. **When** the person
 opens its date and picks another day, **Then** the event moves there with its ink and its
 reading.
 
@@ -223,22 +226,53 @@ it says that it needs the handwriting service and why, and doesn't start.
     an hour, the stroke stays where it was written as the first ink of the event's title, and
     the title takes the next stroke at once, so writing into an empty slot is writing from
     the first stroke;
-  - dragging an event's block moves it and dragging its edge changes its length, both in
-    steps of 30 minutes. During a drag the view refreshes once per step, only where the
-    block leaves and enters. A dragged block looks as it will when released; the only
-    other marks during a drag are a dashed outline at the block's old place and, in the
-    agenda's hour gutter, the time the block would land on. That readout is part of the
-    gutter, not of the block's look; it changes with each step and goes on release. A block
+  - on a day agenda each timed event is a paper slip on the day sheet: its keyline with a
+    heavier lower edge, a small paper tab on its top edge (near its right end) and a folded
+    corner at its lower right, in ink and paper only, with no greys that need many levels.
+    A compact agenda shows its events as plain blocks;
+  - dragging a slip by its tab or by itself moves it, and dragging its folded corner (or its
+    lower edge) changes its end, both in steps of 30 minutes; a pulled corner opens wider.
+    While dragged, the slip lifts: a shadow of its size, 5 px to the right and below, drawn
+    as a fine diagonal hatch of ink dots on whole device pixels. During a drag the view
+    refreshes once per step, only where the slip and its shadow leave and enter. A dragged
+    slip looks as it will when released; the only other marks during a drag are a dashed
+    outline at the slip's old place and, in the agenda's hour gutter, the time the slip
+    would land on (its end, while the corner is pulled). That readout is part of the
+    gutter, not of the slip's look; it changes with each step and goes on release. A slip
     held past the agenda's first or last hour scrolls its hours one step per step, with the
     readout pinned at that edge of the gutter; on release the agenda shows its own hours
-    again. The release refreshes only the old place, where the outline goes, and the gutter;
+    again. The release refreshes only the old place, where the outline goes, the shadow
+    and the gutter;
+  - an event is deleted in two ways that end in the same confirmation: one pen stroke that
+    crosses its slip out, running from outside its left edge to past its right edge (or the
+    other way) or between opposite corners, starting and ending outside the slip (a stroke
+    that starts inside the slip is writing, so striking out words of its title stays
+    writing); or a finger held still on the slip for half a second, which crumples it (a
+    jagged outline with creases, one refresh of its place), a finger that moves first
+    dragging it instead. When the pen or the finger lifts, a card opens beside the slip
+    (below it, above it when there is no room; one rectangle refreshed): the title's ink,
+    its times and day, and Keep and Delete event. While it is open no field takes the pen.
+    Keep, or a tap outside, closes it and the slip is as it was; Delete event removes the
+    event, refreshing only the slip's place and the card. No system dialog is shown;
+  - events that overlap lie as shingled slips: the one that starts later lies on top,
+    shifted 14 px right per level, and the one underneath shows a strip of at least 18 px
+    with its title: its top while the one above starts later, its bottom when the one above
+    started earlier. A tap on a strip brings that slip to the top (the order is how the
+    view shows them, not saved), refreshing once the rectangle they share. When three or
+    more overlap, a tap on a strip fans them out side by side, each at its own times and an
+    equal share of the width (a third for three), without tab or folded corner (one refresh of the stack's span); a tap
+    on a fanned slip brings it to the top and closes the fan, a tap beside them closes it.
+    The pen writes into the title of the slip on top: each slip's writing region lies on
+    the layer its place in the stack gives, and a fanned slip's region is its place in the
+    fan;
   - date pickers set or change the day, week or month an entry belongs to.
 
-  When an event's title needs more room than its block, the title field grows past the
-  block into the free time below it; the event's start and end stay as set. A title that
+  When an event's title needs more room than its slip, the title field grows past the
+  slip into the free time below it; the event's start and end stay as set. A title that
   no longer fits its space (the event is shortened, another event takes the free time
-  below, the view is smaller, or the title is set in the person's font) shrinks evenly to
-  fit, down to a smallest readable size; below that size it is cut at the block's edge. A
+  below, the view is smaller, the slip lies under another, or the title is set in the
+  person's font) shrinks evenly to fit, down to a smallest readable size; below that size
+  it is cut at the slip's edge. A
   tap on a cut title shows the whole title; a tap on a title that is not cut opens its text
   mode (FR-012). No title is cut with an ellipsis.
 - **FR-019**: Every handwriting field is free text. Writing a time or date into a field does
@@ -308,7 +342,8 @@ it says that it needs the handwriting service and why, and doesn't start.
 ### Widgets
 
 - **FR-040**: Widgets are reusable across templates. The planner ships at least:
-  - **day agenda**: the hours of a day with its timed events as blocks, all-day events above;
+  - **day agenda**: the hours of a day with its timed events as paper slips (FR-018), all-day
+    events above; its compact form (a week's days side by side) shows them as blocks;
   - **to-do list**: the to-dos of a period, to write, tick and reorder;
   - **free notes**: an open writing area for the notes of a period, in a named slot;
   - **habit tracker**: the person's habits against the days of the period, a tap marks a day;
@@ -436,9 +471,17 @@ Host level:
   raises "+n more", done rows give way first, then the oldest open, and one empty row stays;
 - a layout change requested while a stroke is in progress is held until the pause;
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
-  block leaves and enters and the hour gutter, which shows the time the block would land
-  on, and the release refreshes only the old place, where the dashed outline goes, and the
-  gutter;
+  slip and its shadow leave and enter and the hour gutter, which shows the time the slip
+  would land on, and the release refreshes only the old place, where the dashed outline
+  goes, and the gutter; its tab, folded corner and their touch targets lie where the
+  boards place them;
+- a stroke from edge to edge or corner to corner through a slip, starting and ending
+  outside it, opens the card that deletes it, a stroke that starts inside it doesn't; a
+  finger held still for half a second crumples it, refreshing only its place; Delete event
+  refreshes only its place and the card;
+- overlapping events lie shingled with a strip of at least 18 px of the one underneath, a
+  tap on the strip brings it to the top and each slip's writing region follows the order;
+  three or more fan out on a tap and close on the next;
 - a long title in a short event grows its title field into the free time below the block
   without changing the event's times; a title that no longer fits shrinks evenly down to
   the smallest readable size, then is cut at the block's edge, and a tap on a cut title
@@ -517,9 +560,13 @@ Hardware: ink latency and refresh counts on a device, supervised.
   into the free time below. When its space shrinks later (the event is shortened, another
   event takes the free time below, a smaller view, or a typed title set in the person's
   font), it shrinks evenly to fit down to the smallest readable size, then is cut at the
-  block's edge; a tap on a cut title shows it whole.
+  slip's edge; a tap on a cut title shows it whole.
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
-  is removed only by an explicit delete.
+  is removed only by an explicit delete: its slip crossed out or held still, then confirmed
+  in the card (FR-018).
+- **Events at the same time**: the shorter lies on top and the longer shows its bottom; of
+  equal ones the one underneath still shows a strip of 18 px, its slip reaching that far
+  below the one above.
 - **A reading that fails** (the service is busy, a script it can't read): the ink is kept,
   the field has no text yet and is read again later; search can't find it until then.
 - **A to-do of a week that spans two months**: it belongs to the week; month views show it
