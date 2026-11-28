@@ -418,6 +418,54 @@ int main(void)
 		store_free(&a), store_free(&b);
 	}
 
+	/* the X- properties are valid TEXT (RFC 5545 3.3.11): SHOW's ";" and a slot's ";", ","
+	 * and "\" are written escaped; SHOW is read in that form, in the one EDS writes when it
+	 * edits an item (the same), and with the bare ";" older planners wrote */
+	{
+		struct store a;
+		store_init(&a, NULL);
+		struct entry *t = store_add(&a, E_TODO, period_of(P_DAY, d));
+		sample_ink(&t->f, "post", 2, 19, 1);
+		t->f.neaten = SHOW_ON, t->f.autograph = SHOW_OFF;
+		struct entry *n = store_add(&a, E_NOTE, period_of(P_DAY, d));
+		snprintf(n->slot, sizeof n->slot, "%s", "a;b,c\\d");
+		char *x1 = store_ics(&a);
+		CHECK(strstr(x1, "\r\nX-GLASSINE-SHOW:neaten=on\\;autograph=off\r\n") != NULL);
+		CHECK(strstr(x1, "\r\nX-GLASSINE-SLOT:a\\;b\\,c\\\\d\r\n") != NULL);
+		struct store b;
+		store_init(&b, NULL);
+		CHECK(store_parse_ics(&b, x1));
+		char *x2 = store_ics(&b);
+		CHECK_STR(x2, x1);
+		struct entry *bt = NULL, *bn = NULL;
+		for (int i = 0; i < b.n; i++)
+			*(b.e[i]->kind == E_NOTE ? &bn : &bt) = b.e[i];
+		CHECK(bt && bt->f.neaten == SHOW_ON && bt->f.autograph == SHOW_OFF);
+		CHECK(bn && !strcmp(bn->slot, "a;b,c\\d"));
+		static const char *const FORMS[] = {
+			"neaten=on;autograph=off",      /* older planners */
+			"neaten=on\\;autograph=off",    /* now, and EDS */
+			"autograph=off\\;neaten=on",
+			"neaten=o\r\n n\\;autograph=of\r\n\tf", /* folded */
+		};
+		for (size_t i = 0; i < sizeof FORMS / sizeof *FORMS; i++) {
+			char ics[512];
+			snprintf(ics, sizeof ics, "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:show-%zu\r\nX-GLASSINE-KIND:todo\r\n"
+				 "SUMMARY:post\r\nX-GLASSINE-SHOW:%s\r\n"
+				 "END:VTODO\r\nEND:VCALENDAR\r\n", i, FORMS[i]);
+			struct store c;
+			store_init(&c, NULL);
+			CHECK(store_parse_ics(&c, ics) && c.n == 1);
+			CHECK(c.n == 1 && c.e[0]->f.neaten == SHOW_ON && c.e[0]->f.autograph == SHOW_OFF);
+			char *x3 = c.n == 1 ? store_ics(&c) : NULL;
+			CHECK(x3 && strstr(x3, "X-GLASSINE-SHOW:neaten=on\\;autograph=off\r\n"));
+			free(x3);
+			store_free(&c);
+		}
+		free(x1), free(x2);
+		store_free(&a), store_free(&b);
+	}
+
 	/* the solver gives every widget at least its minimum, upright and turned */
 	for (int i = 0; i < pl_ntemplates; i++)
 		for (int land = 0; land < 2; land++) {
