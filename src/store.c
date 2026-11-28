@@ -961,7 +961,8 @@ static void field_ics(struct buf *b, const struct field *f, const char *txt, con
 	}
 	if (f->neaten || f->autograph) {
 		static const char *SH[] = { "follow", "off", "on" };
-		snprintf(v, sizeof v, "neaten=%s;autograph=%s", SH[f->neaten % 3], SH[f->autograph % 3]);
+		/* a TEXT value (RFC 5545 3.3.11): its ";" escaped */
+		snprintf(v, sizeof v, "neaten=%s\\;autograph=%s", SH[f->neaten % 3], SH[f->autograph % 3]);
 		snprintf(n, sizeof n, "X-GLASSINE-%sSHOW", pre);
 		line(b, n, v);
 	}
@@ -983,9 +984,24 @@ static bool field_prop(struct field *f, const char *name, const char *val)
 	else if (!strcmp(name, "WORDS"))
 		words_parse(f, val);
 	else if (!strcmp(name, "SHOW")) {
-		const char *a = strstr(val, "neaten="), *g = strstr(val, "autograph=");
-		f->neaten = a ? (!strncmp(a + 7, "on", 2) ? SHOW_ON : !strncmp(a + 7, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
-		f->autograph = g ? (!strncmp(g + 10, "on", 2) ? SHOW_ON : !strncmp(g + 10, "off", 3) ? SHOW_OFF : SHOW_FOLLOW) : SHOW_FOLLOW;
+		/* "neaten=on\;autograph=off", or the same with a bare ";" as older planners wrote it */
+		char *t = unesc_text(val);
+		f->neaten = f->autograph = SHOW_FOLLOW;
+		for (char *k = t, *e; k && *k; k = e) {
+			e = k + strcspn(k, ";");
+			if (*e)
+				*e++ = 0;
+			char *eq = strchr(k, '=');
+			if (!eq)
+				continue;
+			*eq++ = 0;
+			uint8_t sh = !strcmp(eq, "on") ? SHOW_ON : !strcmp(eq, "off") ? SHOW_OFF : SHOW_FOLLOW;
+			if (!strcmp(k, "neaten"))
+				f->neaten = sh;
+			else if (!strcmp(k, "autograph"))
+				f->autograph = sh;
+		}
+		free(t);
 	} else if (!strcmp(name, "STATE")) {
 		free(f->state);
 		f->state = unb64(val, &f->state_len);
@@ -1026,8 +1042,11 @@ static void entry_ics(struct buf *b, const struct entry *x)
 		snprintf(v, sizeof v, "%d", x->rank);
 		line(b, "X-GLASSINE-RANK", v);
 	}
-	if (x->kind == E_NOTE)
-		line(b, "X-GLASSINE-SLOT", x->slot);
+	if (x->kind == E_NOTE) {
+		char *t = esc_text(x->slot); /* a template's name for it: TEXT, any character */
+		line(b, "X-GLASSINE-SLOT", t);
+		free(t);
+	}
 	if (x->kind == E_MARK) {
 		snprintf(v, sizeof v, "%u", x->habit);
 		line(b, "X-GLASSINE-HABIT", v);
@@ -1239,9 +1258,11 @@ bool store_parse_ics(struct store *s, const char *text)
 			x->done = !strcmp(val, "COMPLETED");
 		else if (!strcmp(name, "X-GLASSINE-RANK"))
 			x->rank = atoi(val);
-		else if (!strcmp(name, "X-GLASSINE-SLOT"))
-			snprintf(x->slot, sizeof x->slot, "%s", val);
-		else if (!strcmp(name, "RELATED-TO"))
+		else if (!strcmp(name, "X-GLASSINE-SLOT")) {
+			char *t = unesc_text(val);
+			snprintf(x->slot, sizeof x->slot, "%s", t ? t : "");
+			free(t);
+		} else if (!strcmp(name, "RELATED-TO"))
 			snprintf(rel, sizeof rel, "%s", val);
 		else if (!strcmp(name, "SUMMARY") || !strcmp(name, "DESCRIPTION") || !strcmp(name, "LOCATION") ||
 			 !strcmp(name, "X-GLASSINE-WITH")) {
