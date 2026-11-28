@@ -318,7 +318,7 @@ it says that it needs the handwriting service and why, and doesn't start.
 - **FR-024**: Entries are kept as soon as they are written; a crash, a power loss or a cut
   battery loses at most the stroke being drawn.
 - **FR-025**: Nothing the person writes leaves the device unless the person sets up syncing
-  for the system's store; the planner itself sends nothing anywhere.
+  for the system's store, in Settings; the planner itself sends nothing anywhere.
 - **FR-025a**: Other apps share the entries. Every entry carries its reading in the standard
   text of its kind (title, description, place, participants), so an app that knows nothing of
   ink shows the entry as text. The ink, slot and template choices travel with the entry, and
