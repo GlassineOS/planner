@@ -1353,9 +1353,13 @@ static void tap_(double x, double y, bool finger)
 		break;
 	}
 	case A_DAY: choose_period((struct period){ P_DAY, h->arg }); break;
-	case A_FOLD: /* the whole day: every event, none folded (board event.more) */
-		choose_period((struct period){ P_DAY, h->arg });
-		P.v.whole = true, P.v.whole_day = h->arg;
+	case A_FOLD: /* the whole day: every event, none folded, with Back (board event.more) */
+		view_whole_open(v, h->arg);
+		relayout_later();
+		break;
+	case A_WHOLE_BACK: /* the page the fold bar was on, as it was left */
+		if (view_whole_back(v))
+			relayout_later();
 		break;
 	default: break;
 	}

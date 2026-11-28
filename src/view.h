@@ -74,6 +74,7 @@ enum act {
 	 * the choice), Delete event (it asks first: arg 1 the dialog's Delete event, 2 its Keep) */
 	A_PG_BACK, A_PG_DAY, A_PG_TIME, A_PG_REPEAT, A_PG_REMIND, A_PG_DELETE,
 	A_FOLD, /* a small agenda's fold bar, arg its day: the whole day, every event in it (board event.more) */
+	A_WHOLE_BACK, /* Back in the bar of the whole day opened from a fold bar: the page it was opened from */
 };
 struct vhit {
 	double x, y, w, h;
@@ -146,9 +147,13 @@ struct view {
 	int nrule;
 	int nfold;
 	/* the whole day opened from a fold bar: day whole_day shows the day agenda's template
-	 * (every event of the day) until another period is chosen */
+	 * (every event of the day) until another period is chosen; Back in its bar returns to
+	 * whole_from, the period the fold bar was on, at its scroll (whole_scroll, kept while
+	 * the keyboard that moved the page, whole_vis, is still the same) */
 	bool whole;
 	int whole_day;
+	struct period whole_from;
+	double whole_scroll, whole_vis;
 	/* the event the pen writes in, or hovers over: the other brackets of its cluster grey */
 	uint32_t focus;
 	/* a bracket being drawn with the pen down the hour margin (board event.draw): its day, its
@@ -228,6 +233,14 @@ bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, in
  * field, moved into it as the layout placed it, so it stays where it was written. NULL: none */
 struct entry *view_free_stroke(struct view *v, struct store *s, const struct vfield *f, uint32_t k,
 			       const struct pl_point *p, int n, void (*relayout)(void *ud), void *ud, bool *kept);
+/* The whole day opened from a fold bar (A_FOLD, board event.more): day shows every event in
+ * the day agenda's template, and the period shown before (with its scroll) is kept for Back.
+ * view_whole_shown: that day is what is shown (its bar has Back). view_whole_back: Back,
+ * the page the fold bar was on again (false: no whole day shown, nothing changed). Choosing
+ * any other period clears it (whole false) */
+void view_whole_open(struct view *v, int day);
+bool view_whole_shown(const struct view *v);
+bool view_whole_back(struct view *v);
 /* the laid out event id (NULL: none) */
 const struct vev *view_ev(const struct view *v, uint32_t id);
 /* A pen stroke (page coordinates) that strikes an event's title through (FR-018, board

@@ -289,7 +289,9 @@ it says that it needs the handwriting service and why, and doesn't start.
   ("+2 more 14:00–15:30 …", with "tap to show" from 280 px wide; below that on two lines,
   the title on the second), never shorter than its lines; its head then says "N events,
   M folded", and a tap on the bar opens the whole day (the day's agenda with every event,
-  until another period is chosen). In the rare case that a page's agenda
+  until another period is chosen). That day has Back first in its bar, which returns to
+  the page the widget is on as it was left; Day, Today or the arrows choose another period
+  instead, and Back is gone with the whole day. In the rare case that a page's agenda
   can't give a group even a widget's rows, it folds the same way.
 
   The now line never crosses ink: its dot stands in the hour margin, and the line breaks
@@ -553,7 +555,9 @@ Host level:
 - the now line's pieces never overlap an event's brackets or title ink, nor a fold bar, at
   its height, and in a group in rows only its dot is left;
 - a small widget that can't fit a group's rows shows one fold bar, names the fold in its
-  head, and a tap on the bar opens the day; a page's day agenda folds nothing;
+  head, and a tap on the bar opens the day, whose Back returns to the page the bar was on
+  (its period and scroll) and is shown only there, gone once another period is chosen; a
+  page's day agenda folds nothing;
 - a title moved into a lane is rewrapped by its words inside its lane's width and height,
   its stored strokes unchanged, cut with a fade when 70 % doesn't fit, and as written again
   back in free time;
