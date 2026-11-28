@@ -438,7 +438,200 @@ int main(void)
 		view_layout(&w, &s, &L, cr);
 		CHECK(find(&w, A_PG_DELETE, 1) && find(&w, A_PG_DELETE, 2));
 		CHECK(pf && view_field_at(&w, pf->x + 5, pf->y + 5) == NULL);
+		/* routing (board event.route): a pen-down in the gap before the dentist's "[" is the
+		 * dentist's; the gap between the café's "]" and the dentist's "[" goes to the nearer one,
+		 * the "[" when as near; inside a lane or in the margin it is no gap */
+		w.ov = OV_NONE, w.page_ask = false;
+		view_layout(&w, &s, &L, cr);
+		vd = view_ev(&w, den->id), vc = view_ev(&w, cafe->id), vb = view_ev(&w, bank->id);
+		if (vd && vc && vb) {
+			double gy = vd->y + 10, mid = (vc->spine + vc->w + vd->spine) / 2;
+			CHECK(view_gap_at(&w, vd->spine - 3, gy) == den->id);
+			CHECK(view_gap_at(&w, vc->spine + vc->w + 3, gy) == cafe->id);
+			CHECK(view_gap_at(&w, mid, gy) == den->id);
+			CHECK(view_gap_at(&w, vd->spine + 20, gy) == 0 && view_gap_at(&w, vc->spine - 10, gy) == 0);
+			/* below the dentist, in its lane's empty space: free time (no event's) */
+			CHECK(view_lane_at(&w, vd->spine + 20, vd->y + vd->h + 30) == 0 &&
+			      view_gap_at(&w, vd->spine + 20, vd->y + vd->h + 30) == 0);
+		}
+		/* the now line crosses no ink: its dot in the margin, the line broken around every
+		 * event at its height (board event.more) */
+		setenv("GLASSINE_PLANNER_NOW", "860", 1);
+		view_layout(&w, &s, &L, cr);
+		CHECK(w.now_y > 0 && w.now_dot < BK_SPINE + 12 + 2);
+		{
+			bool clear = true;
+			for (int i = 0; i < w.nev; i++) {
+				const struct vev *e = &w.ev[i];
+				double bot = fmax(e->y + fmax(e->h, e->th), e->ink[2] > 0 ? e->ink[1] + e->ink[3] : 0);
+				if (w.now_y < e->y - 2 || w.now_y > bot + 2)
+					continue;
+				for (int j = 0; j < w.nnow; j++)
+					if (w.now_seg[j][0] < e->spine + e->w + 2 && w.now_seg[j][0] + w.now_seg[j][1] > e->spine - 1)
+						clear = false;
+			}
+			CHECK(clear && w.nnow >= 1);
+		}
+		/* five at once on a 702 px wide day: one row each, in start order, the hours drawn
+		 * taller; no title crosses a rule (each row's ink inside its own line); no end handles;
+		 * the now line only its dot */
+		struct entry *pl = store_add(&s, E_EVENT, d), *pa = store_add(&s, E_EVENT, d);
+		pl->start = 13 * 60 + 30, pl->end = 15 * 60;
+		sample_ink(&pl->f, "the plumber comes", 2, 19, 33);
+		pa->start = 14 * 60 + 30, pa->end = 15 * 60;
+		sample_ink(&pa->f, "sign for the parcel", 2, 19, 34);
+		view_layout(&w, &s, &L, cr);
+		{
+			const struct entry *order[] = { cafe, pl, den, bank, pa };
+			bool rows = true, inside = true, sorted = true, ends = false;
+			double prev = -1;
+			for (int i = 0; i < 5; i++) {
+				const struct vev *e = view_ev(&w, order[i]->id);
+				if (!e) {
+					rows = false;
+					continue;
+				}
+				rows = rows && e->ln.rows && e->ln.order == i && e->ln.lanes == 1;
+				sorted = sorted && e->y > prev;
+				prev = e->y;
+				/* the row's rules: ROW_GAP / 2 above its top, ROW_GAP / 2 below its brackets */
+				if (e->ink[2] > 0)
+					inside = inside && e->ink[1] > e->y - ROW_GAP / 2.0 && e->ink[1] + e->ink[3] < e->y + e->h + ROW_GAP / 2.0 &&
+						 e->ink[0] + e->ink[2] <= e->spine + e->w;
+				for (int j = 0; j < w.nh; j++)
+					if ((w.hit[j].a == A_EV_TOP || w.hit[j].a == A_EV_BOT) && w.hit[j].id == order[i]->id)
+						ends = true;
+			}
+			CHECK(rows && sorted && inside && !ends);
+			/* no rule as drawn crosses a row's title ink: the hour rules of the group stay in the
+			 * margin, each row has its own */
+			{
+				bool crossed = false, margin = true;
+				for (int i = 0; i < 5; i++) {
+					const struct vev *e = view_ev(&w, order[i]->id);
+					if (!e || e->ink[2] <= 0)
+						continue;
+					for (int j = 0; j < w.nrule; j++) {
+						const struct vbox *r = &w.rule[j];
+						if (r->y + r->h > e->ink[1] && r->y < e->ink[1] + e->ink[3] && r->x < e->ink[0] + e->ink[2] &&
+						    r->x + r->w > e->ink[0])
+							crossed = true;
+						if (r->y > e->y && r->y < e->y + e->h && r->x + r->w > e->spine)
+							margin = false; /* inside a row only the margin is ruled */
+					}
+				}
+				CHECK(!crossed && margin && w.nrule > 20);
+			}
+			const struct vev *ec = view_ev(&w, cafe->id), *ea = view_ev(&w, pa->id);
+			/* at least twice as tall: three hours over 2 x 3 x the pitch the other hours had */
+			const struct vfield *ff = NULL;
+			for (int i = 0; i < w.nf; i++)
+				if (w.f[i].k == F_FREE)
+					ff = &w.f[i];
+			CHECK(ff && ec && ea);
+			if (ff && ec && ea) {
+				double span = tmap_y(&ff->tm, 16 * 60) - tmap_y(&ff->tm, 13 * 60);
+				CHECK(span >= ROW_SCALE * 3 * (60 / ff->mpp) - 1);
+				CHECK(ea->y + ea->h <= ff->y + tmap_y(&ff->tm, 16 * 60) + 1);
+				CHECK(fabs(tmap_y(&ff->tm, 23 * 60) - ff->h) < 1e-6);
+				/* minutes and px round trip through the scale, a line drawn down the margin in it
+				 * spans the time at its scale */
+				int st, en;
+				view_margin_span(ff, ff->y + tmap_y(&ff->tm, 13 * 60), ff->y + tmap_y(&ff->tm, 14 * 60), &st, &en);
+				CHECK(st == 13 * 60 && en == 14 * 60);
+			}
+			CHECK(w.now_y > 0 && w.nnow == 0); /* only the dot */
+			/* the margin of the stretched hours is shaded: the band's grey under the hour labels */
+			const struct vhit *tt = find(&w, A_EVENT, -1);
+			CHECK(tt != NULL);
+			/* the smallest lane is a setting: at 110 px the same five fit in lanes */
+			s.min_lane = 110;
+			view_layout(&w, &s, &L, cr);
+			ec = view_ev(&w, cafe->id);
+			CHECK(ec && !ec->ln.rows && ec->ln.lanes == 5);
+			s.min_lane = 160;
+			/* turned, 936 px: five lanes of 160 px fit (board event.more land) */
+			struct view tl = { .per = d, .today = today, .W = 936, .H = 662, .hidden_kind = -1 };
+			view_layout(&tl, &s, &L, cr);
+			ec = view_ev(&tl, cafe->id);
+			CHECK(ec && !ec->ln.rows && ec->ln.lanes == 5 && ec->w >= 160);
+			/* the small widget keeps its hours and folds, never quietly: a bar, named in the head,
+			 * whose tap opens the day */
+			store_choose(&s, d, d.start, "day-diary");
+			struct view sw = { .per = d, .today = today, .W = 936, .H = 420, .hidden_kind = -1 };
+			view_layout(&sw, &s, &L, cr);
+			CHECK(sw.folded > 0 && sw.nfold == 1);
+			if (sw.nfold) {
+				const struct vbox *fb = &sw.fold[0];
+				const struct vhit *th = view_hit(&sw, fb->x + fb->w / 2, fb->y + fb->h / 2);
+				CHECK(th && th->a == A_FOLD && th->arg == d.start);
+				CHECK(fb->h == FOLD_H2 || fb->h == FOLD_H);
+				CHECK(fb->w >= FOLD_TAP_W ? fb->h == FOLD_H : fb->h == FOLD_H2);
+				/* the now line keeps clear of the bar */
+				for (int j = 0; j < sw.nnow; j++)
+					CHECK(!(sw.now_y > fb->y - 2 && sw.now_y < fb->y + fb->h + 2 && sw.now_seg[j][0] < fb->x + fb->w &&
+						sw.now_seg[j][0] + sw.now_seg[j][1] > fb->x));
+			}
+			/* the widget at a larger size: rows first, the rest in a one-line bar */
+			struct view sb = { .per = d, .today = today, .W = 1100, .H = 640, .hidden_kind = -1 };
+			view_layout(&sb, &s, &L, cr);
+			ec = view_ev(&sb, cafe->id);
+			CHECK(sb.nfold == 1 && sb.folded > 0 && sb.folded < 5 && ec && ec->ln.rows);
+			if (sb.nfold)
+				CHECK(sb.fold[0].w >= FOLD_TAP_W && sb.fold[0].h == FOLD_H);
+			/* its tap opens the whole day: every event of the group, none folded */
+			sw.whole = true, sw.whole_day = d.start;
+			view_layout(&sw, &s, &L, cr);
+			CHECK(sw.folded == 0 && sw.nfold == 0);
+			for (int i = 0; i < 5; i++)
+				CHECK(view_ev(&sw, order[i]->id) != NULL);
+			/* the day view never hides an event */
+			CHECK(w.folded == 0);
+			store_choose(&s, d, d.start, "day-agenda");
+		}
+		unsetenv("GLASSINE_PLANNER_NOW");
+		store_delete(&s, pl->id), store_delete(&s, pa->id);
 		store_delete(&s, bank->id), store_delete(&s, cafe->id);
+		/* a long title moved beside the dentist: its words rewrapped to the lane, each inside
+		 * the brackets, the strokes as stored; in free time again, as written (board event.wrap) */
+		{
+			struct entry *co = store_add(&s, E_EVENT, d);
+			co->start = 16 * 60, co->end = 17 * 60;
+			sample_ink(&co->f, "take the coats to the cleaner", 2, 19, 35);
+			view_layout(&w, &s, &L, cr);
+			const struct vev *e = view_ev(&w, co->id);
+			double one = e ? e->ink[2] : 0;
+			float x5 = co->f.s[5].pt[0].x;
+			co->start = 14 * 60 + 30, co->end = 15 * 60 + 30;
+			view_layout(&w, &s, &L, cr);
+			e = view_ev(&w, co->id);
+			CHECK(e && e->ln.lanes == 2 && !e->ln.rows);
+			if (e) {
+				CHECK(e->ink[2] > 0 && e->ink[2] <= e->tw && e->ink[2] < one);
+				CHECK(e->ink[1] >= e->y && e->ink[1] + e->ink[3] <= e->y + e->h + 0.5);
+				CHECK(!e->cut);
+			}
+			CHECK(co->f.s[5].pt[0].x == x5);
+			/* held (being moved): as written, cut at the lane */
+			w.drag = co->id, w.drag_end = 0;
+			view_layout(&w, &s, &L, cr);
+			e = view_ev(&w, co->id);
+			CHECK(e && e->cut);
+			w.drag = 0;
+			/* half an hour with the café around both: shrunk to 70 %, then cut */
+			co->end = 15 * 60;
+			struct entry *c2 = store_add(&s, E_EVENT, d);
+			c2->start = 13 * 60, c2->end = 16 * 60;
+			view_layout(&w, &s, &L, cr);
+			e = view_ev(&w, co->id);
+			CHECK(e && e->cut && e->ink[3] <= e->h);
+			store_delete(&s, c2->id);
+			co->start = 16 * 60, co->end = 17 * 60;
+			view_layout(&w, &s, &L, cr);
+			e = view_ev(&w, co->id);
+			CHECK(e && fabs(e->ink[2] - one) < 1e-6);
+			store_delete(&s, co->id);
+		}
 		/* back to back: the first's end handle and the second's start handle meet halfway */
 		struct entry *a1 = store_add(&s, E_EVENT, d), *a2 = store_add(&s, E_EVENT, d);
 		a1->start = 19 * 60, a1->end = 20 * 60, a2->start = 20 * 60, a2->end = 21 * 60;

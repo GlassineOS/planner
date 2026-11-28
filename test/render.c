@@ -213,7 +213,78 @@ int main(int argc, char **argv)
 			cafe->start = 13 * 60, cafe->end = 16 * 60;
 			sample_ink(&cafe->f, "work from the café", 2, 19, 22);
 			shot(&s, VOICES[vi], &w, "event.stack.three");
+			/* a stroke begun in the gap before the dentist's "[": the dentist's, written where it
+			 * was (the pen still in it); a line down the dentist's lane after it: a new event
+			 * there, which joins the group (board event.route) */
+			{
+				struct field keep = den->f;
+				den->f = (struct field){ 0 };
+				sample_ink(&den->f, "dentist", 2, 19, 31);
+				sample_ink(&den->f, "bring the card", -15, 38, 32);
+				w.focus = den->id;
+				shot(&s, VOICES[vi], &w, "event.route.gap");
+				w.focus = 0;
+				field_free(&den->f);
+				den->f = keep;
+				struct entry *r1 = store_add(&s, E_EVENT, d);
+				r1->start = 15 * 60, r1->end = 16 * 60;
+				shot(&s, VOICES[vi], &w, "event.route.joined");
+				store_delete(&s, r1->id);
+				n += 2;
+			}
+			/* too many at once for lanes: one row each, the hours drawn taller; turned, lanes
+			 * (board event.more) */
+			{
+				struct entry *pl = store_add(&s, E_EVENT, d), *pa = store_add(&s, E_EVENT, d);
+				pl->start = 13 * 60 + 30, pl->end = 15 * 60;
+				sample_ink(&pl->f, "the plumber comes", 2, 19, 33);
+				pa->start = 14 * 60 + 30, pa->end = 15 * 60;
+				sample_ink(&pa->f, "sign for the parcel", 2, 19, 34);
+				shot(&s, VOICES[vi], &w, "event.more.rows");
+				struct view l = { .per = d, .today = today, .W = 936, .H = 662 };
+				shot(&s, VOICES[vi], &l, "event.more.land");
+				store_choose(&s, d, d.start, "day-diary");
+				struct view sm = { .per = d, .today = today, .W = 936, .H = 420 };
+				shot(&s, VOICES[vi], &sm, "event.more.widget");
+				struct view sm2 = { .per = d, .today = today, .W = 540, .H = 420 };
+				shot(&s, VOICES[vi], &sm2, "event.more.widget-small");
+				struct view sm3 = { .per = d, .today = today, .W = 1100, .H = 640 };
+				shot(&s, VOICES[vi], &sm3, "event.more.widget-pref");
+				sm.whole = true, sm.whole_day = d.start; /* its bar tapped: the whole day */
+				shot(&s, VOICES[vi], &sm, "event.more.wday");
+				store_choose(&s, d, d.start, "day-agenda");
+				store_delete(&s, pl->id), store_delete(&s, pa->id);
+				n += 6;
+			}
 			store_delete(&s, bank->id), store_delete(&s, cafe->id);
+			/* a title written in free time, moved beside the dentist: held (as written, cut at
+			 * its lane), dropped (rewrapped by its words), shorter (shrunk), the café around both
+			 * (cut with a fade), its card (the whole title), back in free time (board event.wrap) */
+			{
+				struct entry *co = store_add(&s, E_EVENT, d);
+				co->start = 16 * 60, co->end = 17 * 60;
+				sample_ink(&co->f, "take the coats to the cleaner", 2, 19, 35);
+				shot(&s, VOICES[vi], &w, "event.wrap.written");
+				co->start = 14 * 60 + 30, co->end = 15 * 60 + 30;
+				w.drag = co->id, w.drag_s0 = 16 * 60, w.drag_e0 = 17 * 60, w.drag_end = 0;
+				shot(&s, VOICES[vi], &w, "event.wrap.held");
+				w.drag = 0;
+				shot(&s, VOICES[vi], &w, "event.wrap.dropped");
+				co->end = 15 * 60;
+				shot(&s, VOICES[vi], &w, "event.wrap.short");
+				struct entry *cafe2 = store_add(&s, E_EVENT, d);
+				cafe2->start = 13 * 60, cafe2->end = 16 * 60;
+				sample_ink(&cafe2->f, "work from the café", 2, 19, 22);
+				shot(&s, VOICES[vi], &w, "event.wrap.cut");
+				w.ov = OV_CARD, w.title = co->id;
+				shot(&s, VOICES[vi], &w, "event.wrap.card");
+				w.ov = OV_NONE, w.title = 0;
+				store_delete(&s, cafe2->id);
+				co->start = 16 * 60, co->end = 16 * 60 + 30;
+				shot(&s, VOICES[vi], &w, "event.wrap.back");
+				store_delete(&s, co->id);
+				n += 7;
+			}
 			/* moved by its title (dashed), its end and its start held, held past the first hour */
 			den->start = 15 * 60, den->end = 16 * 60;
 			w.drag = den->id, w.drag_s0 = ds, w.drag_e0 = de, w.drag_end = 0;

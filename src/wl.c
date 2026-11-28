@@ -306,6 +306,28 @@ static bool to_lane(uint32_t k, const struct pl_point *q, int n)
 	note(id);
 	return true;
 }
+/* a stroke whose pen-down lies in the gap between two lanes: the nearest bracket's (FR-018) */
+static bool to_gap(uint32_t k, const struct pl_point *q, int n)
+{
+	uint32_t id = view_gap_at(&P.v, q[0].x, q[0].y);
+	struct entry *e = id ? store_get(&P.s, id) : NULL;
+	const struct vfield *t = e ? view_field_of(&P.v, id) : NULL;
+	if (!t)
+		return false;
+	PL_TR("stroke in the gap: event %u's", id);
+	struct pl_point *r = malloc(n * sizeof *r);
+	if (!r)
+		return false;
+	for (int i = 0; i < n; i++)
+		r[i] = (struct pl_point){ (float)(q[i].x - t->x), (float)(q[i].y - t->y), q[i].p, q[i].t };
+	field_add_stroke(&e->f, k, r, n);
+	free(r);
+	for (struct region *r2 = P.regions; r2; r2 = r2->next)
+		if (r2->entry == id && r2->f.sub == 0)
+			restore(r2, e);
+	note(id);
+	return true;
+}
 static void free_relayout(void *ud)
 {
 	layout();
@@ -347,16 +369,14 @@ static void on_stroke(void *d, struct ghw_region *r, uint32_t k, const struct gh
 				relayout_later();
 				return;
 			}
-			/* outside every bracket at a time an event holds (the gap between lanes, beside
-			 * a narrow lane): no event's, and it makes none */
-			for (int i = 0; i < P.v.nev; i++) {
-				const struct vev *e = &P.v.ev[i];
-				if (P.xpt[0].y >= e->y && P.xpt[0].y < e->y + fmax(e->h, e->th) && e->spine >= rg->f.x - BK_SPINE - 8 &&
-				    e->spine < rg->f.x + rg->f.w) {
-					PL_TR("stroke beside the events at that time: loose, not kept");
-					P.nxs = 0;
-					return;
-				}
+			/* its pen-down in the gap between one lane's "]" and the next one's "[": the nearest
+			 * bracket's event's, its ink where it was written (board event.route); one in a
+			 * lane's empty space is free time below: it makes an event, which joins the group */
+			if (to_gap(k, P.xpt, P.nxs)) {
+				P.nxs = 0;
+				P.dirty = true;
+				relayout_later();
+				return;
 			}
 			P.nxs = 0;
 		}
@@ -931,6 +951,7 @@ static void caret_move(int d)
 
 static void choose_period(struct period p)
 {
+	P.v.whole = false; /* a period chosen: its own template again */
 	P.v.per = p;
 	P.v.ov = OV_NONE;
 	relayout_later();
@@ -1332,6 +1353,10 @@ static void tap_(double x, double y, bool finger)
 		break;
 	}
 	case A_DAY: choose_period((struct period){ P_DAY, h->arg }); break;
+	case A_FOLD: /* the whole day: every event, none folded (board event.more) */
+		choose_period((struct period){ P_DAY, h->arg });
+		P.v.whole = true, P.v.whole_day = h->arg;
+		break;
 	default: break;
 	}
 	(void)finger;
@@ -1417,13 +1442,21 @@ static void delete_done(bool del)
 	relayout_later();
 }
 
-/* the free time field of the agenda an event is in: its minutes per px */
+/* the free time field of the agenda an event is in: its minutes per px where the event
+ * starts (the scale is kept while it is dragged, where hours in rows are drawn taller); 0: none,
+ * or the event is a row (a row isn't moved by its line: its card moves it) */
 static double mpp_of(uint32_t id)
 {
 	struct entry *e = store_get(&P.s, id);
+	const struct vev *ve = view_ev(&P.v, id);
+	if (ve && ve->ln.rows)
+		return 0;
 	for (int i = 0; e && i < P.v.nf; i++)
-		if (P.v.f[i].k == F_FREE && P.v.f[i].per.start == e->per.start)
-			return P.v.f[i].mpp;
+		if (P.v.f[i].k == F_FREE && P.v.f[i].per.start == e->per.start) {
+			const struct vfield *f = &P.v.f[i];
+			double ppm = f->tm.n >= 2 ? tmap_ppm(&f->tm, e->start) : 0;
+			return ppm > 0 ? 1 / ppm : f->mpp;
+		}
 	return 0;
 }
 

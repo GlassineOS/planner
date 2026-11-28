@@ -242,12 +242,12 @@ int main(void)
 		struct entry *y = field_typed(&b, &ne, 0, &mk, "rain all day");
 		CHECK(y && ne == y->id && !strcmp(y->slot, "evening") && !strcmp(y->f.value, "rain all day"));
 		/* the settings */
-		a.neaten = true, a.strength = 0.35f, a.autograph = true;
+		a.neaten = true, a.strength = 0.35f, a.autograph = true, a.min_lane = 200;
 		CHECK(store_save_settings(&a));
 		struct store c;
 		store_init(&c, dir);
 		store_load(&c);
-		CHECK(c.neaten && c.autograph && c.strength > 0.34f && c.strength < 0.36f);
+		CHECK(c.neaten && c.autograph && c.strength > 0.34f && c.strength < 0.36f && c.min_lane == 200);
 		store_free(&a), store_free(&b), store_free(&c);
 	}
 

@@ -171,7 +171,9 @@ int main(void)
 	const struct vhit *blk = event_block(&t, ev->id);
 	CHECK(blk && ef->y == blk->y && ef->h == blk->h); /* the field is the block drawn */
 
-	/* stretched an hour longer: the same region, the block's new height */
+	/* stretched an hour longer: the same region, the block's new height (lanes of 80 px: the
+	 * event it then overlaps stays beside it in a lane, not in rows) */
+	t.s.min_lane = 80;
 	int n0 = made;
 	ev->end += 60;
 	relayout(&t);
