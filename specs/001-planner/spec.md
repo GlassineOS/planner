@@ -217,7 +217,8 @@ it says that it needs the handwriting service and why, and doesn't start.
 - **FR-014**: A field's current text is its reading, with the person's text-mode edits
   applied. When a field's text was changed in text mode, ink mode shows the field word by
   word: words the person did not change keep their ink, and words the person changed or
-  added are set in Autograph in their place. A deleted word's ink is not shown.
+  added are set in Autograph in their place (or written there in the person's hand when they
+  chose that, handwriting spec 007 FR-019). A deleted word's ink is not shown.
 - **FR-015**: Writing more ink into a field that has edited words adds that ink in its place
   and its reading to the current text; the edited words stay as edited.
 - **FR-016**: A field whose ink is erased completely and whose edited text is empty is empty.

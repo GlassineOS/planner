@@ -7,7 +7,8 @@ app: every enabled calendar, outside and read-only calendars, repeating events a
 one occurrence, time zones, and new entries going to the system's default for their kind."
 **Builds on**: [001 the planner](../001-planner/spec.md); GlassineOS/pim spec 001, calendars
 and contacts (the store, its collections and defaults; "pim 001" below); GlassineOS/shell spec
-014 (accounts are set up in Settings); GlassineOS/docs decision 0017.
+014 (accounts are set up in Settings); GlassineOS/docs decision 0017; GlassineOS/handwriting
+spec 007 (another hand for text from elsewhere; "handwriting 007" below).
 
 ## Context
 
@@ -107,6 +108,20 @@ are not counted as hidden entries, and are still synced and shown in other apps.
 the deletion arrives, **Then** the page says "This event was deleted elsewhere." with Keep it (it is
 written again, as it is on the page) and Close.
 
+### Scenario 10 – Outside entries in another hand (Priority: P3)
+
+**Given** the person picked Another hand for outside entries in the planner's settings, **When**
+"team call" arrives from their phone, **Then** the day agenda shows its title written in a neat,
+upright hand that is plainly not theirs, where their own events are their ink. **When** they write
+"bring notes" after it with the pen, **Then** the new words are their ink beside it. **When** they
+change "call" to "meeting" in text mode, **Then** "meeting" is shown as the person's edited words
+are (001 FR-014) and "team" stays in the other hand. **When** they pick Typed again, **Then** the
+outside words are typed in the voice's text face in one refresh of each view.
+
+**Given** the handwriting generator isn't installed, **When** the person opens the planner's
+settings, **Then** Another hand is shown as unavailable with one sentence why, and outside entries
+are typed.
+
 ## Requirements
 
 ### Calendars
@@ -131,7 +146,7 @@ written again, as it is on the page) and Close.
 ### Outside entries
 
 - **FR-010**: An outside entry is shown in the field its kind uses, its text typed in the voice's
-  text face. The person can write into it with the pen and edit it in text mode as any field (001
+  text face, or written in another hand when the person chose it (FR-016). The person can write into it with the pen and edit it in text mode as any field (001
   FR-012, FR-014, FR-015): typed words stay typed, new words are ink.
 - **FR-011**: Outside events show as 001 says for timed and all-day events (001 FR-018, FR-019).
   Their place and notes are shown on the event's page in Where and Notes; their participants as
@@ -152,6 +167,24 @@ written again, as it is on the page) and Close.
 - **FR-015**: When an entry whose card or page is open is changed elsewhere, the card or page shows
   the new version at once; when it is deleted elsewhere, the page says so with Keep it and Close
   (Scenario 9), and a card closes.
+- **FR-016**: **Another hand.** The planner's settings (001 FR-053) have an "Outside entries" row
+  with Typed (the default) and Another hand. With Another hand, the planner hands each outside
+  field's text to its writing region as text from elsewhere (handwriting 007 FR-026), and its words
+  are shown written in the device's other hand (handwriting 007 FR-027), the same hand for every
+  calendar (FR-005: no marking by calendar). Another hand is offered only while the system announces
+  it available (handwriting 007 FR-004); otherwise the row says in one sentence why it isn't
+  ("Another hand needs the handwriting generator, which isn't installed.") and outside entries are
+  typed. When it stops being available, outside entries are typed from the next drawing of each view.
+- **FR-017**: Only the outside text is in the other hand: a word the person changes or adds in text
+  mode is theirs from then on and shown as 001 FR-014 says; ink they write is their ink; a word keeps
+  the other hand until the person changes it, also after the planner is closed and opened. Set in
+  Autograph (001 FR-011) changes only the person's read ink, never the outside words. Read-only and
+  cancelled outside entries (FR-020, FR-011a) are shown in the other hand the same way.
+- **FR-018**: Outside text is written in the other hand once, when it arrives or changes, and kept
+  (handwriting 007 FR-030): drawing, scrolling and opening a period never make it again. Text not
+  ready when its widget is drawn is shown typed and replaced at most once, in one refresh of only
+  that widget, never while the pen writes (FR-014). The entry's text, search and what other apps see
+  are the same with either choice.
 
 ### Read-only calendars
 
@@ -222,6 +255,7 @@ written again, as it is on the page) and Close.
 | iCalendar repeat rules, exceptions and time zones (RFC 5545) | consumed | — | — |
 | Settings' accounts page, opened by its page argument | consumed | 1 | GlassineOS/shell spec 014 FR-001 |
 | Interleaf and the voices | consumed | current | `GlassineOS/ui` |
+| Text from elsewhere in another hand, and its availability | consumed | draft | `GlassineOS/handwriting` spec 007 (FR-004, FR-026, FR-027, FR-030) |
 
 ## Device scope and risk
 
@@ -249,6 +283,10 @@ Host level, against a store with several calendars (a stand-in, or pim 001's tes
   device's zone changes and across a daylight saving change, each at the expected local time;
 - an outside change arriving during a stroke shows only after the pause; a deletion while the page is
   open shows the notice;
+- with Another hand and a stand-in generator: outside words come in the other hand, the person's
+  text-mode edits and ink as with Typed, the mark kept through closing and opening; with the
+  generator unavailable, the row's sentence and typed outside words; the entry's stored text is byte
+  for byte the same with either choice;
 - offscreen renders of the scope cards, the read-only card, the event page with Calendar, "Also:" and
   another zone, and the planner's calendar settings, in each voice.
 
@@ -295,6 +333,10 @@ Hardware: refresh counts when a sync brings changes into an open week, supervise
 - **An outside event longer than the agenda's hours**: shown as 001's Assumptions say for events
   outside the agenda's hours.
 - **The same appointment in two calendars**: two events, side by side in lanes; nothing merges them.
+- **A title of mixed origin** (outside words, the person's ink and the person's typed edits): each
+  part is shown as its own (FR-017), in reading order on the title's line.
+- **The handwriting generator is removed with Another hand chosen**: outside entries are typed from
+  the next drawing of each view; the choice stays and applies again when it comes back.
 
 ## Assumptions
 
@@ -319,6 +361,8 @@ Hardware: refresh counts when a sync brings changes into an open week, supervise
 
 Needed in GlassineOS/ui `designs/planner` before implementation: the scope card after a drag, after
 writing, and on the delete card (three and two choices); the read-only card and page; an outside
-event typed in the day agenda next to a handwritten one; an outside event's page with Calendar,
+event typed in the day agenda next to a handwritten one; the same in another hand, with the person's
+ink and an edited word in its title; the planner's settings with the "Outside entries" row, Another
+hand available and unavailable; an outside event's page with Calendar,
 "Also:" and the other zone's times; the "deleted elsewhere" notice; the planner's settings with the
 calendar list and the line to Settings. Each in portrait and landscape.
