@@ -277,8 +277,8 @@ it says that it needs the handwriting service and why, and doesn't start.
   times, picked, its place (Where), notes and participants (With), written, and Repeat
   (never, daily, weekly, monthly, yearly) and Remind (none, at its start, 15 minutes, an
   hour or a day before), chosen. Every change is kept as it is made; there is no Save.
-  Repeat and Remind are kept with the event as standard calendar properties; repeating it
-  and reminding are not the planner's (out of scope).
+  Repeat and Remind are kept with the event as standard calendar properties; how a repeating
+  event shows and changes is spec 002's, and reminding is not the planner's (out of scope).
 
   An event is deleted only through a card that asks first, "Delete this event?" with the
   title as written, its time and day, Keep and Delete event, which opens in one refresh of
@@ -519,14 +519,13 @@ Hardware: ink latency and refresh counts on a device, supervised.
 ## Out of scope
 
 - The system's calendar and contacts store and its syncing (decision 0017).
-- **Reminders and repeats**, their own spec later:
+- **Reminders**, their own spec later:
   - reminders and notifications;
-  - repeat rules;
   - what happens to unfinished to-dos when their period ends.
+- Repeating events, outside and read-only calendars, and time zones: spec 002.
 - Sharing entries, templates or calendars with other people.
 - Importing from or exporting to other calendars.
 - Undated entries (an inbox or "someday" list).
-- Time zones: times are the device's local wall-clock time.
 
 ## Key entities
 
@@ -613,7 +612,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
   over its time or writing into the agenda's free time, or with a date and time picker.
 - Every image that has the planner has the system's calendar and contacts store.
 - The planner runs in the person's own session; guests see none of its data.
-- One person, one planner: there are no separate calendars to pick from in 001.
+- One person, one planner: it shows every calendar of that person's store (spec 002).
 - The 30-minute step is the same for every agenda.
 - A day agenda shows the hours its settings name; events outside them show as a count at
   its top or bottom edge.
