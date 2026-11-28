@@ -19,8 +19,9 @@ and makes the calendar side possible from what the handwriting service reads in 
 This spec is the planner's handwriting frontend: the views, the fields, the templates and
 widgets, and the data they write. The data live in the system's calendar and contacts
 store (GlassineOS/docs decision 0017), where other apps on the device read and change them
-and from where they are synced (FR-020, FR-025a). Reminders, notifications and repeat rules
-are a separate piece with its own spec later.
+and from where they are synced (FR-020, FR-025a). Repeating events, the person's several
+calendars and time zones are spec 002; reminders and notifications are a separate piece with
+its own spec later.
 
 It depends on the handwriting work in `GlassineOS/handwriting`: writing regions (spec 005),
 the pen and service interfaces they extend (spec 004), and neatening and the person's font,
@@ -271,7 +272,8 @@ it says that it needs the handwriting service and why, and doesn't start.
   `]`. No title is cut with an ellipsis.
 
   A tap on an event's title opens its card under the title (above it when there is no
-  room): the title as written, its time and day, Delete event and Open; a tap outside
+  room): the title as written, its time and day (and its calendar, spec 002 FR-003), Delete
+  event and Open; a tap outside
   closes it. Open turns the screen into the event's page, whose bar holds only Back, to the
   event's day: its title, written with the pen (a finger tap types it, FR-012), its day and
   times, picked, its place (Where), notes and participants (With), written, and Repeat

@@ -138,6 +138,9 @@ written again, as it is on the page) and Close.
   their names, typed, in With. Properties the planner doesn't show (links, attachments, more than
   one reminder, a status) are kept unchanged (001 FR-025a) and listed on the page as "Also:" with
   their names, read-only.
+- **FR-011a**: An outside event marked cancelled shows in its place with its title struck
+  through in a light line and takes its lane as before; its card says "Cancelled". It can be
+  deleted like any event.
 - **FR-012**: Outside to-dos show as to-dos of the day they are due; done or not as they are
   stored. Outside to-dos without a date, and outside journal entries that aren't of a day, stay in
   the store unchanged and are shown by no view; they are not hidden entries.
@@ -176,6 +179,11 @@ written again, as it is on the page) and Close.
   it is open, the occurrence shows the change, dashed for a time change. Tapping outside the card
   keeps a time change from happening (the occurrence goes back) and applies a text change to this
   event only. An occurrence that is already an exception asks the same.
+
+  The card never holds up the pen: it opens only after the pause, the pen may go on writing in
+  the field while it is open, and the answer applies to all the writing in that field until the
+  card is answered or the person leaves the field. Writing a new entry never asks (001 SC-001);
+  only changes to an existing repeating event do.
 - **FR-033**: This event makes or changes this occurrence's exception; This and following events
   ends the series before this occurrence and starts a new one from it with the change; All events
   changes the series and keeps the exceptions' own changes to other properties. Deleting This event
@@ -187,6 +195,9 @@ written again, as it is on the page) and Close.
   changed for This event only has its own ink.
 - **FR-036**: Repeating to-dos show the open occurrence on its due day; ticking it is done for that
   occurrence only, and the next one shows on its day.
+- **FR-037**: Search (001 FR-050) lists a repeating event once, with the date of its next
+  occurrence from today (else its last); an exception whose text differs is listed on its own.
+  Opening a result shows that occurrence's period.
 
 ### Time zones
 
