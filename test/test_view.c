@@ -580,11 +580,48 @@ int main(void)
 			if (sb.nfold)
 				CHECK(sb.fold[0].w >= FOLD_TAP_W && sb.fold[0].h == FOLD_H);
 			/* its tap opens the whole day: every event of the group, none folded */
-			sw.whole = true, sw.whole_day = d.start;
+			CHECK(!find(&sw, A_WHOLE_BACK, -1)); /* the widget's own page has no Back */
+			sw.scroll = 0;
+			view_whole_open(&sw, d.start);
 			view_layout(&sw, &s, &L, cr);
 			CHECK(sw.folded == 0 && sw.nfold == 0);
 			for (int i = 0; i < 5; i++)
 				CHECK(view_ev(&sw, order[i]->id) != NULL);
+			/* with Back first in its bar, left of Day/Week/Month, the period's name after it */
+			const struct vhit *bk = find(&sw, A_WHOLE_BACK, -1), *seg = find(&sw, A_VIEW, P_MONTH);
+			CHECK(bk && seg && bk->x >= 16 && bk->x + bk->w + 12 <= seg->x && bk->h == 40);
+			if (bk)
+				CHECK(view_hit(&sw, bk->x + bk->w / 2, bk->y + bk->h / 2) == bk);
+			/* Back: the page the bar was on (here the same day, in its own template), folded again */
+			CHECK(view_whole_back(&sw) && !sw.whole && sw.per.kind == P_DAY && sw.per.start == d.start);
+			view_layout(&sw, &s, &L, cr);
+			CHECK(sw.nfold == 1 && !find(&sw, A_WHOLE_BACK, -1) && !view_whole_back(&sw));
+			/* the narrowest widget's page: Back still clear of the bar's controls */
+			struct view sn = { .per = d, .today = today, .W = 540, .H = 420, .hidden_kind = -1 };
+			view_whole_open(&sn, d.start);
+			view_layout(&sn, &s, &L, cr);
+			bk = find(&sn, A_WHOLE_BACK, -1), seg = find(&sn, A_VIEW, P_MONTH);
+			CHECK(bk && seg && bk->x + bk->w <= seg->x);
+			/* from a week: Back returns to that week, at the scroll it was left at while the
+			 * keyboard that moved it is still up; once the keyboard went, from the top */
+			struct period wk = period_of(P_WEEK, d.start);
+			struct view sv = { .per = wk, .today = today, .W = 936, .H = 420, .hidden_kind = -1, .scroll = 44, .vis_h = 300 };
+			view_whole_open(&sv, d.start);
+			CHECK(view_whole_shown(&sv) && sv.per.kind == P_DAY && sv.per.start == d.start);
+			view_whole_open(&sv, d.start); /* tapped again from the day: still back to the week */
+			CHECK(view_whole_back(&sv) && sv.per.kind == P_WEEK && sv.per.start == wk.start && sv.scroll == 44);
+			view_whole_open(&sv, d.start);
+			sv.vis_h = 0, sv.scroll = 0;
+			CHECK(view_whole_back(&sv) && sv.per.kind == P_WEEK && sv.scroll == 0);
+			/* another period chosen (Day, Today, the arrows: the period changes, whole cleared):
+			 * Back is gone */
+			view_whole_open(&sv, d.start);
+			sv.per = period_step(sv.per, 1);
+			view_layout(&sv, &s, &L, cr);
+			CHECK(!view_whole_shown(&sv) && !find(&sv, A_WHOLE_BACK, -1) && !view_whole_back(&sv));
+			sv.per = period_of(P_DAY, d.start), sv.whole = false;
+			view_layout(&sv, &s, &L, cr);
+			CHECK(!find(&sv, A_WHOLE_BACK, -1) && !view_whole_back(&sv));
 			/* the day view never hides an event */
 			CHECK(w.folded == 0);
 			store_choose(&s, d, d.start, "day-agenda");

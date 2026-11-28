@@ -250,7 +250,7 @@ int main(int argc, char **argv)
 				shot(&s, VOICES[vi], &sm2, "event.more.widget-small");
 				struct view sm3 = { .per = d, .today = today, .W = 1100, .H = 640 };
 				shot(&s, VOICES[vi], &sm3, "event.more.widget-pref");
-				sm.whole = true, sm.whole_day = d.start; /* its bar tapped: the whole day */
+				view_whole_open(&sm, d.start); /* its bar tapped: the whole day, with Back */
 				shot(&s, VOICES[vi], &sm, "event.more.wday");
 				store_choose(&s, d, d.start, "day-agenda");
 				store_delete(&s, pl->id), store_delete(&s, pa->id);

@@ -642,6 +642,8 @@ static void title_of(const struct view *v, char *main, size_t nm, char *sub, siz
 	}
 }
 
+static UiFont btn_font(const struct look *L);
+
 static void bar(struct ctx *c)
 {
 	const struct look *L = c->L;
@@ -740,19 +742,31 @@ static void bar(struct ctx *c)
 		cairo_restore(c->cr);
 		lk_stroke_box(c->cr, sx, cy - 20, st, 40, L->ui_r, L->voice == V_EDITORIAL ? 1 : 1.5, fg);
 	}
+	/* the whole day opened from a fold bar: Back first (board event.more), to the page the
+	 * bar was on; as the event page's Back */
+	double tx = 16;
+	if (view_whole_shown(v)) {
+		UiFont bf = btn_font(L);
+		double bw = tw(c, &bf, "Back") + 28 + 14;
+		box(c, 16, cy - 20, bw, 40, L->ui_r, L->edge, fg, 0);
+		icon(c, IC_CHEV_L, 16 + 15, cy, 16, fg);
+		tc(c, &bf, "Back", 16 + 24 + (bw - 24) / 2 - 2, cy, 1, 0, fg);
+		hit(c, 16, cy - 20, bw, 40, A_WHOLE_BACK, 0, 0);
+		tx = 16 + bw + 12;
+	}
 	/* the period, as much as fits */
 	char main[64], sub[96];
 	title_of(v, main, sizeof main, sub, sizeof sub);
-	double maxw = sx - 12 - 16;
+	double maxw = fmax(0, sx - 12 - tx);
 	double h1, h2;
 	UiFont f1 = L->h1, f2 = L->sub;
 	ui_text_w(&c->g, &f1, main, &h1);
 	ui_text_w(&c->g, &f2, sub, &h2);
 	double top = cy - (h1 + 1 + h2) / 2;
 	if (c->paint) {
-		ui_text(&c->g, &f1, main, 16, top, 0, maxw, fg, &h1);
+		ui_text(&c->g, &f1, main, tx, top, 0, maxw, fg, &h1);
 		cairo_push_group(c->cr);
-		ui_text(&c->g, &f2, sub, 16, top + h1 + 1, 0, maxw, fg, &h2);
+		ui_text(&c->g, &f2, sub, tx, top + h1 + 1, 0, maxw, fg, &h2);
 		cairo_pop_group_to_source(c->cr);
 		cairo_paint_with_alpha(c->cr, 0.85);
 	}
@@ -3378,7 +3392,7 @@ static void run_(struct ctx *c_)
 		v->nh = 0;
 		int how = 3;
 		const char *id = store_template(s, v->per, &how);
-		if (v->whole && v->per.kind == P_DAY && v->per.start == v->whole_day)
+		if (view_whole_shown(v))
 			id = "day-agenda"; /* opened from a fold bar: the whole day */
 		v->t = tmpl_find(id);
 		if (!v->t || v->t->kind != v->per.kind) {
@@ -3524,6 +3538,33 @@ const struct vfield *view_field_at(const struct view *v, double x, double y)
 			best = f;
 	}
 	return best;
+}
+
+void view_whole_open(struct view *v, int day)
+{
+	if (!view_whole_shown(v)) /* opened again from its own day: the first page is kept */
+		v->whole_from = v->per, v->whole_scroll = v->scroll, v->whole_vis = v->vis_h;
+	v->per = (struct period){ P_DAY, day };
+	v->whole = true, v->whole_day = day;
+	v->ov = OV_NONE;
+}
+
+bool view_whole_shown(const struct view *v)
+{
+	return v->whole && v->per.kind == P_DAY && v->per.start == v->whole_day;
+}
+
+bool view_whole_back(struct view *v)
+{
+	if (!view_whole_shown(v))
+		return false;
+	v->per = v->whole_from;
+	v->whole = false;
+	v->ov = OV_NONE;
+	/* the page moved up only for the keyboard: where it was while that keyboard is still up,
+	 * else all of the page from its top */
+	v->scroll = v->vis_h == v->whole_vis ? v->whole_scroll : 0;
+	return true;
 }
 
 double view_scroll_to(const struct view *v, const struct vfield *f)
