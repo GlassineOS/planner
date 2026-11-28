@@ -19,8 +19,9 @@ and makes the calendar side possible from what the handwriting service reads in 
 This spec is the planner's handwriting frontend: the views, the fields, the templates and
 widgets, and the data they write. The data live in the system's calendar and contacts
 store (GlassineOS/docs decision 0017), where other apps on the device read and change them
-and from where they are synced (FR-020, FR-025a). Reminders, notifications and repeat rules
-are a separate piece with its own spec later.
+and from where they are synced (FR-020, FR-025a). Repeating events, the person's several
+calendars and time zones are spec 002; reminders and notifications are a separate piece with
+its own spec later.
 
 It depends on the handwriting work in `GlassineOS/handwriting`: writing regions (spec 005),
 the pen and service interfaces they extend (spec 004), and neatening and the person's font,
@@ -315,14 +316,15 @@ it says that it needs the handwriting service and why, and doesn't start.
   fade.
 
   A tap on an event's title opens its card under the title (above it when there is no
-  room): the title as written, its time and day, Delete event and Open; a tap outside
+  room): the title as written, its time and day (and its calendar, spec 002 FR-003), Delete
+  event and Open; a tap outside
   closes it. Open turns the screen into the event's page, whose bar holds only Back, to the
   event's day: its title, written with the pen (a finger tap types it, FR-012), its day and
   times, picked, its place (Where), notes and participants (With), written, and Repeat
   (never, daily, weekly, monthly, yearly) and Remind (none, at its start, 15 minutes, an
   hour or a day before), chosen. Every change is kept as it is made; there is no Save.
-  Repeat and Remind are kept with the event as standard calendar properties; repeating it
-  and reminding are not the planner's (out of scope).
+  Repeat and Remind are kept with the event as standard calendar properties; how a repeating
+  event shows and changes is spec 002's, and reminding is not the planner's (out of scope).
 
   An event is deleted only through a card that asks first, "Delete this event?" with the
   title as written, its time and day, Keep and Delete event, which opens in one refresh of
@@ -362,7 +364,7 @@ it says that it needs the handwriting service and why, and doesn't start.
 - **FR-024**: Entries are kept as soon as they are written; a crash, a power loss or a cut
   battery loses at most the stroke being drawn.
 - **FR-025**: Nothing the person writes leaves the device unless the person sets up syncing
-  for the system's store; the planner itself sends nothing anywhere.
+  for the system's store, in Settings; the planner itself sends nothing anywhere.
 - **FR-025a**: Other apps share the entries. Every entry carries its reading in the standard
   text of its kind (title, description, place, participants), so an app that knows nothing of
   ink shows the entry as text. The ink, slot and template choices travel with the entry, and
@@ -576,14 +578,13 @@ Hardware: ink latency and refresh counts on a device, supervised.
 ## Out of scope
 
 - The system's calendar and contacts store and its syncing (decision 0017).
-- **Reminders and repeats**, their own spec later:
+- **Reminders**, their own spec later:
   - reminders and notifications;
-  - repeat rules;
   - what happens to unfinished to-dos when their period ends.
+- Repeating events, outside and read-only calendars, and time zones: spec 002.
 - Sharing entries, templates or calendars with other people.
 - Importing from or exporting to other calendars.
 - Undated entries (an inbox or "someday" list).
-- Time zones: times are the device's local wall-clock time.
 
 ## Key entities
 
@@ -678,7 +679,7 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - The smallest lane is kept with the planner's settings; it needs no control on the page.
 - Every image that has the planner has the system's calendar and contacts store.
 - The planner runs in the person's own session; guests see none of its data.
-- One person, one planner: there are no separate calendars to pick from in 001.
+- One person, one planner: it shows every calendar of that person's store (spec 002).
 - The 30-minute step is the same for every agenda.
 - A day agenda shows the hours its settings name; events outside them show as a count at
   its top or bottom edge.
