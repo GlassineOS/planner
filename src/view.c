@@ -11,6 +11,7 @@
 
 #include "trace.h"
 #include "view.h"
+#include "rewrap.h"
 
 int pl_trace;
 double pl_tr_text_ms, pl_tr_ink_ms, pl_tr_paint_ms, pl_tr_diff_ms;
@@ -20,7 +21,7 @@ int pl_tr_text_n, pl_tr_ink_n;
 #define BAR V_BAR       /* the header bar */
 #define GUTTER 40       /* the agenda's hour gutter */
 #define INK_SIZE 19.0   /* the size ink is written at in a field; smaller places scale it */
-#define TITLE_MIN 11.0  /* the smallest readable size a title shrinks to (the board's 11 px) */
+#define TITLE_MIN (INK_SIZE * RW_LEAST) /* the least a title shrinks to: about 70 % of its written size */
 #define MAXE 256
 
 static const char *DOW[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
@@ -179,7 +180,8 @@ static void ink(struct ctx *c, const struct field *f, double ox, double oy, doub
 	TR_OUT(pl_tr_ink_ms, pl_tr_ink_n);
 }
 /* the strokes and set words of a field, with the source and transform cr has */
-static void ink_paths(cairo_t *cr, const struct field *f, double ox, double oy, double k, bool neat, bool ag)
+static void ink_paths(cairo_t *cr, const struct field *f, double ox, double oy, double k, bool neat, bool ag,
+		      const struct rw_place *pl)
 {
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
@@ -193,6 +195,8 @@ static void ink_paths(cairo_t *cr, const struct field *f, double ox, double oy, 
 		if (wi >= 0 && ag && f->w[wi].set && f->w[wi].npath)
 			continue; /* shown set in Autograph */
 		double dx = wi >= 0 ? f->w[wi].dx * k : 0, dy = wi >= 0 ? f->w[wi].dy * k : 0;
+		if (pl && i < pl->n) /* rewrapped: where its word is placed */
+			dx += pl->dx[i] * k, dy += pl->dy[i] * k;
 		double ks = k < 1 ? fmax(0.6, k) : 1;
 #define W_AT(a, b) fmax(0.9, pl_ink_width(((a).p + (b).p) / 2) * ks)
 		if (s->n == 1) {
@@ -222,12 +226,18 @@ static void ink_paths(cairo_t *cr, const struct field *f, double ox, double oy, 
 		if (!w->set || !w->npath || (w->nks && !ag))
 			continue; /* a read word shown set only while Set in Autograph is on */
 		cairo_new_path(cr);
+		double pdx = 0, pdy = 0; /* rewrapped: moved as the word's first stroke */
+		for (int j = 0; pl && w->nks && j < f->ns && j < pl->n; j++)
+			if (f->s[j].k == w->ks[0]) {
+				pdx = pl->dx[j] * k, pdy = pl->dy[j] * k;
+				break;
+			}
 		/* ops as GHW_PATH_*: 0 move, 1 line, 2 quad, 3 cubic, 4 close, each followed by its
 		 * coordinates (region coordinates) */
 		for (int j = 0; j < w->npath;) {
 			int op = (int)lroundf(w->path[j++]);
-#define PX(n) (ox + w->path[j + (n)] * k)
-#define PY(n) (oy + w->path[j + (n)] * k)
+#define PX(n) (ox + pdx + w->path[j + (n)] * k)
+#define PY(n) (oy + pdy + w->path[j + (n)] * k)
 			if (op == 0 && j + 2 <= w->npath) {
 				cairo_move_to(cr, PX(0), PY(1));
 				j += 2;
@@ -341,7 +351,7 @@ static struct inkc *inkc_get(cairo_t *cr, const struct field *f, double fx, doub
 	cairo_translate(mc, fx - ix, fy - iy);
 	cairo_scale(mc, sc, sc);
 	cairo_set_source_rgba(mc, 0, 0, 0, 1);
-	ink_paths(mc, f, 0, 0, k, neat, ag);
+	ink_paths(mc, f, 0, 0, k, neat, ag, NULL);
 	cairo_destroy(mc);
 	cairo_surface_flush(m);
 	size_t bytes = (size_t)cairo_image_surface_get_stride(m) * ih, total = bytes;
@@ -406,7 +416,7 @@ static void ink_(struct ctx *c, const struct field *f, double ox, double oy, dou
 	}
 	cairo_save(cr);
 	col(cr, c->L->pen);
-	ink_paths(cr, f, ox, oy, k, neat, ag);
+	ink_paths(cr, f, ox, oy, k, neat, ag, NULL);
 	cairo_restore(cr);
 }
 
@@ -1207,20 +1217,94 @@ const struct vev *view_ev(const struct view *v, uint32_t id)
 	return NULL;
 }
 
-/* The timed events of a day agenda that show between its hours ws and we, as bracket pairs in
- * lanes (FR-018): the agenda's box b, its hours' top y0 and their pitch; edge 1 or 2: its hours
- * scrolled up or down while an event is held past them */
-static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int ne, int day, int ws, int we, double y0,
-			  double pitch, int edge, int *before, int *after)
+/* a title's ink drawn from x, y at scale k, placed by pl (NULL: as written), in colour cl, inside
+ * x0..x1 and y0..y1; fade: the last fade px before x1 fade out (a title cut at its "]", with no
+ * "…") */
+static void title_ink(struct ctx *c, const struct field *f, double x, double y, double k, const struct rw_place *pl,
+		      ui_col cl, double x0, double y0, double x1, double y1, double fade)
 {
-	const struct look *L = c->L;
-	struct view *v = c->v;
-	struct entry *vis[64];
-	int s0[64], e0[64], nv = 0;
-	for (int i = 0; i < ne && nv < 64; i++) {
+	if (!c->paint || (!f->ns && !f->nw))
+		return;
+	cairo_t *cr = c->cr;
+	cairo_save(cr);
+	cairo_rectangle(cr, x0, y0, x1 - x0, y1 - y0);
+	cairo_clip(cr);
+	if (!pl && !fade && cl == c->L->pen) {
+		ink(c, f, x, y, k);
+		cairo_restore(cr);
+		return;
+	}
+	bool neat = field_neaten(c->s, f), ag = field_autograph(c->s, f);
+	if (fade > 0)
+		cairo_push_group(cr);
+	col(cr, cl);
+	ink_paths(cr, f, x, y, k, neat, ag, pl);
+	if (fade > 0) {
+		cairo_pattern_t *g = cairo_pop_group(cr), *m = cairo_pattern_create_linear(x1 - fade, 0, x1, 0);
+		cairo_pattern_add_color_stop_rgba(m, 0, 0, 0, 0, 1);
+		cairo_pattern_add_color_stop_rgba(m, 1, 0, 0, 0, 0);
+		cairo_set_source(cr, g);
+		cairo_mask(cr, m);
+		cairo_pattern_destroy(m);
+		cairo_pattern_destroy(g);
+	}
+	cairo_restore(cr);
+}
+
+/* the fade at the end of a cut title (planner.css .pl-evt.is-cut, 30 px) and of a fold bar's
+ * title (20 px) */
+#define CUT_FADE 30
+#define FOLD_FADE 20
+/* the now line (Component.NOW): its dot's middle from the agenda's left edge, how far it keeps
+ * clear of an event across and above or below, the shortest piece of it that is drawn */
+#define NOW_X 26
+#define NOW_CLEAR 4
+#define NOW_CLEAR_Y 6
+#define NOW_LEAST 16
+
+/* The plan of a day agenda's timed events between its hours ws and we (FR-018; boards
+ * event.stack, event.more): which show, their lanes, the groups drawn in rows, and the scale
+ * of its hours (taller where a group is in rows). */
+#define AP_EVS 64
+#define AP_ROWS 16
+struct agrp {
+	int group;          /* the lanes' group number */
+	int gs, ge;         /* its minutes, inside the hours */
+	double y0, y1;      /* its span, px from the hours' top, at the new scale */
+	double p;           /* each row's pitch */
+	int n, shown;       /* its events, those shown (the rest folded) */
+	double bar_y, bar_h; /* the fold bar (shown < n) */
+	bool two;           /* the bar on two lines (a narrow widget) */
+	double scale;       /* how much taller its hours are drawn */
+};
+struct aplan {
+	struct entry *vis[AP_EVS];
+	int s0[AP_EVS], e0[AP_EVS], nv;
+	struct lane ln[AP_EVS];
+	struct tmap tm;
+	bool fixed;         /* its hours can't grow: a small widget at its set size; its rows fold */
+	struct agrp g[AP_ROWS];
+	int ng, folded, timed;
+	double x0, x1;      /* the first lane's "[" and the last "]" */
+};
+
+static const struct agrp *ap_group(const struct aplan *a, int group)
+{
+	for (int i = 0; i < a->ng; i++)
+		if (a->g[i].group == group)
+			return &a->g[i];
+	return NULL;
+}
+
+static void agenda_plan(struct ctx *c, struct wbox *b, struct entry **ev, int ne, int day, int ws, int we, double pitch,
+			int *before, int *after, struct aplan *a)
+{
+	a->nv = a->ng = a->folded = a->timed = 0;
+	for (int i = 0; i < ne && a->nv < AP_EVS; i++) {
 		struct entry *x = ev[i];
 		if (x->allday)
 			continue;
+		a->timed++;
 		int s = (x->per.start - day) * 1440 + x->start, e = (x->per.start - day) * 1440 + x->end;
 		if (e <= ws * 60) {
 			(*before)++;
@@ -1230,101 +1314,300 @@ static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int 
 			(*after)++;
 			continue;
 		}
-		vis[nv] = x, s0[nv] = s, e0[nv] = e, nv++;
+		a->vis[a->nv] = x, a->s0[a->nv] = s, a->e0[a->nv] = e, a->nv++;
 	}
-	struct lane ln[64];
-	lanes_assign(s0, e0, nv, ln);
-	double x0 = b->x + BK_SPINE, x1 = b->x + b->w - BK_RIGHT, ybot = y0 + (we - ws) * pitch;
+	a->x0 = b->x + BK_SPINE, a->x1 = b->x + b->w - BK_RIGHT;
+	int ml = c->s->min_lane > 0 ? c->s->min_lane : BK_MIN_LANE;
+	lanes_assign(a->s0, a->e0, a->nv, lanes_fit(a->x0, a->x1, ml), a->ln);
+	/* the groups in rows, in the order of their start */
+	int gs[AP_ROWS], ge[AP_ROWS];
+	double need[AP_ROWS];
+	for (int i = 0; i < a->nv; i++) {
+		if (!a->ln[i].rows)
+			continue;
+		struct agrp *g = (struct agrp *)ap_group(a, a->ln[i].group);
+		if (!g) {
+			if (a->ng == AP_ROWS)
+				continue;
+			g = &a->g[a->ng++];
+			*g = (struct agrp){ .group = a->ln[i].group, .gs = 1 << 30, .ge = -1, .n = a->ln[i].count };
+		}
+		g->gs = g->gs < a->s0[i] ? g->gs : a->s0[i];
+		g->ge = g->ge > a->e0[i] ? g->ge : a->e0[i];
+	}
+	for (int i = 0; i < a->ng; i++) { /* by start (the groups are apart) */
+		for (int j = i + 1; j < a->ng; j++)
+			if (a->g[j].gs < a->g[i].gs) {
+				struct agrp t = a->g[i];
+				a->g[i] = a->g[j], a->g[j] = t;
+			}
+	}
+	for (int i = 0; i < a->ng; i++) {
+		struct agrp *g = &a->g[i];
+		g->gs = g->gs < ws * 60 ? ws * 60 : g->gs;
+		g->ge = g->ge > we * 60 ? we * 60 : g->ge;
+		gs[i] = g->gs, ge[i] = g->ge, need[i] = g->n * ROW_H + 2 * ROW_PAD;
+	}
+	/* a page's agenda draws the rows' hours taller; a widget at its set size keeps its hours */
+	a->fixed = !b->n->grow;
+	if (a->fixed)
+		tmap_linear(&a->tm, ws * 60, we * 60, pitch);
+	else
+		tmap_stretch(&a->tm, ws * 60, we * 60, pitch, gs, ge, need, a->ng);
+	double w = a->x1 - a->x0 + 2;
+	for (int i = 0; i < a->ng; i++) {
+		struct agrp *g = &a->g[i];
+		g->y0 = round(tmap_y(&a->tm, g->gs)), g->y1 = round(tmap_y(&a->tm, g->ge));
+		double was = (g->ge - g->gs) / 60.0 * pitch;
+		g->scale = was > 0 ? round((g->y1 - g->y0) / was * 2) / 2 : 1;
+		g->two = a->fixed && w < FOLD_TAP_W;
+		g->bar_h = g->two ? FOLD_H2 : FOLD_H;
+		if (a->fixed)
+			rows_place(g->y0, g->y1, g->n, ROW_H_FIXED, g->bar_h, false, &g->p, &g->shown, &g->bar_y);
+		else {
+			/* the day never hides an event: rows as low as a widget's before any fold */
+			rows_place(g->y0, g->y1, g->n, ROW_H, g->bar_h, true, &g->p, &g->shown, &g->bar_y);
+			if (g->shown < g->n)
+				rows_place(g->y0, g->y1, g->n, ROW_H_FIXED, g->bar_h, true, &g->p, &g->shown, &g->bar_y);
+		}
+		a->folded += g->n - g->shown;
+	}
+}
+
+/* a rule drawn across an agenda at y, w wide from x, lw thick: kept for the checks */
+static void agenda_rule(struct view *v, double x, double y, double w, double lw)
+{
+	if (v->nrule < V_RULES)
+		v->rule[v->nrule++] = (struct vbox){ x, y, w, lw };
+}
+
+/* is y (px from the hours' top) inside a group in rows, clear of its ends */
+static bool ap_inside(const struct aplan *a, double y)
+{
+	for (int i = 0; i < a->ng; i++)
+		if (y > a->g[i].y0 + 3 && y < a->g[i].y1 - 3)
+			return true;
+	return false;
+}
+
+/* The timed events of a day agenda as bracket pairs (FR-018), as planned: its box b, its
+ * hours' top y0; edge 1 or 2: its hours scrolled up or down while an event is held past them */
+static void agenda_events(struct ctx *c, struct wbox *b, const struct aplan *a, int day, int ws, int we, double y0,
+			  double pitch, int edge)
+{
+	const struct look *L = c->L;
+	struct view *v = c->v;
+	int nv = a->nv;
+	const struct lane *ln = a->ln;
+	double x0 = a->x0, x1 = a->x1, ybot = y0 + tmap_y(&a->tm, we * 60);
 	int focus_cl = -1;
 	for (int i = 0; i < nv; i++)
-		if (v->focus && vis[i]->id == v->focus)
-			focus_cl = ln[i].cluster;
-	double sp[64], lw[64], yy[64], hh[64];
+		if (v->focus && a->vis[i]->id == v->focus)
+			focus_cl = ln[i].group;
+	double sp[AP_EVS], lw[AP_EVS], yy[AP_EVS], hh[AP_EVS];
+	bool fold[AP_EVS];
 	for (int i = 0; i < nv; i++) {
-		double y1 = y0 + (fmax(s0[i], ws * 60) / 60.0 - ws) * pitch, y2 = y0 + (fmin(e0[i], we * 60) / 60.0 - ws) * pitch;
+		const struct agrp *g = ln[i].rows ? ap_group(a, ln[i].group) : NULL;
+		fold[i] = g && ln[i].order >= g->shown;
+		if (g) { /* its row, in order of start */
+			yy[i] = round(y0 + g->y0 + ROW_PAD + ln[i].order * g->p), hh[i] = g->p - ROW_GAP;
+			lane_x(x0, x1, 0, 1, &sp[i], &lw[i]);
+			continue;
+		}
+		double y1 = y0 + tmap_y(&a->tm, fmax(a->s0[i], ws * 60)), y2 = y0 + tmap_y(&a->tm, fmin(a->e0[i], we * 60));
 		yy[i] = round(y1) + 1, hh[i] = fmax(8, round(y2 - y1) - 2);
 		lane_x(x0, x1, ln[i].lane, ln[i].lanes, &sp[i], &lw[i]);
 	}
 	UiFont wf = L->voice == V_WHITE ? fam(L->mono, 400, 0, 10) : fam(L->text, 400, 1, 12);
 	int first = (*c->nevb);
 	for (int i = 0; i < nv; i++) {
-		struct entry *x = vis[i];
+		if (fold[i])
+			continue;
+		struct entry *x = a->vis[i];
+		bool rows = ln[i].rows, lane = !rows && ln[i].lanes > 1, narrow = lane && lw[i] < BK_NARROW;
 		double tx = sp[i] + BK_TITLE, tw_ = sp[i] + lw[i] - BK_SERIF - 3 - tx;
-		/* the time at the right of its first line, before the "]" */
+		/* the time at the right of its first line, before the "]"; in a narrow lane under the
+		 * title; in a row at the right of its line */
 		char when[20] = "";
 		double whw = 0, th;
 		{
 			char w1[8], w2[8];
-			hm(w1, sizeof w1, s0[i] < 0 ? 0 : s0[i]);
-			hm(w2, sizeof w2, e0[i]);
+			hm(w1, sizeof w1, a->s0[i] < 0 ? 0 : a->s0[i]);
+			hm(w2, sizeof w2, a->e0[i]);
 			snprintf(when, sizeof when, "%s–%s", w1, w2);
 			whw = ui_text_w(&c->g, &wf, when, &th);
 		}
-		double fw = tw_ - (whw > 0 ? whw + 6 + 4 : 0);
-		/* the title's room (FR-018, board event.title): its rows, and the free time below them
-		 * down to the next event that stands under it or the agenda's end. A title that needs
-		 * more grows its field into that room (a dotted lower edge); one that doesn't fit
-		 * shrinks evenly down to the smallest readable size, then is cut before the "]" */
-		double limit = ybot;
-		for (int j = 0; j < nv; j++)
-			if (j != i && s0[j] >= e0[i] && sp[j] < sp[i] + lw[i] && sp[j] + lw[j] > sp[i])
-				limit = fmin(limit, y0 + (s0[j] / 60.0 - ws) * pitch);
-		double room = fmax(hh[i], round(limit) - yy[i] - 1), r, bt, gh = hh[i], k = 1, fh = hh[i];
+		double fw = narrow ? tw_ : tw_ - (whw > 0 ? whw + 6 + 4 : 0);
+		double r, bt, gh = hh[i], k = 1, fh = hh[i], ty = yy[i];
 		bool cut = false, grown = false;
+		struct rw_place pl = { 0 };
+		bool placed = false, writing = v->focus == x->id, moved = v->drag == x->id && !v->drag_end, show_when = !narrow;
 		field_extent(&x->f, &r, &bt);
 		double needw = r + 4, needh = bt + 4;
-		if (pitch < 30) {
+		if (rows) {
+			/* a row: its title on one line at a row's size, cut with a fade (board event.more) */
+			k = writing ? 1 : (a->fixed ? ROW_FS_FIXED : ROW_FS) / INK_SIZE;
+			if (!writing && rw_place(&x->f, 0, &pl)) {
+				placed = true;
+				cut = pl.w * k > fw;
+				ty = yy[i] + hh[i] - 5 - pl.h * k;
+			} else
+				cut = needw * k > fw;
+		} else if (lane) {
+			/* beside another event: the title's words rewrapped to its lane, smaller down to
+			 * about 70 %, then cut (board event.wrap); while it is written in or moved, as written,
+			 * cut at the lane; it doesn't grow into the group's free time */
+			double ah = hh[i] - 6;
+			bool ok = false;
+			if (!writing && !moved && narrow) { /* the time under it only when the whole title fits above */
+				ok = rw_fit(&x->f, fw, ah - th - 4, &pl, &k, &cut);
+				if (ok && (cut || k < 1)) {
+					rw_free(&pl);
+					ok = false;
+				} else if (ok)
+					show_when = true;
+			}
+			if (!ok && !writing && !moved)
+				ok = rw_fit(&x->f, fw, ah, &pl, &k, &cut);
+			if (ok) {
+				placed = true;
+				ty = yy[i] + 4;
+			} else
+				cut = needw > fw;
+		} else if (pitch < 30) {
 			/* a small agenda (a widget at its smallest): the title keeps to one line beside
-			 * its event, cut before the "]" */
+			 * its event */
+			double limit = ybot;
+			for (int j = 0; j < nv; j++)
+				if (j != i && !fold[j] && a->s0[j] >= a->e0[i] && sp[j] < sp[i] + lw[i] && sp[j] + lw[j] > sp[i])
+					limit = fmin(limit, y0 + tmap_y(&a->tm, a->s0[j]));
+			double room = fmax(hh[i], round(limit) - yy[i] - 1);
 			gh = fmin(room, fmax(hh[i], pitch));
 			k = fmax(TITLE_MIN / INK_SIZE, fmin(1, gh / fmax(needh, 1)));
 			cut = needw * k > fw;
 			fh = gh;
-		} else if (needw > fw || needh > hh[i]) {
-			k = fmin(1, fmin(fw / fmax(needw, 1), room / fmax(needh, 1)));
-			if (k < TITLE_MIN / INK_SIZE) {
-				k = TITLE_MIN / INK_SIZE;
-				cut = true;
+		} else {
+			/* the title's room (board event.title): its rows, and the free time below them
+			 * down to the next event that stands under it or the agenda's end. A title that
+			 * needs more grows its field into that room (a dotted lower edge); one that doesn't
+			 * fit shrinks evenly to about 70 % of its written size, then is cut with a fade */
+			double limit = ybot;
+			for (int j = 0; j < nv; j++)
+				if (j != i && !fold[j] && a->s0[j] >= a->e0[i] && sp[j] < sp[i] + lw[i] && sp[j] + lw[j] > sp[i])
+					limit = fmin(limit, j < nv && ln[j].rows ? yy[j] : y0 + tmap_y(&a->tm, a->s0[j]));
+			double room = fmax(hh[i], round(limit) - yy[i] - 1);
+			if (needw > fw || needh > hh[i]) {
+				k = fmin(1, fmin(fw / fmax(needw, 1), room / fmax(needh, 1)));
+				if (k < TITLE_MIN / INK_SIZE) {
+					k = TITLE_MIN / INK_SIZE;
+					cut = true;
+				}
+				gh = fmin(room, fmax(hh[i], ceil(needh * k)));
+				grown = gh > hh[i];
 			}
-			gh = fmin(room, fmax(hh[i], ceil(needh * k)));
-			grown = gh > hh[i];
-		}
-		/* while written, the field reaches a line below its ink, into the room */
-		if (pitch >= 30)
+			/* while written, the field reaches a line below its ink, into the room */
 			fh = k < 1 ? gh : fmin(room, fmax(gh, bt > hh[i] - 6 ? bt + PL_ROW : hh[i]));
-		bool quiet = focus_cl >= 0 && ln[i].cluster == focus_cl && x->id != v->focus;
-		bool moved = v->drag == x->id && !v->drag_end;
+		}
+		bool quiet = focus_cl >= 0 && ln[i].group == focus_cl && x->id != v->focus;
 		brackets(c, sp[i], lw[i], yy[i], hh[i], moved, v->drag == x->id ? v->drag_end : 0, quiet ? L->rule : L->ink);
 		if (grown && c->paint) /* the grown part's lower edge is dotted */
 			lk_rule(c->cr, tx, yy[i] + gh - 1.5, fw, 1.5, L->ink, 2);
-		if (when[0] && c->paint)
-			ui_text(&c->g, &wf, when, tx + tw_ - 4, yy[i] + 4, 2, 0, L->ink, &th);
-		struct vfield *ef = entry_field(c, x, tx, yy[i], fw, fh, 0, 0);
+		double ink_h = placed ? pl.h * k : bt * k;
+		if (when[0] && c->paint) {
+			if (rows)
+				ui_text(&c->g, &wf, when, tx + tw_ - 4, yy[i] + hh[i] - 5 - th, 2, 0, L->ink, &th);
+			else if (narrow) { /* under the title, when the event has room for it */
+				double wy = yy[i] + 4 + fmax(ink_h, 14) + 2;
+				if (show_when && wy + th <= yy[i] + hh[i] - 2)
+					ui_text(&c->g, &wf, when, tx, wy, 0, 0, L->ink, &th);
+			} else
+				ui_text(&c->g, &wf, when, tx + tw_ - 4, yy[i] + 4, 2, 0, L->ink, &th);
+		}
+		struct vfield *ef = entry_field(c, x, tx, yy[i], fw, rows || lane ? hh[i] : fh, 0, 0);
 		if (ef)
 			ef->layer = 1;
 		if (field_empty(&x->f) && c->paint) /* a new event: a dotted line where its title goes */
 			lk_rule(c->cr, tx, yy[i] + fmin(hh[i], PL_ROW) - 1.5, fw, 1.5, L->ink, 2);
-		if (c->paint) {
-			cairo_save(c->cr);
-			cairo_rectangle(c->cr, tx, yy[i], fw, gh);
-			cairo_clip(c->cr);
-			ink(c, &x->f, tx, yy[i], k);
-			cairo_restore(c->cr);
+		{
+			/* as written while the pen writes in it: from its lane's gap, so ink begun there shows */
+			double cx0 = writing || !placed ? fmin(tx, sp[i] - BK_GAP + 2) : tx, cy1 = yy[i] + (rows || lane ? hh[i] : gh);
+			title_ink(c, &x->f, tx, placed ? ty : yy[i], k, placed ? &pl : NULL, L->pen, cx0, yy[i], tx + fw, cy1,
+				  cut ? CUT_FADE : 0);
 		}
 		if (c->evb && (*c->nevb) < V_EVS) {
 			struct vev *e = &c->evb[(*c->nevb)++];
-			*e = (struct vev){ x->id, s0[i], e0[i], ln[i], yy[i], hh[i], sp[i], lw[i], tx, fw, fmax(gh, hh[i]), { 0 }, cut };
-			double a0, b0, a1, b1;
-			ink_box(&x->f, &a0, &b0, &a1, &b1);
-			if (a1 > a0)
-				e->ink[0] = tx + a0 * k, e->ink[1] = yy[i] + b0 * k, e->ink[2] = fmin((a1 - a0) * k, fw - a0 * k),
-				e->ink[3] = (b1 - b0) * k;
+			*e = (struct vev){ x->id, a->s0[i], a->e0[i], ln[i], yy[i], hh[i], sp[i], lw[i], tx, fw,
+					   rows || lane ? hh[i] : fmax(gh, hh[i]), { 0 }, cut };
+			if (placed) {
+				e->ink[0] = tx, e->ink[1] = ty, e->ink[2] = fmin(pl.w * k, fw), e->ink[3] = pl.h * k;
+			} else {
+				double a0, b0, a1, b1;
+				ink_box(&x->f, &a0, &b0, &a1, &b1);
+				if (a1 > a0)
+					e->ink[0] = tx + a0 * k, e->ink[1] = yy[i] + b0 * k, e->ink[2] = fmin((a1 - a0) * k, fw - a0 * k),
+					e->ink[3] = fmin((b1 - b0) * k, e->th - b0 * k);
+			}
+		}
+		if (placed)
+			rw_free(&pl);
+	}
+	/* the rows that don't fit a small widget: one black bar inside the group, never quiet: their
+	 * number, their times and the first one's title; a tap opens the day (board event.more) */
+	for (int gi = 0; gi < a->ng; gi++) {
+		const struct agrp *g = &a->g[gi];
+		if (g->shown >= g->n)
+			continue;
+		int s = 1 << 30, e = -1, nf = g->n - g->shown;
+		const struct entry *f1 = NULL;
+		for (int i = 0; i < nv; i++)
+			if (ln[i].rows && ln[i].group == g->group && fold[i]) {
+				s = s < a->s0[i] ? s : a->s0[i], e = e > a->e0[i] ? e : a->e0[i];
+				if (ln[i].order == g->shown)
+					f1 = a->vis[i];
+			}
+		double bx = x0 - 1, bw = x1 - x0 + 2, by = round(y0 + g->bar_y), bh = g->bar_h;
+		hit(c, bx, by, bw, bh, A_FOLD, day, 0);
+		if (c->v->nfold < V_FOLDS)
+			c->v->fold[c->v->nfold++] = (struct vbox){ bx, by, bw, bh };
+		if (!c->paint)
+			continue;
+		lk_rect(c->cr, bx, by, bw, bh, 3);
+		lk_fill(c->cr, L->ink);
+		char t[24], w[24], w1[8], w2[8];
+		snprintf(t, sizeof t, "+%d more", nf);
+		hm(w1, sizeof w1, s < 0 ? 0 : s);
+		hm(w2, sizeof w2, e);
+		snprintf(w, sizeof w, "%s–%s", w1, w2);
+		UiFont nf_ = fam(L->mono, 600, 0, 11.5f), wf2 = fam(L->mono, 400, 0, 10), tf = fam(L->mono, 500, 0, 10);
+		double h1, h2, h3;
+		double nw = ui_text_w(&c->g, &nf_, t, &h1), ww = ui_text_w(&c->g, &wf2, w, &h2);
+		double ly = g->two ? by + 6 : by + bh / 2 - h1 / 2;
+		ui_text(&c->g, &nf_, t, bx + 8, ly, 0, 0, L->paper, &h1);
+		ui_text(&c->g, &wf2, w, bx + 8 + nw + 8, ly + (h1 - h2) / 2, 0, 0, L->paper, &h2);
+		double ix = g->two ? bx + 8 : bx + 8 + nw + 8 + ww + 8, iy, ir = bx + bw - 8;
+		if (!g->two) {
+			double tw = ui_text_w(&c->g, &tf, "tap to show", &h3);
+			ui_text(&c->g, &tf, "tap to show", bx + bw - 8, by + bh / 2 - h3 / 2, 2, 0, L->paper, &h3);
+			ir = bx + bw - 8 - tw - 8;
+		}
+		if (f1 && ir > ix + 8) {
+			double kf = FOLD_FS / INK_SIZE, fr, fb;
+			field_extent(&f1->f, &fr, &fb);
+			struct rw_place fp;
+			bool ok = rw_place(&f1->f, 0, &fp);
+			iy = g->two ? by + 6 + h1 + 4 : by + bh / 2 - (ok ? fp.h : 14) * kf / 2;
+			title_ink(c, &f1->f, ix, iy, kf, ok ? &fp : NULL, L->paper, ix, by, ir, by + bh,
+				  (ok ? fp.w : fr) * kf > ir - ix ? FOLD_FADE : 0);
+			if (ok)
+				rw_free(&fp);
 		}
 	}
 	/* the touch targets: each event's ends first (they lie over the title's corners), then its
-	 * title, which takes its lane between the brackets */
+	 * title, which takes its lane between the brackets; a row has no ends */
 	for (int i = first; i < (*c->nevb); i++) {
 		const struct vev *e = &c->evb[i];
+		if (e->ln.rows)
+			continue;
 		double hx, hw;
 		lane_end_hit(e->spine, e->ln.lane, &hx, &hw);
 		/* an event that ends where another in its place starts: their handles meet halfway */
@@ -1370,7 +1653,7 @@ static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int 
 	/* a bracket being drawn down the margin: dashed, the whole width, its start's and its
 	 * end's readouts (board event.draw) */
 	if (v->draw_on && v->draw_day == day) {
-		double y1 = y0 + (v->draw_s / 60.0 - ws) * pitch, y2 = y0 + (v->draw_e / 60.0 - ws) * pitch;
+		double y1 = y0 + tmap_y(&a->tm, v->draw_s), y2 = y0 + tmap_y(&a->tm, v->draw_e);
 		double sx, sw;
 		lane_x(x0, x1, 0, 1, &sx, &sw);
 		brackets(c, sx, sw, round(y1) + 1, fmax(8, round(y2 - y1) - 2), true, 0, L->ink);
@@ -1380,6 +1663,82 @@ static void agenda_events(struct ctx *c, struct wbox *b, struct entry **ev, int 
 		hm(t, sizeof t, v->draw_e);
 		readout(c, b->x, round(y2) + 3, t);
 	}
+}
+
+/* the now line at y (FR-018, board event.more): its dot in the hour margin, the line broken
+ * around every event and fold bar it would cross, a piece shorter than NOW_LEAST left out */
+static void now_line(struct ctx *c, struct wbox *b, double y, int first)
+{
+	struct view *v = c->v;
+	double cut[V_EVS + V_FOLDS][2];
+	int nc = 0;
+	for (int i = first; i < (*c->nevb); i++) {
+		const struct vev *e = &c->evb[i];
+		double bot = fmax(e->y + fmax(e->h, e->th), e->ink[2] > 0 ? e->ink[1] + e->ink[3] : 0);
+		double l = fmin(e->spine - 1, e->ink[2] > 0 ? e->ink[0] : 1e9);
+		if (y >= e->y - NOW_CLEAR_Y && y <= bot + NOW_CLEAR_Y)
+			cut[nc][0] = l - NOW_CLEAR, cut[nc++][1] = e->spine + e->w + 2 + NOW_CLEAR;
+	}
+	for (int i = 0; i < v->nfold; i++) {
+		const struct vbox *f = &v->fold[i];
+		if (y >= f->y - NOW_CLEAR_Y && y <= f->y + f->h + NOW_CLEAR_Y)
+			cut[nc][0] = f->x - NOW_CLEAR, cut[nc++][1] = f->x + f->w + NOW_CLEAR;
+	}
+	for (int i = 0; i < nc; i++) /* by their left end */
+		for (int j = i + 1; j < nc; j++)
+			if (cut[j][0] < cut[i][0]) {
+				double t0 = cut[i][0], t1 = cut[i][1];
+				cut[i][0] = cut[j][0], cut[i][1] = cut[j][1], cut[j][0] = t0, cut[j][1] = t1;
+			}
+	v->now_y = y, v->now_dot = b->x + NOW_X, v->nnow = 0;
+	double x = b->x + NOW_X, end = b->x + b->w;
+	for (int i = 0; i <= nc; i++) {
+		double to = i < nc ? cut[i][0] : end;
+		if (to - x >= NOW_LEAST && v->nnow < 16)
+			v->now_seg[v->nnow][0] = x, v->now_seg[v->nnow][1] = to - x, v->nnow++;
+		if (i < nc)
+			x = fmax(x, cut[i][1]);
+	}
+	if (!c->paint)
+		return;
+	for (int i = 0; i < v->nnow; i++)
+		lk_rule(c->cr, v->now_seg[i][0], y - 1, v->now_seg[i][1], 2, c->L->ink, 0);
+	cairo_arc(c->cr, b->x + NOW_X, y, 4, 0, 2 * M_PI);
+	lk_fill(c->cr, c->L->ink);
+}
+
+/* a group in rows, in the hour margin (board event.more): its stretched hours shaded, a break
+ * across the margin at both ends and its scale at the foot ("2×") */
+static void stretch_marks(struct ctx *c, struct wbox *b, const struct agrp *g, double y0)
+{
+	if (!c->paint)
+		return;
+	const struct look *L = c->L;
+	double top = y0 + g->y0, h = g->y1 - g->y0, mw = BK_SPINE - 2;
+	lk_bar(c->cr, b->x, top, mw, h, L->rule);
+	cairo_save(c->cr);
+	col(c->cr, L->ink);
+	cairo_set_line_width(c->cr, L->voice == V_STATIONERY ? 2 : 2.5);
+	cairo_set_line_join(c->cr, CAIRO_LINE_JOIN_MITER);
+	for (int end = 0; end < 2; end++) {
+		double zy = end ? top + h : top;
+		cairo_move_to(c->cr, b->x, zy);
+		for (int i = 0; i < 6; i++)
+			cairo_rel_line_to(c->cr, mw / 6, i % 2 ? 5 : -5);
+		cairo_stroke(c->cr);
+	}
+	cairo_restore(c->cr);
+	char t[12];
+	if (fabs(g->scale - round(g->scale)) < 0.01)
+		snprintf(t, sizeof t, "%.0f×", g->scale);
+	else
+		snprintf(t, sizeof t, "%.1f×", g->scale);
+	UiFont f = fam(L->mono, 700, 0, 10);
+	double th, tw = ui_text_w(&c->g, &f, t, &th);
+	double cx = b->x + mw - 2 - tw - 6, cy = top + h - 8 - th - 4;
+	lk_rect(c->cr, cx, cy, tw + 6, th + 4, 2);
+	lk_fill(c->cr, L->ink);
+	ui_text(&c->g, &f, t, cx + 3, cy + 2, 0, 0, L->paper, &th);
 }
 
 static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
@@ -1427,10 +1786,21 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			sh = 24 - we;
 		ws += sh, we += sh;
 	}
-	if (!compact) { /* its hours, as they show while an event is held past them */
-		char tag[32];
-		snprintf(tag, sizeof tag, "%02d:00–%02d:00", edge ? ws : b->n->from, edge ? we : b->n->to);
+	/* its timed events planned first: a group in rows draws its hours taller */
+	static struct aplan ap;
+	int before = 0, after = 0;
+	if (!compact)
+		agenda_plan(c, b, ev, ne, day, ws, we, pitch, &before, &after, &ap);
+	else
+		tmap_linear(&ap.tm, ws * 60, we * 60, pitch), ap.ng = 0, ap.folded = 0;
+	if (!compact) { /* its hours, as they show while an event is held past them; a fold is named */
+		char tag[40];
+		if (ap.folded)
+			snprintf(tag, sizeof tag, "%d events, %d folded", ap.timed, ap.folded);
+		else
+			snprintf(tag, sizeof tag, "%02d:00–%02d:00", edge ? ws : b->n->from, edge ? we : b->n->to);
 		head(c, b, "Agenda", tag, hh);
+		v->folded += ap.folded;
 	}
 	double by = b->y + hh, gut = compact ? 16 : GUTTER;
 	if (c->paint) {
@@ -1438,14 +1808,28 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 		lk_rect(c->cr, b->x, b->y, b->w, b->h, L->wg_r);
 		cairo_clip(c->cr);
 	}
+	for (int i = 0; !compact && !ap.fixed && i < ap.ng; i++) /* the stretched hours marked in the margin */
+		stretch_marks(c, b, &ap.g[i], by + top);
+	/* inside a group in rows the hour rules stay in the margin: in a page's agenda bold ticks
+	 * at the new scale, in a widget plain (board event.more) */
 	for (int h = ws; h <= we; h++) {
-		double y = round(by + top + (h - ws) * pitch);
+		double ry = tmap_y(&ap.tm, h * 60), y = round(by + top + ry);
+		bool in = ap_inside(&ap, ry), bold = in && !ap.fixed;
 		if (c->paint)
-			lk_rule(c->cr, b->x, y, b->w, 1, L->rule, 0);
+			lk_rule(c->cr, b->x, y - (bold ? 0.5 : 0), in ? BK_SPINE - 2 : b->w, bold ? 2 : 1, bold ? L->ink : L->rule, 0);
+		if (!compact)
+			agenda_rule(v, b->x, y, in ? BK_SPINE - 2 : b->w, bold ? 2 : 1);
 		if (h < we) {
-			double hy = round(by + top + (h - ws + 0.5) * pitch);
-			if (c->paint)
-				lk_rule(c->cr, b->x + gut, hy, b->w - gut, 1, L->rule, 2);
+			double rh = tmap_y(&ap.tm, h * 60 + 30), hy = round(by + top + rh);
+			bool hin = ap_inside(&ap, rh), hb = hin && !ap.fixed;
+			if (c->paint) {
+				if (hin)
+					lk_rule(c->cr, b->x + 18, hy - (hb ? 0.5 : 0), 16, hb ? 2 : 1, hb ? L->ink : L->rule, hb ? 0 : 2);
+				else
+					lk_rule(c->cr, b->x + gut, hy, b->w - gut, 1, L->rule, 2);
+			}
+			if (!compact)
+				agenda_rule(v, hin ? b->x + 18 : b->x + gut, hy, hin ? 16 : b->w - gut, hb ? 2 : 1);
 			char t[4];
 			if (compact) {
 				if (h % 3 == 0) {
@@ -1459,9 +1843,12 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			} else {
 				snprintf(t, sizeof t, "%02d", h);
 				double th;
-				ui_text_w(&c->g, &L->small, t, &th);
+				UiFont hf = L->small;
+				if (bold)
+					hf.weight = 700;
+				ui_text_w(&c->g, &hf, t, &th);
 				if (c->paint)
-					ui_text(&c->g, &L->small, t, b->x + 6, y + 2, 0, 0, L->soft, &th);
+					ui_text(&c->g, &hf, t, b->x + 6, y + 2, 0, 0, bold ? L->ink : L->soft, &th);
 			}
 		}
 	}
@@ -1481,15 +1868,31 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 	}
 	/* the free time: drawing a block there makes an event (FR-018) */
 	if (!compact) {
-		struct vfield *f = field(c, F_FREE, b->x + GUTTER, by + top, b->w - GUTTER - 6, (we - ws) * pitch);
+		struct vfield *f = field(c, F_FREE, b->x + GUTTER, by + top, b->w - GUTTER - 6, tmap_y(&ap.tm, we * 60));
 		if (f) {
 			snprintf(f->name, sizeof f->name, "free:%d:%d", day, (int)(b->x * 1000 + b->y));
 			f->per = (struct period){ P_DAY, day };
 			f->min0 = ws * 60;
 			f->mpp = 60 / pitch;
+			f->tm = ap.tm;
+		}
+		/* each row on its own ruled line across the writing area; one that would double the
+		 * group's last hour rule is left out */
+		for (int i = 0; i < ap.ng; i++) {
+			const struct agrp *g = &ap.g[i];
+			for (int r = 1; r <= g->shown; r++) {
+				double ry = round(by + top + g->y0 + ROW_PAD + r * g->p - ceil(ROW_GAP / 2.0));
+				if (r < g->n || by + top + g->y1 - ry > 6) {
+					if (c->paint)
+						lk_rule(c->cr, ap.x0, ry, ap.x1 - ap.x0, 1, L->rule, 0);
+					agenda_rule(v, ap.x0, ry, ap.x1 - ap.x0, 1);
+				}
+			}
 		}
 	}
+	int first_ev = *c->nevb;
 	/* now */
+	double now_y = 0;
 	if (day == v->today && !compact) {
 		const char *e = getenv("GLASSINE_PLANNER_NOW"); /* renders: minutes of the day */
 		int now;
@@ -1501,19 +1904,14 @@ static void w_agenda(struct ctx *c, struct wbox *b, bool compact)
 			localtime_r(&t, &tm);
 			now = tm.tm_hour * 60 + tm.tm_min;
 		}
-		if (now >= ws * 60 && now <= we * 60) {
-			double ny = by + top + (now / 60.0 - ws) * pitch;
-			if (c->paint) {
-				lk_rule(c->cr, b->x + 34, ny - 1, b->w - 34, 2, L->ink, 0);
-				cairo_arc(c->cr, b->x + 34, ny, 4, 0, 2 * M_PI);
-				lk_fill(c->cr, L->ink);
-			}
-		}
+		if (now >= ws * 60 && now <= we * 60)
+			now_y = by + top + tmap_y(&ap.tm, now);
 	}
 	/* timed events: a compact agenda's as blocks, a full one's as bracket pairs in lanes */
-	int before = 0, after = 0;
 	if (!compact)
-		agenda_events(c, b, ev, ne, day, ws, we, by + top, pitch, edge, &before, &after);
+		agenda_events(c, b, &ap, day, ws, we, by + top, pitch, edge);
+	if (now_y > 0) /* after the events: it breaks around them */
+		now_line(c, b, now_y, first_ev);
 	for (int i = 0; compact && i < ne; i++) {
 		struct entry *x = ev[i];
 		if (x->allday)
@@ -1593,6 +1991,7 @@ static void page(struct ctx *c)
 		grid_solve(v->t, pw, ph, v->land, need_of, c, &v->g);
 		*c->evs_out = true; /* the agendas' events laid out anew */
 	}
+	v->nfold = v->nnow = v->folded = v->nrule = 0, v->now_y = 0;
 	if (c->paint) {
 		cairo_rectangle(c->cr, 0, BAR, v->W, v->H - BAR);
 		lk_fill(c->cr, c->L->paper);
@@ -2979,6 +3378,8 @@ static void run_(struct ctx *c_)
 		v->nh = 0;
 		int how = 3;
 		const char *id = store_template(s, v->per, &how);
+		if (v->whole && v->per.kind == P_DAY && v->per.start == v->whole_day)
+			id = "day-agenda"; /* opened from a fold bar: the whole day */
 		v->t = tmpl_find(id);
 		if (!v->t || v->t->kind != v->per.kind) {
 			v->t = tmpl_default(v->per.kind);
@@ -3149,15 +3550,22 @@ const struct vfield *view_field_of(const struct view *v, uint32_t entry)
  * ink is written at) over at least an hour, and three times as tall as it is wide */
 #define BLOCK_MIN (3 * INK_SIZE)
 
+/* the minute at y (field coordinates) of free time f, at its scale */
+static double free_min(const struct vfield *f, double y)
+{
+	return f->tm.n >= 2 ? tmap_min(&f->tm, y) : f->min0 + y * f->mpp;
+}
+
 bool view_free_block(const struct vfield *f, const struct pl_point *p, int n, int *start, int *end)
 {
 	double x0 = p[0].x, x1 = p[0].x, y0 = p[0].y, y1 = p[0].y;
 	for (int i = 1; i < n; i++)
 		x0 = fmin(x0, p[i].x), x1 = fmax(x1, p[i].x), y0 = fmin(y0, p[i].y), y1 = fmax(y1, p[i].y);
 	double h = y1 - y0;
-	bool block = h >= BLOCK_MIN && h * f->mpp >= 60 && h >= 3 * (x1 - x0);
-	int s = (int)floor((f->min0 + fmax(0, y0) * f->mpp) / 30) * 30;
-	int e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
+	double m0 = free_min(f, fmax(0, y0)), m1 = free_min(f, y1);
+	bool block = h >= BLOCK_MIN && m1 - m0 >= 60 && h >= 3 * (x1 - x0);
+	int s = (int)floor(m0 / 30) * 30;
+	int e = (int)ceil(m1 / 30) * 30;
 	if (!block) /* writing: an hour from the half hour it starts in (its title grows below) */
 		e = s + 60;
 	if (e - s < 30)
@@ -3684,7 +4092,7 @@ void view_margin_span(const struct vfield *f, double y0, double y1, int *start, 
 		double t = y0;
 		y0 = y1, y1 = t;
 	}
-	int s = (int)floor((f->min0 + y0 * f->mpp) / 30) * 30, e = (int)ceil((f->min0 + y1 * f->mpp) / 30) * 30;
+	int s = (int)floor(free_min(f, y0) / 30) * 30, e = (int)ceil(free_min(f, y1) / 30) * 30;
 	s = s < 0 ? 0 : s > 24 * 60 - 30 ? 24 * 60 - 30 : s;
 	e = e > 24 * 60 ? 24 * 60 : e;
 	if (e < s + 30)
@@ -3700,6 +4108,23 @@ uint32_t view_lane_at(const struct view *v, double x, double y)
 			return e->id;
 	}
 	return 0;
+}
+
+uint32_t view_gap_at(const struct view *v, double x, double y)
+{
+	uint32_t best = 0;
+	double bd = 1e9;
+	for (int i = 0; i < v->nev; i++) {
+		const struct vev *e = &v->ev[i];
+		if (e->ln.rows || e->ln.lanes < 2 || y < e->y || y >= e->y + fmax(e->h, e->th))
+			continue;
+		/* left of its "[" (the gap after the lane before) or right of its "]" (before the next) */
+		double dl = e->spine - 1 - x, dr = x - (e->spine + e->w + 1);
+		double d = dl >= 0 && dl <= BK_GAP && e->ln.lane > 0 ? dl : dr >= 0 && dr <= BK_GAP && e->ln.lane < e->ln.lanes - 1 ? dr + 0.01 : 1e9;
+		if (d < bd)
+			bd = d, best = e->id;
+	}
+	return best;
 }
 
 bool view_covered(const struct view *v, const struct vfield *f)

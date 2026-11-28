@@ -46,8 +46,10 @@ struct vfield {
 	double x, y, w, h;  /* surface coordinates */
 	double guide, first; /* ruled lines in region coordinates (0: none) */
 	int layer;
-	/* F_FREE: minutes of the day at y and per px */
+	/* F_FREE: minutes of the day at y and per px (its first hour's), and its scale: minutes to y
+	 * (from the field's top) and back, taller where a group is drawn in rows */
 	double min0, mpp;
+	struct tmap tm;
 };
 
 enum act {
@@ -71,6 +73,7 @@ enum act {
 	 * − or + (arg 0 start −, 1 start +, 2 end −, 3 end +), Repeat's and Remind's choices (arg
 	 * the choice), Delete event (it asks first: arg 1 the dialog's Delete event, 2 its Keep) */
 	A_PG_BACK, A_PG_DAY, A_PG_TIME, A_PG_REPEAT, A_PG_REMIND, A_PG_DELETE,
+	A_FOLD, /* a small agenda's fold bar, arg its day: the whole day, every event in it (board event.more) */
 };
 struct vhit {
 	double x, y, w, h;
@@ -93,6 +96,11 @@ struct vev {
 	bool cut;              /* its title cut at the closing bracket */
 };
 #define V_EVS 64
+#define V_FOLDS 8
+#define V_RULES 160
+struct vbox {
+	double x, y, w, h;
+};
 
 #define V_FIELDS 160
 /* the header bar's height (logical px): 60, and taller by as much as its title and its
@@ -126,6 +134,21 @@ struct view {
 	/* the day agendas' events as laid out */
 	struct vev ev[V_EVS];
 	int nev;
+	/* the now line as the last layout drew it (FR-018, board event.more): its y (0: none), its
+	 * dot's middle, and the pieces of it left between the events and fold bars it breaks
+	 * around (x, width); the events folded into a small agenda's bars */
+	double now_y, now_dot;
+	double now_seg[16][2];
+	int nnow;
+	int folded;
+	struct vbox fold[V_FOLDS]; /* the fold bars */
+	struct vbox rule[V_RULES]; /* the day agendas' hour, half-hour and row rules as drawn (h: their width) */
+	int nrule;
+	int nfold;
+	/* the whole day opened from a fold bar: day whole_day shows the day agenda's template
+	 * (every event of the day) until another period is chosen */
+	bool whole;
+	int whole_day;
 	/* the event the pen writes in, or hovers over: the other brackets of its cluster grey */
 	uint32_t focus;
 	/* a bracket being drawn with the pen down the hour margin (board event.draw): its day, its
@@ -218,6 +241,10 @@ uint32_t view_strike(const struct view *v, const struct pl_point *p, int n);
 const struct vfield *view_margin_at(const struct view *v, double x, double y);
 /* the event whose lane holds x, y (page coordinates) and the field it writes into there, else 0 */
 uint32_t view_lane_at(const struct view *v, double x, double y);
+/* the event whose bracket is nearest x, y (page coordinates) when x lies in the gap between
+ * one lane's "]" and the next lane's "[" of a group at that y (the "[" at the same distance),
+ * else 0 (board event.route) */
+uint32_t view_gap_at(const struct view *v, double x, double y);
 /* a line drawn down the hour margin of free time f from page y0 to y1 (either way): the
  * event's minutes, from the half hour it began in to the half hour it reached, at least 30
  * (board event.draw) */

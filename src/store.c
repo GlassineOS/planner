@@ -344,6 +344,7 @@ void store_init(struct store *s, const char *dir)
 	memset(s, 0, sizeof *s);
 	s->next_id = 1;
 	s->strength = 0.65f;
+	s->min_lane = 160; /* BK_MIN_LANE */
 	s->dir = dir ? strdup(dir) : NULL;
 }
 
@@ -1636,8 +1637,8 @@ bool store_save_settings(struct store *s)
 		return true;
 	mkdirs(s->dir);
 	char b[256];
-	snprintf(b, sizeof b, "# the planner's settings\nneaten %d\nstrength %.2f\nautograph %d\n", s->neaten, s->strength,
-		 s->autograph);
+	snprintf(b, sizeof b, "# the planner's settings\nneaten %d\nstrength %.2f\nautograph %d\nmin_lane %d\n", s->neaten,
+		 s->strength, s->autograph, s->min_lane);
 	return write_atomic(s->dir, "settings.conf", b);
 }
 
@@ -1681,6 +1682,8 @@ bool store_load(struct store *s)
 				s->autograph = v != 0;
 			else if (sscanf(l, "strength %f", &f) == 1 && f >= 0 && f <= 1)
 				s->strength = f;
+			else if (sscanf(l, "min_lane %d", &v) == 1 && v >= 80 && v <= 800)
+				s->min_lane = v; /* the agenda's smallest lane, logical px */
 		}
 		free(t);
 	}

@@ -56,11 +56,16 @@ written, and a moment later searching for "dentist" finds it. No converted text 
 anywhere on the page. **When** the title is longer than the hour holds, **Then** its title
 field grows into the free time below the brackets and the event still ends at 15:00.
 **When** another event later takes that free time, **Then** the title shrinks evenly to fit,
-and if even its smallest readable size doesn't fit, it is cut before the `]`; a tap on it
-opens the event's card, which shows the whole title. **When** a call to the bank from 14:30
-to 15:30 is added, **Then** both events stand side by side in two equal lanes for as long as
-either runs, the dentist in the first, and a stroke belongs to the lane its pen-down point is
-in.
+and if even about 70 % of its written size doesn't fit, it is cut with a fade before the `]`;
+a tap on it opens the event's card, which shows the whole title. **When** a call to the bank
+from 14:30 to 15:30 is added, **Then** both events stand side by side in two equal lanes for
+as long as either runs, the dentist in the first, and a stroke belongs to the lane its
+pen-down point is in. **When** a title written in free time on one line is moved beside the
+dentist, **Then** its words are placed again onto the lines of its lane, each word's ink as
+written; moved back into free time, it is one line again. **When** five events run at once
+and their lanes would be narrower than about 4 cm, **Then** each gets a row of its own across
+the width and those hours are drawn at least twice as tall, marked in the hour margin; no
+event is hidden.
 
 ### Scenario 2 – Move and stretch an event without writing (Priority: P1)
 
@@ -252,23 +257,62 @@ it says that it needs the handwriting service and why, and doesn't start.
   box and no fill; its title is written between them. Events that overlap, one through the
   next, split the width into equal lanes for the whole span of the group, the first start
   in the first lane (the longer one first at the same start), each taking the first lane
-  free at its start, at most three lanes (a fourth at the same time shares the third).
-  Each lane holds one event's brackets and its title at its start; neighbours meet as
-  `] [` 12 px apart, and the hour lines run on across. A stroke belongs to the event whose
-  lane holds its pen-down point, never to two. A stroke that comes down outside every
-  bracket at a time an event already holds (the gap between lanes, beside a narrow lane)
-  belongs to no event and makes none; it is not kept. While the pen writes in a lane, the other brackets of its group are light grey,
-  black again about a second after the pen lifts; a pen that reports hover shows the same
-  before it touches. The end handles of a lane after the first cover only the gap and the
-  serif, so they never take a pen-down from the neighbour's title. A small agenda keeps
-  each title to one line beside its event.
+  free at its start. No lane is narrower than the smallest lane, about 160 logical px
+  (about 4 cm on a 10″ panel; a setting): a group that would need a narrower lane is drawn
+  in rows instead. Each lane holds one event's brackets and its title at its start;
+  neighbours meet as `] [` 12 px apart, and the hour lines run on across. In a lane under
+  about 190 px the time stands under the title, and is left out when the event has no room
+  for it. A stroke belongs to the event whose lane holds its pen-down point, never to two. A
+  stroke whose pen-down point is in the gap between one lane's `]` and the next lane's `[`
+  belongs to the nearer bracket's event (the `[` when both are as near), its ink where it
+  was written. A lane's empty space inside a group (where its event has ended and the group
+  goes on) is free time: a line or a stroke there makes a new event as in any free time,
+  which joins the group. While the pen writes in a lane, the other brackets of its group
+  are light grey, black again about a second after the pen lifts; a pen that reports hover
+  shows the same before it touches. The end handles of a lane after the first cover only
+  the gap and the serif, so they never take a pen-down from the neighbour's title. A small
+  agenda keeps each title to one line beside its event.
+
+  A group in rows gives each event one line across the width, with its brackets, its title
+  on one line and its time, in order of start. The hours the group covers are drawn taller
+  until every row fits, and at least twice as tall; the other hours of the agenda give the
+  room back evenly, never below the smallest pitch (20 px an hour). Each row sits on a
+  ruled line of its own, so no title crosses a rule: inside the group the hour rules stay
+  in the hour margin, as bold ticks for the hours and half hours at the new scale, with the
+  hour labels in bold. The margin of those hours is shaded, with a break across it at both
+  ends and the scale at its foot ("2×"). A row has no end handles: a tap opens its card, a
+  hold or a strike-through asks to delete it, and its times change on its page. The day
+  agenda never hides an event. Only an agenda whose hours can't grow (a widget at its set
+  size beside others) keeps its scale: its rows that don't fit fold into one black bar
+  inside the group with their number, their times and the first folded title in small ink
+  ("+2 more 14:00–15:30 …", with "tap to show" from 280 px wide; below that on two lines,
+  the title on the second), never shorter than its lines; its head then says "N events,
+  M folded", and a tap on the bar opens the whole day (the day's agenda with every event,
+  until another period is chosen). In the rare case that a page's agenda
+  can't give a group even a widget's rows, it folds the same way.
+
+  The now line never crosses ink: its dot stands in the hour margin, and the line breaks
+  around every event (its brackets and its title's ink) and every fold bar at its height;
+  a piece shorter than 16 px is left out, so in a group in rows only the dot is left.
 
   When an event's title needs more room than its brackets, the title field grows into the
   free time below them, never over another title; the event's start and end stay as set.
   A title that no longer fits its space (the event is shortened, another event takes the
   free time below, the view is smaller, or the title is set in the person's font) shrinks
-  evenly to fit, down to a smallest readable size; below that size it is cut before the
-  `]`. No title is cut with an ellipsis.
+  evenly to fit, never below about 70 % of its written size; below that it is cut before
+  the `]` with a fade over its last 30 px. No title is cut with an ellipsis, and no title is
+  set in a font to make it fit.
+
+  A title in a lane beside another event doesn't grow into the space below it (that space
+  is the group's free time): it is rewrapped. Its strokes are split into words at the gaps
+  that can be seen between them, with nothing read, and the words are placed onto the lines
+  that fit the lane, each keeping its strokes as written; only where each word stands
+  changes, never the strokes that are stored. When the event has no more lines, the words
+  shrink evenly to about 70 %, then the title is cut with a fade on one line. While the
+  title is moved, or the pen writes in it, it shows as written, cut at its lane; it is
+  rewrapped when it lands and when the pen has left it. Moved into free time, it is as
+  written again. In a row, the title is one line of its words at a row's size, cut with a
+  fade.
 
   A tap on an event's title opens its card under the title (above it when there is no
   room): the title as written, its time and day, Delete event and Open; a tap outside
@@ -362,8 +406,8 @@ it says that it needs the handwriting service and why, and doesn't start.
 ### Widgets
 
 - **FR-040**: Widgets are reusable across templates. The planner ships at least:
-  - **day agenda**: the hours of a day with its timed events as bracket pairs in lanes,
-    all-day events above;
+  - **day agenda**: the hours of a day with its timed events as bracket pairs in lanes (or
+    rows, when lanes would be too narrow), all-day events above;
   - **to-do list**: the to-dos of a period, to write, tick and reorder;
   - **free notes**: an open writing area for the notes of a period, in a named slot;
   - **habit tracker**: the person's habits against the days of the period, a tap marks a day;
@@ -494,13 +538,26 @@ Host level:
 - dragging an event moves it in 30-minute steps, each step refreshing only the area the
   brackets leave and enter and the hour margin, which shows the time of the end that moves,
   and an end handle moves only that end;
-- overlapping events split the width into equal lanes (first start first, at most three),
-  each title's field in its own lane, the end handles of later lanes only over the gap and
-  the serif, and a pen-down point belonging to one lane; while the pen is in a lane the
-  rest of its group is grey;
+- overlapping events split the width into equal lanes (first start first), none narrower
+  than the smallest lane, each title's field in its own lane, the end handles of later
+  lanes only over the gap and the serif, and a pen-down point belonging to one lane; while
+  the pen is in a lane the rest of its group is grey;
+- a group that would need lanes narrower than the smallest lane is drawn in rows, one per
+  event in start order, its hours at least twice as tall and the total height unchanged;
+  no row's title ink crosses its row's rules, rows have no end handles, and a wider view or
+  a smaller smallest-lane setting puts the same group in lanes;
+- a pen-down in the gap between two lanes writes into the nearer bracket's event; one in a
+  lane's empty space inside a group is free time;
+- the now line's pieces never overlap an event's brackets or title ink, nor a fold bar, at
+  its height, and in a group in rows only its dot is left;
+- a small widget that can't fit a group's rows shows one fold bar, names the fold in its
+  head, and a tap on the bar opens the day; a page's day agenda folds nothing;
+- a title moved into a lane is rewrapped by its words inside its lane's width and height,
+  its stored strokes unchanged, cut with a fade when 70 % doesn't fit, and as written again
+  back in free time;
 - a long title in a short event grows its title field into the free time below its brackets
   without changing the event's times; a title that no longer fits shrinks evenly down to
-  the smallest readable size, then is cut before the `]`;
+  about 70 % of its written size, then is cut with a fade before the `]`;
 - a strike-through from before an event's first letter to past its last opens the card that
   asks; one from inside the title, one that doesn't reach past it and a steep one don't;
 - an event's card offers Open and Delete event; its page has a region each for title,
@@ -579,12 +636,17 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - **A title that no longer fits**: it can't overflow while written, since its field grows
   into the free time below. When its space shrinks later (the event is shortened, another
   event takes the free time below, a smaller view, or a typed title set in the person's
-  font), it shrinks evenly to fit down to the smallest readable size, then is cut before
-  the `]`; its card shows it whole.
-- **Four or more events at the same time**: there are three lanes at most; a fourth shares
-  the third lane.
-- **A stroke in the gap between two lanes**: it belongs to no event, makes none and is not
-  kept; in free time, where no event runs, a stroke writes a new event (FR-018).
+  font), it shrinks evenly to fit down to about 70 % of its written size, then is cut with
+  a fade before the `]`; its card shows it whole.
+- **More events at the same time than lanes fit**: the group is drawn in rows, its hours
+  taller; the day agenda hides none. A small widget whose hours can't grow folds the rows
+  that don't fit into one bar, named in its head; a tap opens the day.
+- **A stroke in the gap between two lanes**: it belongs to the nearer bracket's event, its
+  ink where it was written. In a lane's empty space inside a group, a line or a stroke makes
+  a new event that joins the group; in free time, where no event runs, a stroke writes a new
+  event (FR-018).
+- **A title that crosses lanes and rows**: its stored strokes never change; only where its
+  words are drawn does.
 - **A strike-through, then Keep**: the stroke goes and the title is as it was before it.
 - **Erasing all of an event's title**: the event stays with its time and an empty title; it
   is removed only by an explicit delete.
@@ -611,6 +673,9 @@ Hardware: ink latency and refresh counts on a device, supervised.
 - A new period with no template chosen gets its kind's default without asking.
 - An event is created by drawing a line down an agenda's hour margin, by drawing a block
   over its time or writing into the agenda's free time, or with a date and time picker.
+- Splitting a title's ink into words needs no reading: a visible gap between strokes on a
+  line is enough. Ink with no such gaps (a drawing, joined-up writing) is one word.
+- The smallest lane is kept with the planner's settings; it needs no control on the page.
 - Every image that has the planner has the system's calendar and contacts store.
 - The planner runs in the person's own session; guests see none of its data.
 - One person, one planner: there are no separate calendars to pick from in 001.

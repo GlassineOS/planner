@@ -20,7 +20,7 @@ PREFIX ?= /usr
 DESTDIR ?=
 
 O := out
-CORE := store grid tfile editor settle content lanes hold
+CORE := store grid tfile editor settle content lanes hold rewrap
 CORE_OBJ := $(CORE:%=$(O)/%.o)
 SCREEN := look view frame regions
 SCREEN_OBJ := $(SCREEN:%=$(O)/%.o)

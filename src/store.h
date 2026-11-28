@@ -134,6 +134,7 @@ struct store {
 	/* the settings (FR-053): the display opt-ins for every field (FR-011) */
 	bool neaten, autograph;
 	float strength;    /* neatening, 0..1 */
+	int min_lane;      /* the day agenda's smallest lane, logical px (BK_MIN_LANE) */
 	/* the entries' file as this store last read or wrote it: a save finds another writer's
 	 * entries (another instance) by a change of it, and keeps them */
 	bool seen;
